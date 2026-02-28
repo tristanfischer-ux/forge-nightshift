@@ -1,0 +1,328 @@
+import { useEffect, useState } from "react";
+import {
+  Save,
+  TestTube,
+  CheckCircle,
+  XCircle,
+  Loader2,
+} from "lucide-react";
+import {
+  getConfig,
+  setConfig,
+  testOllamaConnection,
+  testBraveConnection,
+  testSupabaseConnection,
+  testResendConnection,
+} from "../lib/tauri";
+
+type TestStatus = "idle" | "testing" | "success" | "error";
+
+export default function Settings() {
+  const [config, setConfigState] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [ollamaStatus, setOllamaStatus] = useState<TestStatus>("idle");
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [braveStatus, setBraveStatus] = useState<TestStatus>("idle");
+  const [supabaseStatus, setSupabaseStatus] = useState<TestStatus>("idle");
+  const [resendStatus, setResendStatus] = useState<TestStatus>("idle");
+
+  useEffect(() => {
+    loadConfig();
+  }, []);
+
+  async function loadConfig() {
+    try {
+      const data = await getConfig();
+      setConfigState(data);
+    } catch {
+      // DB may not be ready
+    }
+  }
+
+  function updateField(key: string, value: string) {
+    setConfigState((prev) => ({ ...prev, [key]: value }));
+    setSaved(false);
+  }
+
+  async function saveAll() {
+    setSaving(true);
+    try {
+      for (const [key, value] of Object.entries(config)) {
+        await setConfig(key, value);
+      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      // handle error
+    }
+    setSaving(false);
+  }
+
+  async function handleTestOllama() {
+    setOllamaStatus("testing");
+    try {
+      const result = await testOllamaConnection();
+      setOllamaModels(result.models);
+      setOllamaStatus("success");
+    } catch {
+      setOllamaStatus("error");
+    }
+  }
+
+  async function handleTestBrave() {
+    setBraveStatus("testing");
+    try {
+      const ok = await testBraveConnection(config.brave_api_key || "");
+      setBraveStatus(ok ? "success" : "error");
+    } catch {
+      setBraveStatus("error");
+    }
+  }
+
+  async function handleTestSupabase() {
+    setSupabaseStatus("testing");
+    try {
+      const ok = await testSupabaseConnection(
+        config.supabase_url || "",
+        config.supabase_service_key || ""
+      );
+      setSupabaseStatus(ok ? "success" : "error");
+    } catch {
+      setSupabaseStatus("error");
+    }
+  }
+
+  async function handleTestResend() {
+    setResendStatus("testing");
+    try {
+      const ok = await testResendConnection(config.resend_api_key || "");
+      setResendStatus(ok ? "success" : "error");
+    } catch {
+      setResendStatus("error");
+    }
+  }
+
+  function StatusIcon({ status }: { status: TestStatus }) {
+    switch (status) {
+      case "testing":
+        return <Loader2 className="w-4 h-4 animate-spin text-forge-400" />;
+      case "success":
+        return <CheckCircle className="w-4 h-4 text-green-500" />;
+      case "error":
+        return <XCircle className="w-4 h-4 text-red-500" />;
+      default:
+        return null;
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Settings</h1>
+          <p className="text-sm text-forge-400 mt-1">
+            Configure API keys, models, and pipeline behavior
+          </p>
+        </div>
+
+        <button
+          onClick={saveAll}
+          disabled={saving}
+          className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+        >
+          {saved ? (
+            <CheckCircle className="w-4 h-4 text-green-400" />
+          ) : (
+            <Save className="w-4 h-4" />
+          )}
+          {saved ? "Saved" : "Save All"}
+        </button>
+      </div>
+
+      {/* Ollama */}
+      <section className="bg-forge-900/50 rounded-xl border border-forge-800/50 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Ollama (Local LLM)</h2>
+          <button
+            onClick={handleTestOllama}
+            className="flex items-center gap-2 px-3 py-1.5 bg-forge-800 hover:bg-forge-700 rounded-lg text-xs transition-colors"
+          >
+            <TestTube className="w-3 h-3" />
+            Test
+            <StatusIcon status={ollamaStatus} />
+          </button>
+        </div>
+        <Input
+          label="Ollama URL"
+          value={config.ollama_url || ""}
+          onChange={(v) => updateField("ollama_url", v)}
+          placeholder="http://localhost:11434"
+        />
+        <Input
+          label="Research Model"
+          value={config.research_model || ""}
+          onChange={(v) => updateField("research_model", v)}
+          placeholder="qwen3:8b"
+        />
+        <Input
+          label="Enrichment Model"
+          value={config.enrich_model || ""}
+          onChange={(v) => updateField("enrich_model", v)}
+          placeholder="qwen3:30b-a3b"
+        />
+        <Input
+          label="Outreach Model"
+          value={config.outreach_model || ""}
+          onChange={(v) => updateField("outreach_model", v)}
+          placeholder="qwen3:32b"
+        />
+        {ollamaModels.length > 0 && (
+          <div className="text-xs text-forge-400">
+            Available models: {ollamaModels.join(", ")}
+          </div>
+        )}
+      </section>
+
+      {/* Brave Search */}
+      <section className="bg-forge-900/50 rounded-xl border border-forge-800/50 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Brave Search</h2>
+          <button
+            onClick={handleTestBrave}
+            className="flex items-center gap-2 px-3 py-1.5 bg-forge-800 hover:bg-forge-700 rounded-lg text-xs transition-colors"
+          >
+            <TestTube className="w-3 h-3" />
+            Test
+            <StatusIcon status={braveStatus} />
+          </button>
+        </div>
+        <Input
+          label="API Key"
+          value={config.brave_api_key || ""}
+          onChange={(v) => updateField("brave_api_key", v)}
+          placeholder="BSA..."
+          type="password"
+        />
+      </section>
+
+      {/* Supabase */}
+      <section className="bg-forge-900/50 rounded-xl border border-forge-800/50 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Supabase (ForgeOS)</h2>
+          <button
+            onClick={handleTestSupabase}
+            className="flex items-center gap-2 px-3 py-1.5 bg-forge-800 hover:bg-forge-700 rounded-lg text-xs transition-colors"
+          >
+            <TestTube className="w-3 h-3" />
+            Test
+            <StatusIcon status={supabaseStatus} />
+          </button>
+        </div>
+        <Input
+          label="Project URL"
+          value={config.supabase_url || ""}
+          onChange={(v) => updateField("supabase_url", v)}
+          placeholder="https://xxx.supabase.co"
+        />
+        <Input
+          label="Service Role Key"
+          value={config.supabase_service_key || ""}
+          onChange={(v) => updateField("supabase_service_key", v)}
+          placeholder="eyJ..."
+          type="password"
+        />
+        <Input
+          label="Foundry ID"
+          value={config.foundry_id || ""}
+          onChange={(v) => updateField("foundry_id", v)}
+          placeholder="UUID of your foundry"
+        />
+      </section>
+
+      {/* Resend */}
+      <section className="bg-forge-900/50 rounded-xl border border-forge-800/50 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Resend (Email)</h2>
+          <button
+            onClick={handleTestResend}
+            className="flex items-center gap-2 px-3 py-1.5 bg-forge-800 hover:bg-forge-700 rounded-lg text-xs transition-colors"
+          >
+            <TestTube className="w-3 h-3" />
+            Test
+            <StatusIcon status={resendStatus} />
+          </button>
+        </div>
+        <Input
+          label="API Key"
+          value={config.resend_api_key || ""}
+          onChange={(v) => updateField("resend_api_key", v)}
+          placeholder="re_..."
+          type="password"
+        />
+        <Input
+          label="From Email"
+          value={config.from_email || ""}
+          onChange={(v) => updateField("from_email", v)}
+          placeholder="outreach@fractionalforge.com"
+        />
+      </section>
+
+      {/* Pipeline */}
+      <section className="bg-forge-900/50 rounded-xl border border-forge-800/50 p-4 space-y-3">
+        <h2 className="text-sm font-semibold">Pipeline</h2>
+        <Input
+          label="Schedule Time"
+          value={config.schedule_time || ""}
+          onChange={(v) => updateField("schedule_time", v)}
+          placeholder="23:00"
+        />
+        <Input
+          label="Daily Email Limit"
+          value={config.daily_email_limit || ""}
+          onChange={(v) => updateField("daily_email_limit", v)}
+          placeholder="30"
+        />
+        <Input
+          label="Relevance Threshold (0-100)"
+          value={config.relevance_threshold || ""}
+          onChange={(v) => updateField("relevance_threshold", v)}
+          placeholder="60"
+        />
+        <Input
+          label="Target Countries (JSON)"
+          value={config.target_countries || ""}
+          onChange={(v) => updateField("target_countries", v)}
+          placeholder='["DE","FR","NL","BE","IT"]'
+        />
+      </section>
+    </div>
+  );
+}
+
+function Input({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  type?: string;
+}) {
+  return (
+    <div>
+      <label className="block text-xs text-forge-400 mb-1">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full px-3 py-2 bg-forge-950/50 border border-forge-800/50 rounded-lg text-sm text-white placeholder-forge-600 focus:outline-none focus:border-forge-500 transition-colors"
+      />
+    </div>
+  );
+}

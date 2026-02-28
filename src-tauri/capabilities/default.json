@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Default permissions for Forge Nightshift",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "notification:default",
+    "notification:allow-notify",
+    "notification:allow-request-permission",
+    "notification:allow-is-permission-granted",
+    "shell:allow-open"
+  ]
+}
