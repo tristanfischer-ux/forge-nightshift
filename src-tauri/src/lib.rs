@@ -3,7 +3,7 @@ mod services;
 mod pipeline;
 
 use db::Database;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[tauri::command]
 fn get_stats(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
@@ -135,6 +135,28 @@ pub fn run() {
 
             let database = Database::new(&app_dir).expect("Failed to initialize database");
             app.manage(database);
+
+            // Auto-check Ollama connection on startup
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let result = services::ollama::test_connection().await;
+                match result {
+                    Ok(info) => {
+                        log::info!("Ollama connected: {:?}", info);
+                        let _ = handle.emit("ollama:status", serde_json::json!({
+                            "connected": true,
+                            "models": info.get("models"),
+                        }));
+                    }
+                    Err(e) => {
+                        log::warn!("Ollama not reachable: {}", e);
+                        let _ = handle.emit("ollama:status", serde_json::json!({
+                            "connected": false,
+                            "error": e.to_string(),
+                        }));
+                    }
+                }
+            });
 
             Ok(())
         })
