@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub struct Database {
@@ -430,6 +431,188 @@ impl Database {
             rusqlite::params![id, category_id, country, new_companies],
         )?;
         Ok(())
+    }
+
+    /// Get analytics data for dashboard charts
+    pub fn get_analytics(&self) -> Result<Value> {
+        let conn = self.conn.lock().unwrap();
+
+        // By subcategory
+        let mut stmt = conn.prepare(
+            "SELECT subcategory, COUNT(*) as count FROM companies WHERE subcategory IS NOT NULL AND subcategory != '' GROUP BY subcategory ORDER BY count DESC LIMIT 20"
+        )?;
+        let by_subcategory: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // By country
+        let mut stmt = conn.prepare(
+            "SELECT country, COUNT(*) as count FROM companies WHERE country IS NOT NULL AND country != '' GROUP BY country ORDER BY count DESC"
+        )?;
+        let by_country: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Pipeline funnel
+        let mut stmt = conn.prepare(
+            "SELECT status, COUNT(*) as count FROM companies GROUP BY status ORDER BY count DESC"
+        )?;
+        let pipeline_funnel: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Parse attributes_json for frequency counts
+        let mut stmt = conn.prepare(
+            "SELECT attributes_json FROM companies WHERE attributes_json IS NOT NULL AND attributes_json != ''"
+        )?;
+        let attr_rows: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut equipment_counts: HashMap<String, i64> = HashMap::new();
+        let mut material_counts: HashMap<String, i64> = HashMap::new();
+        let mut cert_counts: HashMap<String, i64> = HashMap::new();
+        let mut industry_counts: HashMap<String, i64> = HashMap::new();
+
+        for raw in &attr_rows {
+            if let Ok(attrs) = serde_json::from_str::<Value>(raw) {
+                if let Some(arr) = attrs.get("key_equipment").and_then(|v| v.as_array()) {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            if !s.is_empty() {
+                                *equipment_counts.entry(s.to_string()).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+                if let Some(arr) = attrs.get("materials").and_then(|v| v.as_array()) {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            if !s.is_empty() {
+                                *material_counts.entry(s.to_string()).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+                if let Some(arr) = attrs.get("certifications").and_then(|v| v.as_array()) {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            if !s.is_empty() {
+                                *cert_counts.entry(s.to_string()).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+                if let Some(arr) = attrs.get("industries").and_then(|v| v.as_array()) {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            if !s.is_empty() {
+                                *industry_counts.entry(s.to_string()).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        fn top_n(map: &HashMap<String, i64>, n: usize) -> Vec<Value> {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by(|a, b| b.1.cmp(a.1));
+            entries.into_iter().take(n).map(|(name, count)| json!({ "name": name, "count": count })).collect()
+        }
+
+        Ok(json!({
+            "by_subcategory": by_subcategory,
+            "by_country": by_country,
+            "pipeline_funnel": pipeline_funnel,
+            "by_equipment": top_n(&equipment_counts, 20),
+            "by_material": top_n(&material_counts, 20),
+            "by_certification": top_n(&cert_counts, 20),
+            "by_industry": top_n(&industry_counts, 20),
+        }))
+    }
+
+    /// Get companies with optional filters for drill-down
+    pub fn get_companies_filtered(
+        &self,
+        status: Option<&str>,
+        subcategory: Option<&str>,
+        country: Option<&str>,
+        search: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut conditions = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut idx = 1;
+
+        if let Some(s) = status {
+            conditions.push(format!("status = ?{}", idx));
+            params.push(Box::new(s.to_string()));
+            idx += 1;
+        }
+        if let Some(sc) = subcategory {
+            conditions.push(format!("subcategory = ?{}", idx));
+            params.push(Box::new(sc.to_string()));
+            idx += 1;
+        }
+        if let Some(c) = country {
+            conditions.push(format!("country = ?{}", idx));
+            params.push(Box::new(c.to_string()));
+            idx += 1;
+        }
+        if let Some(q) = search {
+            conditions.push(format!(
+                "(name LIKE ?{0} OR description LIKE ?{0} OR attributes_json LIKE ?{0})",
+                idx
+            ));
+            params.push(Box::new(format!("%{}%", q)));
+            idx += 1;
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        let query = format!(
+            "SELECT * FROM companies {} ORDER BY created_at DESC LIMIT ?{} OFFSET ?{}",
+            where_clause, idx, idx + 1
+        );
+        params.push(Box::new(limit));
+        params.push(Box::new(offset));
+
+        let mut stmt = conn.prepare(&query)?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+
+        let rows: Vec<Value> = stmt
+            .query_map(params_refs.as_slice(), |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: Option<String> = row.get(i).unwrap_or(None);
+                    obj.insert(col.clone(), val.map(|v| json!(v)).unwrap_or(json!(null)));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(rows)
     }
 
     /// Get companies by list of IDs

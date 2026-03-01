@@ -115,6 +115,32 @@ fn reset_error_companies(db: tauri::State<'_, Database>) -> Result<i64, String> 
 }
 
 #[tauri::command]
+fn get_analytics(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
+    db.get_analytics().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_companies_filtered(
+    db: tauri::State<'_, Database>,
+    status: Option<String>,
+    subcategory: Option<String>,
+    country: Option<String>,
+    search: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    db.get_companies_filtered(
+        status.as_deref(),
+        subcategory.as_deref(),
+        country.as_deref(),
+        search.as_deref(),
+        limit.unwrap_or(50),
+        offset.unwrap_or(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_run_log(
     db: tauri::State<'_, Database>,
     job_id: Option<String>,
@@ -185,6 +211,8 @@ pub fn run() {
             get_pipeline_status,
             get_run_log,
             reset_error_companies,
+            get_analytics,
+            get_companies_filtered,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Building2,
   Mail,
@@ -10,15 +11,18 @@ import {
   AlertCircle,
 } from "lucide-react";
 import StatCard from "../components/StatCard";
+import ChartCard from "../components/ChartCard";
 import {
   getStats,
   getPipelineStatus,
   startPipeline,
   stopPipeline,
   getRunLog,
+  getAnalytics,
   onPipelineStatus,
   onPipelineProgress,
 } from "../lib/tauri";
+import type { AnalyticsData } from "../lib/tauri";
 
 interface PipelineState {
   running: boolean;
@@ -26,7 +30,9 @@ interface PipelineState {
 }
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
+  const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [pipeline, setPipeline] = useState<PipelineState>({
     running: false,
     cancelling: false,
@@ -57,14 +63,16 @@ export default function Dashboard() {
 
   async function loadData() {
     try {
-      const [s, p, l] = await Promise.all([
+      const [s, p, l, a] = await Promise.all([
         getStats(),
         getPipelineStatus(),
         getRunLog(undefined, 20),
+        getAnalytics(),
       ]);
       setStats(s);
       setPipeline(p);
       setLogs(l);
+      setAnalytics(a);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -73,11 +81,7 @@ export default function Dashboard() {
 
   async function handleStartPipeline() {
     try {
-      await startPipeline([
-        "research",
-        "enrich",
-        "push",
-      ]);
+      await startPipeline(["research", "enrich", "push"]);
     } catch (e) {
       setError(String(e));
     }
@@ -91,19 +95,21 @@ export default function Dashboard() {
     }
   }
 
-  function getStatCount(
-    data: unknown[] | undefined,
-    status?: string
-  ): number {
+  function getStatCount(data: unknown[] | undefined, status?: string): number {
     if (!Array.isArray(data)) return 0;
-    if (!status) return data.reduce((sum: number, item) => {
-      const row = item as Record<string, unknown>;
-      return sum + (Number(row.count) || 0);
-    }, 0 as number);
+    if (!status)
+      return data.reduce((sum: number, item) => {
+        const row = item as Record<string, unknown>;
+        return sum + (Number(row.count) || 0);
+      }, 0 as number);
     const row = data.find(
       (item) => (item as Record<string, unknown>).status === status
     ) as Record<string, unknown> | undefined;
     return Number(row?.count) || 0;
+  }
+
+  function drillDown(param: string, value: string) {
+    navigate(`/review?${param}=${encodeURIComponent(value)}`);
   }
 
   const companiesData = stats?.companies as unknown[] | undefined;
@@ -148,11 +154,12 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Pipeline status banner */}
       {pipeline.running && (
         <div className="flex items-center gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl">
           <div className="w-3 h-3 rounded-full bg-orange-500 animate-pulse" />
-          <span className="text-sm font-medium text-gray-700">Pipeline running...</span>
+          <span className="text-sm font-medium text-gray-700">
+            Pipeline running...
+          </span>
         </div>
       )}
 
@@ -184,11 +191,65 @@ export default function Dashboard() {
         />
       </div>
 
+      {/* Charts row 1: Pipeline Funnel + Country Distribution */}
+      <div className="grid grid-cols-2 gap-4">
+        <ChartCard
+          title="Pipeline Funnel"
+          data={analytics?.pipeline_funnel ?? []}
+        />
+        <ChartCard
+          title="Country Distribution"
+          data={analytics?.by_country ?? []}
+          type="pie"
+          onSegmentClick={(name) => drillDown("country", name)}
+        />
+      </div>
+
+      {/* Charts row 2: Manufacturing Techniques + Certifications */}
+      <div className="grid grid-cols-2 gap-4">
+        <ChartCard
+          title="Manufacturing Techniques"
+          data={analytics?.by_subcategory ?? []}
+          onSegmentClick={(name) => drillDown("subcategory", name)}
+        />
+        <ChartCard
+          title="Certifications"
+          data={analytics?.by_certification ?? []}
+          onSegmentClick={(name) => drillDown("search", name)}
+        />
+      </div>
+
+      {/* Charts row 3: Equipment + Materials */}
+      <div className="grid grid-cols-2 gap-4">
+        <ChartCard
+          title="Top Equipment"
+          data={analytics?.by_equipment ?? []}
+          onSegmentClick={(name) => drillDown("search", name)}
+        />
+        <ChartCard
+          title="Materials"
+          data={analytics?.by_material ?? []}
+          onSegmentClick={(name) => drillDown("search", name)}
+        />
+      </div>
+
+      {/* Charts row 4: Industry Sectors */}
+      <div className="grid grid-cols-2 gap-4">
+        <ChartCard
+          title="Industry Sectors"
+          data={analytics?.by_industry ?? []}
+          onSegmentClick={(name) => drillDown("search", name)}
+        />
+        <div />
+      </div>
+
       {/* Recent activity */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
         <div className="flex items-center gap-2 p-4 border-b border-gray-200">
           <Activity className="w-4 h-4 text-gray-400" />
-          <h2 className="text-sm font-semibold text-gray-900">Recent Activity</h2>
+          <h2 className="text-sm font-semibold text-gray-900">
+            Recent Activity
+          </h2>
         </div>
         <div className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
           {logs.length === 0 ? (

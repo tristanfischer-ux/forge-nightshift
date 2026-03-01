@@ -64,6 +64,13 @@ pub const CATEGORIES: &[SearchCategory] = &[
     SearchCategory { id: "cleantech", name: "Cleantech & Energy Hardware", keywords: &["cleantech manufacturer", "solar panel manufacturer", "wind turbine electrolyzer"] },
     SearchCategory { id: "space_tech", name: "Space Technology & Satellites", keywords: &["satellite manufacturer", "space components", "launch technology"] },
     SearchCategory { id: "toolmaking", name: "Toolmaking & Mould Making", keywords: &["toolmaker", "mould maker", "die manufacturer jig fixture"] },
+    SearchCategory { id: "wire_cable", name: "Wire & Cable Manufacturing", keywords: &["wire manufacturer", "cable assembly", "wire harness"] },
+    SearchCategory { id: "packaging_machinery", name: "Packaging Machinery & Systems", keywords: &["packaging machinery", "filling machine", "labelling equipment"] },
+    SearchCategory { id: "precision_grinding", name: "Precision Grinding & Lapping", keywords: &["precision grinding", "cylindrical grinding", "surface lapping"] },
+    SearchCategory { id: "waterjet_laser", name: "Waterjet & Laser Cutting", keywords: &["waterjet cutting", "laser profiling", "CNC plasma cutting"] },
+    SearchCategory { id: "rubber_seals", name: "Rubber, Seals & Gaskets", keywords: &["rubber moulding", "O-ring manufacturer", "gasket manufacturer"] },
+    SearchCategory { id: "filtration_separation", name: "Filtration & Separation Equipment", keywords: &["industrial filtration", "separation equipment", "filter element"] },
+    SearchCategory { id: "medical_devices", name: "Medical Device Manufacturing", keywords: &["medical device", "surgical instrument", "implant manufacturer"] },
 ];
 
 pub async fn test_connection(api_key: &str) -> Result<bool> {

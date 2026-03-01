@@ -84,6 +84,38 @@ export async function resetErrorCompanies() {
   return invoke<number>("reset_error_companies");
 }
 
+// Analytics
+export interface ChartDataPoint {
+  name: string;
+  count: number;
+}
+
+export interface AnalyticsData {
+  by_subcategory: ChartDataPoint[];
+  by_country: ChartDataPoint[];
+  pipeline_funnel: ChartDataPoint[];
+  by_equipment: ChartDataPoint[];
+  by_material: ChartDataPoint[];
+  by_certification: ChartDataPoint[];
+  by_industry: ChartDataPoint[];
+}
+
+export async function getAnalytics() {
+  return invoke<AnalyticsData>("get_analytics");
+}
+
+// Filtered companies (drill-down)
+export async function getCompaniesFiltered(filters: {
+  status?: string;
+  subcategory?: string;
+  country?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  return invoke<Record<string, unknown>[]>("get_companies_filtered", filters);
+}
+
 // Run log
 export async function getRunLog(jobId?: string, limit?: number) {
   return invoke<Record<string, unknown>[]>("get_run_log", { jobId, limit });

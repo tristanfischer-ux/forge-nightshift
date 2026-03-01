@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   CheckCircle,
   XCircle,
+  X,
   ChevronRight,
   Star,
   Building2,
@@ -21,6 +23,7 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import {
   getCompanies,
+  getCompaniesFiltered,
   updateCompanyStatus,
   startPipeline,
   resetErrorCompanies,
@@ -102,6 +105,7 @@ function DetailField({
 }
 
 export default function Review() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [companies, setCompanies] = useState<Record<string, unknown>[]>([]);
   const [selected, setSelected] = useState<Record<string, unknown> | null>(
     null
@@ -115,10 +119,20 @@ export default function Review() {
   });
   const [enriching, setEnriching] = useState(false);
 
+  // Drill-down filters from URL params
+  const drillSubcategory = searchParams.get("subcategory");
+  const drillCountry = searchParams.get("country");
+  const drillSearch = searchParams.get("search");
+  const hasDrillDown = !!(drillSubcategory || drillCountry || drillSearch);
+
+  function clearDrillDown() {
+    setSearchParams({});
+  }
+
   useEffect(() => {
     loadCompanies(filter);
     loadCounts();
-  }, [filter]);
+  }, [filter, drillSubcategory, drillCountry, drillSearch]);
 
   // Check if pipeline is already running on mount
   useEffect(() => {
@@ -166,9 +180,21 @@ export default function Review() {
 
   async function loadCompanies(status: StatusFilter) {
     try {
-      const s = status === "all" ? undefined : status;
-      const data = await getCompanies(s, 500, 0);
-      setCompanies(data);
+      if (hasDrillDown) {
+        const data = await getCompaniesFiltered({
+          status: status === "all" ? undefined : status,
+          subcategory: drillSubcategory || undefined,
+          country: drillCountry || undefined,
+          search: drillSearch || undefined,
+          limit: 500,
+          offset: 0,
+        });
+        setCompanies(data);
+      } else {
+        const s = status === "all" ? undefined : status;
+        const data = await getCompanies(s, 500, 0);
+        setCompanies(data);
+      }
     } catch {
       // DB may not be ready
     }
@@ -326,6 +352,35 @@ export default function Review() {
           </button>
         ))}
       </div>
+
+      {/* Drill-down filter banner */}
+      {hasDrillDown && (
+        <div className="flex items-center gap-2 p-3 bg-forge-50 border border-forge-200 rounded-lg">
+          <span className="text-sm text-gray-700">Filtered by:</span>
+          {drillSubcategory && (
+            <span className="px-2 py-0.5 bg-forge-100 text-forge-700 rounded-full text-xs font-medium">
+              {drillSubcategory}
+            </span>
+          )}
+          {drillCountry && (
+            <span className="px-2 py-0.5 bg-forge-100 text-forge-700 rounded-full text-xs font-medium">
+              {COUNTRIES[drillCountry] || drillCountry}
+            </span>
+          )}
+          {drillSearch && (
+            <span className="px-2 py-0.5 bg-forge-100 text-forge-700 rounded-full text-xs font-medium">
+              &ldquo;{drillSearch}&rdquo;
+            </span>
+          )}
+          <button
+            onClick={clearDrillDown}
+            className="ml-auto flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors"
+          >
+            <X className="w-3 h-3" />
+            Clear
+          </button>
+        </div>
+      )}
 
       <div className="flex gap-4">
         {/* Company list */}

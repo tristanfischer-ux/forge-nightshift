@@ -71,7 +71,8 @@ IMPORTANT: All text fields (description, subcategory, capabilities, etc.) MUST b
 - capabilities: array of specific services/processes (e.g., ["5-axis CNC milling", "wire EDM", "surface grinding"])
 - industries: array of sectors served (e.g., ["Automotive", "Aerospace", "Defence", "Medical", "Oil & Gas"])
 - materials: array of materials worked with (e.g., ["aluminium", "titanium", "stainless steel", "Inconel"])
-- key_equipment: array of specific machinery/technology (e.g., ["DMG Mori DMU 50", "Trumpf TruLaser"])
+- key_equipment: array of SPECIFIC machinery with brand and model where possible (e.g., ["DMG Mori DMU 50 5-axis", "Trumpf TruLaser 3030", "Zeiss Contura CMM", "FANUC R-2000iC robot"]). Include axis count, tonnage, or power rating where relevant. Include metrology (CMMs), robots, welding equipment. NEVER use generic terms like "CNC machine" without brand context.
+- production_capacity: facility/volume info string (e.g., "30 CNC machines, 5,000 sqm facility, 24/7 operation") or null if unknown
 - certifications: array (e.g., ["ISO 9001", "AS9100", "ISO 14001", "JOSCAR", "Cyber Essentials"])
 - company_size: estimated size ("1-9", "10-49", "50-99", "100-249", "250-499", "500+")
 - founded_year: year established if mentioned (integer or null)
@@ -142,6 +143,7 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
             "industries": enriched.get("industries").unwrap_or(&json!([])),
             "materials": enriched.get("materials").unwrap_or(&json!([])),
             "key_equipment": enriched.get("key_equipment").unwrap_or(&json!([])),
+            "production_capacity": enriched.get("production_capacity").and_then(|v| v.as_str()).unwrap_or(""),
             "founded_year": enriched.get("founded_year"),
             "nightshift_score": enriched.get("relevance_score").and_then(|v| v.as_i64()).unwrap_or(0),
         });
