@@ -18,11 +18,13 @@ import {
   RotateCcw,
   Languages,
 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import {
   getCompanies,
   updateCompanyStatus,
   startPipeline,
   resetErrorCompanies,
+  getPipelineStatus,
 } from "../lib/tauri";
 
 const COUNTRIES: Record<string, string> = {
@@ -111,11 +113,40 @@ export default function Review() {
     enriched: 0,
     error: 0,
   });
+  const [enriching, setEnriching] = useState(false);
 
   useEffect(() => {
     loadCompanies(filter);
     loadCounts();
   }, [filter]);
+
+  // Check if pipeline is already running on mount
+  useEffect(() => {
+    getPipelineStatus().then((s) => setEnriching(s.running)).catch(() => {});
+  }, []);
+
+  // Listen for pipeline status events to update enriching state + auto-refresh
+  useEffect(() => {
+    const unlisten = listen<{ status: string }>("pipeline:status", (event) => {
+      const running = event.payload.status === "running";
+      setEnriching(running);
+      if (!running) {
+        loadCompanies(filter);
+        loadCounts();
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [filter]);
+
+  // Poll for updates while enriching
+  useEffect(() => {
+    if (!enriching) return;
+    const interval = setInterval(() => {
+      loadCompanies(filter);
+      loadCounts();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [enriching, filter]);
 
   async function loadCounts() {
     try {
@@ -161,9 +192,10 @@ export default function Review() {
 
   async function handleRunEnrich() {
     try {
+      setEnriching(true);
       await startPipeline(["enrich"]);
     } catch {
-      // handled elsewhere
+      setEnriching(false);
     }
   }
 
@@ -230,10 +262,19 @@ export default function Review() {
           {filter === "discovered" && companies.length > 0 && (
             <button
               onClick={handleRunEnrich}
-              className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 rounded-lg text-sm font-medium text-white transition-colors"
+              disabled={enriching}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
+                enriching
+                  ? "bg-forge-400 cursor-not-allowed"
+                  : "bg-forge-600 hover:bg-forge-700"
+              }`}
             >
-              <Play className="w-4 h-4" />
-              Enrich All
+              {enriching ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Play className="w-4 h-4" />
+              )}
+              {enriching ? "Enriching..." : "Enrich All"}
             </button>
           )}
           {filter === "error" && companies.length > 0 && (
@@ -662,10 +703,19 @@ export default function Review() {
                 {(status === "discovered" || status === "error") && (
                   <button
                     onClick={handleRunEnrich}
-                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 rounded-lg text-sm font-medium text-white transition-colors"
+                    disabled={enriching}
+                    className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
+                      enriching
+                        ? "bg-forge-400 cursor-not-allowed"
+                        : "bg-forge-600 hover:bg-forge-700"
+                    }`}
                   >
-                    <RefreshCw className="w-4 h-4" />
-                    {status === "error" ? "Retry Enrichment" : "Run Enrichment"}
+                    <RefreshCw className={`w-4 h-4 ${enriching ? "animate-spin" : ""}`} />
+                    {enriching
+                      ? "Enriching..."
+                      : status === "error"
+                        ? "Retry Enrichment"
+                        : "Run Enrichment"}
                   </button>
                 )}
                 {status === "enriched" && (
