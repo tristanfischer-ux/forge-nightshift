@@ -79,6 +79,11 @@ export async function getPipelineStatus() {
   );
 }
 
+// Reset error companies
+export async function resetErrorCompanies() {
+  return invoke<number>("reset_error_companies");
+}
+
 // Run log
 export async function getRunLog(jobId?: string, limit?: number) {
   return invoke<Record<string, unknown>[]>("get_run_log", { jobId, limit });

@@ -24,6 +24,13 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(include_str!("migrations/001_initial.sql"))?;
         conn.execute_batch(include_str!("migrations/002_category_coverage.sql"))?;
+        // 003: additive ALTER TABLE — ignore "duplicate column" errors on re-run
+        for stmt in include_str!("migrations/003_translation_fields.sql").split(';') {
+            let stmt = stmt.trim();
+            if !stmt.is_empty() {
+                let _ = conn.execute_batch(stmt);
+            }
+        }
         Ok(())
     }
 
@@ -141,8 +148,10 @@ impl Database {
              specialties = ?4, certifications = ?5, company_size = ?6, \
              relevance_score = ?7, enrichment_quality = ?8, \
              contact_name = ?9, contact_email = ?10, contact_title = ?11, \
-             attributes_json = ?12, status = 'enriched', updated_at = datetime('now') \
-             WHERE id = ?13",
+             attributes_json = ?12, \
+             description_original = ?13, snippet_english = ?14, last_error = NULL, \
+             status = 'enriched', updated_at = datetime('now') \
+             WHERE id = ?15",
             rusqlite::params![
                 enriched.get("description").and_then(|v| v.as_str()).unwrap_or(""),
                 enriched.get("category").and_then(|v| v.as_str()).unwrap_or("Services"),
@@ -156,10 +165,30 @@ impl Database {
                 enriched.get("contact_email").and_then(|v| v.as_str()).unwrap_or(""),
                 enriched.get("contact_title").and_then(|v| v.as_str()).unwrap_or(""),
                 enriched.get("attributes_json").unwrap_or(&json!({})).to_string(),
+                enriched.get("description_original").and_then(|v| v.as_str()).unwrap_or(""),
+                enriched.get("snippet_english").and_then(|v| v.as_str()).unwrap_or(""),
                 id,
             ],
         )?;
         Ok(())
+    }
+
+    pub fn set_company_error(&self, id: &str, error: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET status = 'error', last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
+            [error, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn reset_error_companies(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET status = 'discovered', last_error = NULL, updated_at = datetime('now') WHERE status = 'error'",
+            [],
+        )?;
+        Ok(conn.changes() as i64)
     }
 
     pub fn get_emails(&self, status: Option<&str>, limit: i64) -> Result<Vec<Value>> {

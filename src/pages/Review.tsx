@@ -13,11 +13,16 @@ import {
   Award,
   Factory,
   ExternalLink,
+  AlertTriangle,
+  Play,
+  RotateCcw,
+  Languages,
 } from "lucide-react";
 import {
   getCompanies,
   updateCompanyStatus,
   startPipeline,
+  resetErrorCompanies,
 } from "../lib/tauri";
 
 const COUNTRIES: Record<string, string> = {
@@ -162,6 +167,17 @@ export default function Review() {
     }
   }
 
+  async function handleResetErrors() {
+    try {
+      await resetErrorCompanies();
+      loadCompanies(filter);
+      loadCounts();
+      setSelected(null);
+    } catch {
+      // handled elsewhere
+    }
+  }
+
   async function handleBulkApprove() {
     for (const company of companies) {
       const score = Number(company.relevance_score) || 0;
@@ -210,15 +226,35 @@ export default function Review() {
           </p>
         </div>
 
-        {filter === "enriched" && companies.length > 0 && (
-          <button
-            onClick={handleBulkApprove}
-            className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm font-medium text-white transition-colors"
-          >
-            <CheckCircle className="w-4 h-4" />
-            Approve All 60+
-          </button>
-        )}
+        <div className="flex gap-2">
+          {filter === "discovered" && companies.length > 0 && (
+            <button
+              onClick={handleRunEnrich}
+              className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 rounded-lg text-sm font-medium text-white transition-colors"
+            >
+              <Play className="w-4 h-4" />
+              Enrich All
+            </button>
+          )}
+          {filter === "error" && companies.length > 0 && (
+            <button
+              onClick={handleResetErrors}
+              className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 rounded-lg text-sm font-medium text-white transition-colors"
+            >
+              <RotateCcw className="w-4 h-4" />
+              Reset All Errors
+            </button>
+          )}
+          {filter === "enriched" && companies.length > 0 && (
+            <button
+              onClick={handleBulkApprove}
+              className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm font-medium text-white transition-colors"
+            >
+              <CheckCircle className="w-4 h-4" />
+              Approve All 60+
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Status filter tabs */}
@@ -353,6 +389,18 @@ export default function Review() {
                 </div>
               )}
 
+              {/* Error detail */}
+              {status === "error" && !!selected.last_error && (
+                <div className="rounded-lg bg-red-50 border border-red-200 p-3">
+                  <h4 className="text-xs font-medium text-red-700 uppercase mb-1 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" /> Last Error
+                  </h4>
+                  <p className="text-xs text-red-600 font-mono whitespace-pre-wrap break-all">
+                    {String(selected.last_error)}
+                  </p>
+                </div>
+              )}
+
               {/* Description */}
               {!!selected.description && (
                 <div>
@@ -364,6 +412,20 @@ export default function Review() {
                   </p>
                 </div>
               )}
+
+              {/* Original-language description */}
+              {!!selected.description_original &&
+                String(selected.description_original) !== "" && (
+                  <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
+                    <h4 className="text-xs text-blue-600 uppercase mb-1 flex items-center gap-1">
+                      <Languages className="w-3 h-3" /> Original (source
+                      language)
+                    </h4>
+                    <p className="text-sm text-blue-700 italic">
+                      {String(selected.description_original)}
+                    </p>
+                  </div>
+                )}
 
               {/* Basic Info */}
               <div>
@@ -409,6 +471,17 @@ export default function Review() {
                     </p>
                   </div>
                 )}
+                {!!selected.snippet_english &&
+                  String(selected.snippet_english) !== "" && (
+                    <div className="mt-2">
+                      <h4 className="text-xs text-blue-500 uppercase mb-0.5 flex items-center gap-1">
+                        <Languages className="w-3 h-3" /> Snippet (English)
+                      </h4>
+                      <p className="text-xs text-gray-600 italic">
+                        {String(selected.snippet_english)}
+                      </p>
+                    </div>
+                  )}
               </div>
 
               {/* Category */}

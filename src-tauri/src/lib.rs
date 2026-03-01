@@ -110,6 +110,11 @@ fn get_pipeline_status() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+fn reset_error_companies(db: tauri::State<'_, Database>) -> Result<i64, String> {
+    db.reset_error_companies().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_run_log(
     db: tauri::State<'_, Database>,
     job_id: Option<String>,
@@ -177,6 +182,7 @@ pub fn run() {
             stop_pipeline,
             get_pipeline_status,
             get_run_log,
+            reset_error_companies,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

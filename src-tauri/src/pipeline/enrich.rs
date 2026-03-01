@@ -61,7 +61,11 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             r#"You are analyzing a manufacturing/engineering company for a B2B marketplace.
 Based on the information below, provide a detailed analysis. Return JSON with ALL of these fields:
 
-- description: 2-3 sentence description of the company and what they manufacture/provide
+IMPORTANT: All text fields (description, subcategory, capabilities, etc.) MUST be in English. If the source material is in another language, translate it to English.
+
+- description: 2-3 sentence description IN ENGLISH of the company and what they manufacture/provide
+- description_original: if the source text was NOT in English, put the original-language description here; otherwise set to null
+- snippet_english: English translation of the raw snippet/known info below; null if already in English
 - category: "Products" or "Services"
 - subcategory: specific type (e.g., "CNC Machining", "Sheet Metal Fabrication", "Electronics")
 - capabilities: array of specific services/processes (e.g., ["5-axis CNC milling", "wire EDM", "surface grinding"])
@@ -95,14 +99,15 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
         {
             Ok(r) => r,
             Err(e) => {
+                let error_msg = format!("Ollama request failed: {}", e);
                 let db: tauri::State<'_, Database> = app.state();
                 let _ = db.log_activity(
                     job_id,
                     "enrich",
                     "error",
-                    &format!("Enrichment failed for {}: {}", name, e),
+                    &format!("Enrichment failed for {}: {}", name, error_msg),
                 );
-                let _ = db.update_company_status(id, "error");
+                let _ = db.set_company_error(id, &error_msg);
                 error_count += 1;
                 continue;
             }
@@ -110,9 +115,17 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
 
         let enriched: Value = match serde_json::from_str(&response) {
             Ok(v) => v,
-            Err(_) => {
+            Err(e) => {
+                let truncated: String = response.chars().take(200).collect();
+                let error_msg = format!("JSON parse error: {}. Response start: {}", e, truncated);
                 let db: tauri::State<'_, Database> = app.state();
-                let _ = db.update_company_status(id, "error");
+                let _ = db.log_activity(
+                    job_id,
+                    "enrich",
+                    "error",
+                    &format!("Parse failed for {}: {}", name, error_msg),
+                );
+                let _ = db.set_company_error(id, &error_msg);
                 error_count += 1;
                 continue;
             }
@@ -192,6 +205,14 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
         let mut enriched_with_attrs = enriched.clone();
         enriched_with_attrs["attributes_json"] = attributes;
 
+        // Pass through translation fields from LLM response
+        if let Some(v) = enriched.get("description_original") {
+            enriched_with_attrs["description_original"] = v.clone();
+        }
+        if let Some(v) = enriched.get("snippet_english") {
+            enriched_with_attrs["snippet_english"] = v.clone();
+        }
+
         // Map capabilities to specialties for backward compat with DB column
         if enriched_with_attrs.get("specialties").is_none() {
             enriched_with_attrs["specialties"] = enriched
@@ -205,13 +226,14 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
             match db.update_company_enrichment(id, &enriched_with_attrs) {
                 Ok(_) => enriched_count += 1,
                 Err(e) => {
+                    let error_msg = format!("DB save failed: {}", e);
                     let _ = db.log_activity(
                         job_id,
                         "enrich",
                         "error",
-                        &format!("Failed to save enrichment for {}: {}", name, e),
+                        &format!("Failed to save enrichment for {}: {}", name, error_msg),
                     );
-                    let _ = db.update_company_status(id, "error");
+                    let _ = db.set_company_error(id, &error_msg);
                     error_count += 1;
                     continue;
                 }
