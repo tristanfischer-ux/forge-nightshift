@@ -33,7 +33,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
 
     let enriched = {
         let db: tauri::State<'_, Database> = app.state();
-        db.get_companies(Some("enriched"), 200, 0)?
+        db.get_companies(Some("approved"), 200, 0)?
     };
 
     let mut pushed_count = 0;

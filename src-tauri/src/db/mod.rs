@@ -615,6 +615,16 @@ impl Database {
         Ok(rows)
     }
 
+    /// Approve all enriched companies (set status from 'enriched' to 'approved')
+    pub fn approve_all_enriched(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET status = 'approved', updated_at = datetime('now') WHERE status = 'enriched'",
+            [],
+        )?;
+        Ok(conn.changes() as i64)
+    }
+
     /// Get companies by list of IDs
     pub fn get_companies_by_ids(&self, ids: &[String]) -> Result<Vec<Value>> {
         if ids.is_empty() {

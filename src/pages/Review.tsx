@@ -28,6 +28,7 @@ import {
   startPipeline,
   resetErrorCompanies,
   getPipelineStatus,
+  approveAllEnriched,
 } from "../lib/tauri";
 
 const COUNTRIES: Record<string, string> = {
@@ -237,14 +238,13 @@ export default function Review() {
   }
 
   async function handleBulkApprove() {
-    for (const company of companies) {
-      const score = Number(company.relevance_score) || 0;
-      if (score >= 60 && String(company.status) === "enriched") {
-        await updateCompanyStatus(String(company.id), "approved");
-      }
+    try {
+      await approveAllEnriched();
+      loadCompanies(filter);
+      loadCounts();
+    } catch {
+      // handled elsewhere
     }
-    loadCompanies(filter);
-    loadCounts();
   }
 
   const tabs: { key: StatusFilter; label: string }[] = [
@@ -318,7 +318,7 @@ export default function Review() {
               className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm font-medium text-white transition-colors"
             >
               <CheckCircle className="w-4 h-4" />
-              Approve All 60+
+              Approve All
             </button>
           )}
         </div>

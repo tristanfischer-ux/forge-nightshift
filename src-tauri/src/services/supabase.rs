@@ -51,22 +51,47 @@ pub async fn push_listing(
 ) -> Result<String> {
     let client = reqwest::Client::new();
 
+    // Start with attributes_json as base — it contains CH fields, industries,
+    // materials, equipment, etc. from enrichment. Then overlay standard fields.
+    let mut attributes = company
+        .get("attributes_json")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or_else(|| json!({}));
+
     // Parse specialties/certifications — may be stored as JSON strings in SQLite
     let specialties = parse_json_field(company, "specialties");
     let certifications = parse_json_field(company, "certifications");
 
-    let attributes = json!({
-        "website_url": company.get("website_url").and_then(|v| v.as_str()).unwrap_or(""),
-        "country": company.get("country").and_then(|v| v.as_str()).unwrap_or(""),
-        "city": company.get("city").and_then(|v| v.as_str()).unwrap_or(""),
-        "specialties": specialties,
-        "certifications": certifications,
-        "employees": company.get("company_size").and_then(|v| v.as_str()).unwrap_or(""),
-        "year_founded": company.get("year_founded").and_then(|v| v.as_i64()),
-        "nightshift_score": company.get("relevance_score").and_then(|v| v.as_str()).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0),
-        "discovered_at": chrono::Utc::now().to_rfc3339(),
-        "source": "nightshift",
-    });
+    // Overlay standard fields onto the base attributes
+    let city = company.get("city").and_then(|v| v.as_str()).unwrap_or("");
+    let country = company.get("country").and_then(|v| v.as_str()).unwrap_or("");
+    let subcategory = company.get("subcategory").and_then(|v| v.as_str()).unwrap_or("");
+
+    attributes["website_url"] = json!(company.get("website_url").and_then(|v| v.as_str()).unwrap_or(""));
+    attributes["country"] = json!(country);
+    attributes["city"] = json!(city);
+    attributes["specialties"] = specialties;
+    attributes["certifications"] = certifications;
+    attributes["employees"] = json!(company.get("company_size").and_then(|v| v.as_str()).unwrap_or(""));
+    attributes["year_founded"] = json!(company.get("year_founded").and_then(|v| v.as_i64()));
+    attributes["nightshift_score"] = json!(company.get("relevance_score").and_then(|v| v.as_str()).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0));
+    attributes["discovered_at"] = json!(chrono::Utc::now().to_rfc3339());
+    attributes["source"] = json!("nightshift");
+
+    // Construct location from city + country
+    if !city.is_empty() && !country.is_empty() {
+        attributes["location"] = json!(format!("{}, {}", city, country));
+    } else if !city.is_empty() {
+        attributes["location"] = json!(city);
+    } else if !country.is_empty() {
+        attributes["location"] = json!(country);
+    }
+
+    // Set company_type from subcategory
+    if !subcategory.is_empty() {
+        attributes["company_type"] = json!(subcategory);
+    }
 
     let mut listing = json!({
         "title": company.get("name").and_then(|v| v.as_str()).unwrap_or(""),

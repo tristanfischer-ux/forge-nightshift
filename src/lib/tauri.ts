@@ -84,6 +84,11 @@ export async function resetErrorCompanies() {
   return invoke<number>("reset_error_companies");
 }
 
+// Approve all enriched companies
+export async function approveAllEnriched() {
+  return invoke<number>("approve_all_enriched");
+}
+
 // Analytics
 export interface ChartDataPoint {
   name: string;

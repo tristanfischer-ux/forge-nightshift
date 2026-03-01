@@ -115,6 +115,11 @@ fn reset_error_companies(db: tauri::State<'_, Database>) -> Result<i64, String> 
 }
 
 #[tauri::command]
+fn approve_all_enriched(db: tauri::State<'_, Database>) -> Result<i64, String> {
+    db.approve_all_enriched().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_analytics(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
     db.get_analytics().map_err(|e| e.to_string())
 }
@@ -211,6 +216,7 @@ pub fn run() {
             get_pipeline_status,
             get_run_log,
             reset_error_companies,
+            approve_all_enriched,
             get_analytics,
             get_companies_filtered,
         ])
