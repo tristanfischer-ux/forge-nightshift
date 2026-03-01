@@ -84,7 +84,47 @@ pub async fn generate(
     }
 
     let gen_resp: GenerateResponse = resp.json().await?;
-    Ok(gen_resp.response)
+
+    if json_mode {
+        Ok(clean_json_response(&gen_resp.response))
+    } else {
+        Ok(gen_resp.response)
+    }
+}
+
+/// Strip `<think>...</think>` blocks and extract the JSON object from LLM
+/// responses. qwen3 models emit reasoning tags even with `format: "json"`.
+fn clean_json_response(raw: &str) -> String {
+    let mut s = raw.to_string();
+
+    // Strip all <think>...</think> blocks (may span multiple lines)
+    while let Some(start) = s.find("<think>") {
+        if let Some(end) = s.find("</think>") {
+            let block_end = end + "</think>".len();
+            s = format!("{}{}", &s[..start], &s[block_end..]);
+        } else {
+            // Unclosed <think> — strip from <think> to end
+            s = s[..start].to_string();
+            break;
+        }
+    }
+
+    let s = s.trim();
+
+    // If it already starts with '{', return as-is
+    if s.starts_with('{') {
+        return s.to_string();
+    }
+
+    // Otherwise find the first '{' and last '}' and extract
+    if let (Some(first), Some(last)) = (s.find('{'), s.rfind('}')) {
+        if first < last {
+            return s[first..=last].to_string();
+        }
+    }
+
+    // Fallback: return trimmed string (will fail JSON parse downstream, which is fine)
+    s.to_string()
 }
 
 pub async fn list_models(base_url: &str) -> Result<Vec<String>> {

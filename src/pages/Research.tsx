@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Search, Globe, RefreshCw } from "lucide-react";
-import { getCompanies, startPipeline } from "../lib/tauri";
+import { getCompanies, getConfig, setConfig, startPipeline } from "../lib/tauri";
 
 const COUNTRIES: Record<string, string> = {
   DE: "Germany",
@@ -14,10 +14,39 @@ const COUNTRIES: Record<string, string> = {
 export default function Research() {
   const [companies, setCompanies] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(false);
+  const [enabledCountries, setEnabledCountries] = useState<Set<string>>(
+    new Set(Object.keys(COUNTRIES))
+  );
 
   useEffect(() => {
     loadCompanies();
+    loadCountryConfig();
   }, []);
+
+  async function loadCountryConfig() {
+    try {
+      const config = await getConfig();
+      if (config.target_countries) {
+        const parsed = JSON.parse(config.target_countries) as string[];
+        setEnabledCountries(new Set(parsed));
+      }
+    } catch {
+      // Use defaults
+    }
+  }
+
+  async function toggleCountry(code: string) {
+    setEnabledCountries((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) {
+        next.delete(code);
+      } else {
+        next.add(code);
+      }
+      setConfig("target_countries", JSON.stringify([...next]));
+      return next;
+    });
+  }
 
   async function loadCompanies() {
     try {
@@ -64,17 +93,27 @@ export default function Research() {
 
       {/* Target countries */}
       <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-        <h2 className="text-sm font-semibold text-gray-900 mb-3">Target Countries</h2>
+        <h2 className="text-sm font-semibold text-gray-900 mb-3">
+          Target Countries
+        </h2>
         <div className="flex gap-2">
-          {Object.entries(COUNTRIES).map(([code, name]) => (
-            <div
-              key={code}
-              className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 rounded-lg text-sm text-gray-700"
-            >
-              <Globe className="w-3 h-3 text-gray-400" />
-              {name}
-            </div>
-          ))}
+          {Object.entries(COUNTRIES).map(([code, name]) => {
+            const enabled = enabledCountries.has(code);
+            return (
+              <button
+                key={code}
+                onClick={() => toggleCountry(code)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                  enabled
+                    ? "bg-forge-600 text-white"
+                    : "bg-gray-100 text-gray-400 opacity-60"
+                }`}
+              >
+                <Globe className="w-3 h-3" />
+                {name}
+              </button>
+            );
+          })}
         </div>
       </div>
 
