@@ -93,7 +93,7 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
             ollama_url,
             enrich_model,
             &enrich_prompt,
-            true,
+            false,
         )
         .await
         {
