@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   LayoutDashboard,
   Search,
@@ -22,8 +23,11 @@ const navItems = [
 export default function Sidebar() {
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
   const [pipelineRunning, setPipelineRunning] = useState(false);
+  const [version, setVersion] = useState("");
 
   useEffect(() => {
+    getVersion().then(setVersion);
+
     // Listen for Ollama status from startup check
     const unlistenOllama = listen<{ connected: boolean }>(
       "ollama:status",
@@ -74,7 +78,7 @@ export default function Sidebar() {
             <h1 className="text-sm font-semibold text-gray-900">
               Forge Nightshift
             </h1>
-            <p className="text-[10px] text-gray-400">v0.1.0</p>
+            <p className="text-[10px] text-gray-400">v{version}</p>
           </div>
         </div>
       </div>
