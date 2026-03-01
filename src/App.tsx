@@ -1,5 +1,6 @@
 import { Routes, Route } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
+import UpdateBanner from "./components/UpdateBanner";
 import Dashboard from "./pages/Dashboard";
 import Research from "./pages/Research";
 import Review from "./pages/Review";
@@ -11,6 +12,7 @@ function App() {
     <div className="flex h-screen bg-gray-50 text-gray-900">
       <Sidebar />
       <main className="flex-1 overflow-y-auto p-6">
+        <UpdateBanner />
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/research" element={<Research />} />
