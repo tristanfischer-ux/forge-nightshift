@@ -3,14 +3,14 @@ import { Mail, Send, Eye } from "lucide-react";
 import { getEmails, updateEmailStatus } from "../lib/tauri";
 
 const STATUS_COLORS: Record<string, string> = {
-  draft: "bg-gray-700/50 text-gray-300",
-  approved: "bg-blue-900/50 text-blue-300",
-  sending: "bg-yellow-900/50 text-yellow-300",
-  sent: "bg-green-900/50 text-green-300",
-  opened: "bg-purple-900/50 text-purple-300",
-  replied: "bg-emerald-900/50 text-emerald-300",
-  bounced: "bg-red-900/50 text-red-300",
-  failed: "bg-red-900/50 text-red-300",
+  draft: "bg-gray-100 text-gray-600",
+  approved: "bg-blue-100 text-blue-700",
+  sending: "bg-yellow-100 text-yellow-700",
+  sent: "bg-green-100 text-green-700",
+  opened: "bg-purple-100 text-purple-700",
+  replied: "bg-emerald-100 text-emerald-700",
+  bounced: "bg-red-100 text-red-700",
+  failed: "bg-red-100 text-red-700",
 };
 
 export default function Outreach() {
@@ -41,24 +41,24 @@ export default function Outreach() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Outreach</h1>
-        <p className="text-sm text-forge-400 mt-1">
+        <h1 className="text-2xl font-bold text-gray-900">Outreach</h1>
+        <p className="text-sm text-gray-500 mt-1">
           Email drafts, approvals, and send tracking
         </p>
       </div>
 
       <div className="flex gap-4">
         {/* Email list */}
-        <div className="flex-1 bg-forge-900/50 rounded-xl border border-forge-800/50">
-          <div className="p-4 border-b border-forge-800/50">
-            <h2 className="text-sm font-semibold">
+        <div className="flex-1 bg-white rounded-xl border border-gray-200 shadow-sm">
+          <div className="p-4 border-b border-gray-200">
+            <h2 className="text-sm font-semibold text-gray-900">
               Email Queue ({emails.length})
             </h2>
           </div>
 
-          <div className="divide-y divide-forge-800/30 max-h-[calc(100vh-220px)] overflow-y-auto">
+          <div className="divide-y divide-gray-100 max-h-[calc(100vh-220px)] overflow-y-auto">
             {emails.length === 0 ? (
-              <div className="p-8 text-center text-forge-500 text-sm">
+              <div className="p-8 text-center text-gray-400 text-sm">
                 No emails yet. Run the outreach pipeline stage to generate
                 emails.
               </div>
@@ -68,17 +68,17 @@ export default function Outreach() {
                   key={String(email.id)}
                   className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${
                     selectedEmail?.id === email.id
-                      ? "bg-forge-700/30"
-                      : "hover:bg-forge-800/20"
+                      ? "bg-blue-50"
+                      : "hover:bg-gray-50"
                   }`}
                   onClick={() => setSelectedEmail(email)}
                 >
-                  <Mail className="w-4 h-4 text-forge-500 shrink-0" />
+                  <Mail className="w-4 h-4 text-gray-400 shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">
+                    <p className="text-sm font-medium text-gray-900 truncate">
                       {String(email.company_name || email.to_email || "")}
                     </p>
-                    <p className="text-xs text-forge-400 truncate">
+                    <p className="text-xs text-gray-500 truncate">
                       {String(email.subject || "")}
                     </p>
                   </div>
@@ -95,19 +95,19 @@ export default function Outreach() {
 
         {/* Email preview */}
         {selectedEmail && (
-          <div className="w-[480px] bg-forge-900/50 rounded-xl border border-forge-800/50 p-4 space-y-4">
+          <div className="w-[480px] bg-white rounded-xl border border-gray-200 p-4 space-y-4 shadow-sm">
             <div>
-              <h3 className="text-sm font-semibold">
+              <h3 className="text-sm font-semibold text-gray-900">
                 {String(selectedEmail.subject || "")}
               </h3>
-              <p className="text-xs text-forge-400 mt-1">
+              <p className="text-xs text-gray-500 mt-1">
                 To: {String(selectedEmail.to_email || "")}
               </p>
             </div>
 
-            <div className="bg-forge-950/50 rounded-lg p-4 max-h-80 overflow-y-auto">
+            <div className="bg-gray-50 rounded-lg p-4 max-h-80 overflow-y-auto">
               <div
-                className="text-sm text-forge-200 prose prose-invert prose-sm"
+                className="text-sm text-gray-700 prose prose-sm"
                 dangerouslySetInnerHTML={{
                   __html: String(selectedEmail.body || ""),
                 }}
@@ -120,7 +120,7 @@ export default function Outreach() {
                   onClick={() =>
                     handleApproveEmail(String(selectedEmail.id))
                   }
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-700 hover:bg-green-800 rounded-lg text-sm font-medium transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm font-medium text-white transition-colors"
                 >
                   <Send className="w-4 h-4" />
                   Approve & Send
@@ -129,7 +129,7 @@ export default function Outreach() {
             )}
 
             {selectedEmail.sent_at ? (
-              <div className="flex items-center gap-2 text-xs text-forge-500">
+              <div className="flex items-center gap-2 text-xs text-gray-500">
                 <Eye className="w-3 h-3" />
                 {"Sent: " + String(selectedEmail.sent_at)}
                 {selectedEmail.opened_at

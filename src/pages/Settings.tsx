@@ -106,7 +106,7 @@ export default function Settings() {
   function StatusIcon({ status }: { status: TestStatus }) {
     switch (status) {
       case "testing":
-        return <Loader2 className="w-4 h-4 animate-spin text-forge-400" />;
+        return <Loader2 className="w-4 h-4 animate-spin text-gray-400" />;
       case "success":
         return <CheckCircle className="w-4 h-4 text-green-500" />;
       case "error":
@@ -120,8 +120,8 @@ export default function Settings() {
     <div className="space-y-6 max-w-2xl">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Settings</h1>
-          <p className="text-sm text-forge-400 mt-1">
+          <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
+          <p className="text-sm text-gray-500 mt-1">
             Configure API keys, models, and pipeline behavior
           </p>
         </div>
@@ -129,10 +129,10 @@ export default function Settings() {
         <button
           onClick={saveAll}
           disabled={saving}
-          className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
         >
           {saved ? (
-            <CheckCircle className="w-4 h-4 text-green-400" />
+            <CheckCircle className="w-4 h-4 text-green-300" />
           ) : (
             <Save className="w-4 h-4" />
           )}
@@ -141,12 +141,12 @@ export default function Settings() {
       </div>
 
       {/* Ollama */}
-      <section className="bg-forge-900/50 rounded-xl border border-forge-800/50 p-4 space-y-3">
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Ollama (Local LLM)</h2>
+          <h2 className="text-sm font-semibold text-gray-900">Ollama (Local LLM)</h2>
           <button
             onClick={handleTestOllama}
-            className="flex items-center gap-2 px-3 py-1.5 bg-forge-800 hover:bg-forge-700 rounded-lg text-xs transition-colors"
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
           >
             <TestTube className="w-3 h-3" />
             Test
@@ -178,19 +178,19 @@ export default function Settings() {
           placeholder="qwen3:32b"
         />
         {ollamaModels.length > 0 && (
-          <div className="text-xs text-forge-400">
+          <div className="text-xs text-gray-500">
             Available models: {ollamaModels.join(", ")}
           </div>
         )}
       </section>
 
       {/* Brave Search */}
-      <section className="bg-forge-900/50 rounded-xl border border-forge-800/50 p-4 space-y-3">
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Brave Search</h2>
+          <h2 className="text-sm font-semibold text-gray-900">Brave Search</h2>
           <button
             onClick={handleTestBrave}
-            className="flex items-center gap-2 px-3 py-1.5 bg-forge-800 hover:bg-forge-700 rounded-lg text-xs transition-colors"
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
           >
             <TestTube className="w-3 h-3" />
             Test
@@ -207,12 +207,12 @@ export default function Settings() {
       </section>
 
       {/* Supabase */}
-      <section className="bg-forge-900/50 rounded-xl border border-forge-800/50 p-4 space-y-3">
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Supabase (ForgeOS)</h2>
+          <h2 className="text-sm font-semibold text-gray-900">Supabase (ForgeOS)</h2>
           <button
             onClick={handleTestSupabase}
-            className="flex items-center gap-2 px-3 py-1.5 bg-forge-800 hover:bg-forge-700 rounded-lg text-xs transition-colors"
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
           >
             <TestTube className="w-3 h-3" />
             Test
@@ -241,12 +241,12 @@ export default function Settings() {
       </section>
 
       {/* Resend */}
-      <section className="bg-forge-900/50 rounded-xl border border-forge-800/50 p-4 space-y-3">
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Resend (Email)</h2>
+          <h2 className="text-sm font-semibold text-gray-900">Resend (Email)</h2>
           <button
             onClick={handleTestResend}
-            className="flex items-center gap-2 px-3 py-1.5 bg-forge-800 hover:bg-forge-700 rounded-lg text-xs transition-colors"
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
           >
             <TestTube className="w-3 h-3" />
             Test
@@ -268,9 +268,27 @@ export default function Settings() {
         />
       </section>
 
+      {/* Companies House */}
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+        <h2 className="text-sm font-semibold text-gray-900">
+          Companies House (UK Enrichment)
+        </h2>
+        <Input
+          label="API Key"
+          value={config.companies_house_api_key || ""}
+          onChange={(v) => updateField("companies_house_api_key", v)}
+          placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+          type="password"
+        />
+        <p className="text-xs text-gray-400">
+          Used to enrich UK companies with directors, SIC codes, and company
+          status from Companies House.
+        </p>
+      </section>
+
       {/* Pipeline */}
-      <section className="bg-forge-900/50 rounded-xl border border-forge-800/50 p-4 space-y-3">
-        <h2 className="text-sm font-semibold">Pipeline</h2>
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+        <h2 className="text-sm font-semibold text-gray-900">Pipeline</h2>
         <Input
           label="Schedule Time"
           value={config.schedule_time || ""}
@@ -290,10 +308,16 @@ export default function Settings() {
           placeholder="60"
         />
         <Input
+          label="Categories per Run"
+          value={config.categories_per_run || ""}
+          onChange={(v) => updateField("categories_per_run", v)}
+          placeholder="8"
+        />
+        <Input
           label="Target Countries (JSON)"
           value={config.target_countries || ""}
           onChange={(v) => updateField("target_countries", v)}
-          placeholder='["DE","FR","NL","BE","IT"]'
+          placeholder='["DE","FR","NL","BE","IT","GB"]'
         />
       </section>
     </div>
@@ -315,13 +339,13 @@ function Input({
 }) {
   return (
     <div>
-      <label className="block text-xs text-forge-400 mb-1">{label}</label>
+      <label className="block text-xs text-gray-500 mb-1">{label}</label>
       <input
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full px-3 py-2 bg-forge-950/50 border border-forge-800/50 rounded-lg text-sm text-white placeholder-forge-600 focus:outline-none focus:border-forge-500 transition-colors"
+        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-forge-500 focus:border-forge-500 transition-colors"
       />
     </div>
   );

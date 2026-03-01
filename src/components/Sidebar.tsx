@@ -66,15 +66,15 @@ export default function Sidebar() {
         : "Ollama offline";
 
   return (
-    <aside className="w-56 bg-forge-900/50 border-r border-forge-800/50 flex flex-col">
-      <div className="p-4 border-b border-forge-800/50">
+    <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">
+      <div className="p-4 border-b border-gray-200">
         <div className="flex items-center gap-2">
-          <Moon className="w-5 h-5 text-forge-400" />
+          <Moon className="w-5 h-5 text-forge-600" />
           <div>
-            <h1 className="text-sm font-semibold text-white">
+            <h1 className="text-sm font-semibold text-gray-900">
               Forge Nightshift
             </h1>
-            <p className="text-[10px] text-forge-400">v0.1.0</p>
+            <p className="text-[10px] text-gray-400">v0.1.0</p>
           </div>
         </div>
       </div>
@@ -88,8 +88,8 @@ export default function Sidebar() {
             className={({ isActive }) =>
               `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
                 isActive
-                  ? "bg-forge-700/50 text-white"
-                  : "text-forge-300 hover:bg-forge-800/50 hover:text-white"
+                  ? "bg-forge-50 text-forge-700 font-medium"
+                  : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
               }`
             }
           >
@@ -99,10 +99,10 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      <div className="p-3 border-t border-forge-800/50">
+      <div className="p-3 border-t border-gray-200">
         <div className="flex items-center gap-2">
           <div className={`w-2 h-2 rounded-full ${statusColor}`} />
-          <span className="text-xs text-forge-400">{statusText}</span>
+          <span className="text-xs text-gray-500">{statusText}</span>
         </div>
       </div>
     </aside>

@@ -23,6 +23,7 @@ impl Database {
     fn run_migrations(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(include_str!("migrations/001_initial.sql"))?;
+        conn.execute_batch(include_str!("migrations/002_category_coverage.sql"))?;
         Ok(())
     }
 
@@ -365,5 +366,70 @@ impl Database {
             [resend_id, id],
         )?;
         Ok(())
+    }
+
+    /// Get category coverage for a country, sorted by companies_found ASC (least covered first)
+    pub fn get_category_coverage(&self, country: &str) -> Result<Vec<(String, i64, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT category_id, searches_run, companies_found FROM category_coverage WHERE country = ?1 ORDER BY companies_found ASC"
+        )?;
+        let rows = stmt
+            .query_map([country], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Increment category coverage counters after a batch search
+    pub fn increment_category_coverage(&self, category_id: &str, country: &str, new_companies: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO category_coverage (id, category_id, country, searches_run, companies_found, last_searched_at) \
+             VALUES (?1, ?2, ?3, 1, ?4, datetime('now')) \
+             ON CONFLICT(category_id, country) DO UPDATE SET \
+             searches_run = searches_run + 1, \
+             companies_found = companies_found + excluded.companies_found, \
+             last_searched_at = datetime('now')",
+            rusqlite::params![id, category_id, country, new_companies],
+        )?;
+        Ok(())
+    }
+
+    /// Get companies by list of IDs
+    pub fn get_companies_by_ids(&self, ids: &[String]) -> Result<Vec<Value>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let conn = self.conn.lock().unwrap();
+        let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+        let query = format!(
+            "SELECT * FROM companies WHERE id IN ({}) ORDER BY created_at DESC",
+            placeholders.join(",")
+        );
+        let mut stmt = conn.prepare(&query)?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+
+        let rows: Vec<Value> = stmt
+            .query_map(params.as_slice(), |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: Option<String> = row.get(i).unwrap_or(None);
+                    obj.insert(col.clone(), val.map(|v| json!(v)).unwrap_or(json!(null)));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(rows)
     }
 }

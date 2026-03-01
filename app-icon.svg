@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e1b4b;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#312e81;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="moon" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#fbbf24;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f59e0b;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="anvil" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#94a3b8;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#64748b;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="512" cy="512" r="480" fill="url(#bg)" />
+
+  <!-- Stars -->
+  <circle cx="200" cy="250" r="4" fill="#e2e8f0" opacity="0.8" />
+  <circle cx="750" cy="180" r="3" fill="#e2e8f0" opacity="0.6" />
+  <circle cx="820" cy="320" r="5" fill="#e2e8f0" opacity="0.7" />
+  <circle cx="160" cy="400" r="3" fill="#e2e8f0" opacity="0.5" />
+  <circle cx="300" cy="150" r="3" fill="#e2e8f0" opacity="0.7" />
+  <circle cx="680" cy="240" r="4" fill="#e2e8f0" opacity="0.6" />
+
+  <!-- Crescent moon -->
+  <circle cx="440" cy="300" r="180" fill="url(#moon)" />
+  <circle cx="520" cy="260" r="150" fill="url(#bg)" />
+
+  <!-- Anvil body -->
+  <path d="M 300 620
+           L 320 560
+           L 380 540
+           L 380 520
+           L 420 500
+           L 620 500
+           L 660 520
+           L 700 520
+           L 740 540
+           L 740 560
+           L 760 620
+           L 780 680
+           L 280 680
+           Z"
+        fill="url(#anvil)" />
+
+  <!-- Anvil top surface highlight -->
+  <path d="M 380 540
+           L 380 520
+           L 420 500
+           L 620 500
+           L 660 520
+           L 700 520
+           L 740 540
+           L 380 540 Z"
+        fill="#cbd5e1" />
+
+  <!-- Anvil horn (left) -->
+  <path d="M 320 560
+           L 250 570
+           L 240 590
+           L 280 600
+           L 300 620
+           L 320 560 Z"
+        fill="#94a3b8" />
+
+  <!-- Anvil base -->
+  <rect x="280" y="680" width="500" height="40" rx="8" fill="#475569" />
+
+  <!-- Gear behind anvil -->
+  <g transform="translate(640, 480)" fill="none" stroke="#818cf8" stroke-width="8" opacity="0.4">
+    <circle r="60" />
+    <line x1="0" y1="-70" x2="0" y2="-50" />
+    <line x1="0" y1="50" x2="0" y2="70" />
+    <line x1="-70" y1="0" x2="-50" y2="0" />
+    <line x1="50" y1="0" x2="70" y2="0" />
+    <line x1="-49" y1="-49" x2="-35" y2="-35" />
+    <line x1="35" y1="-35" x2="49" y2="-49" />
+    <line x1="-49" y1="49" x2="-35" y2="35" />
+    <line x1="35" y1="35" x2="49" y2="49" />
+  </g>
+
+  <!-- Small sparks from anvil -->
+  <circle cx="500" cy="490" r="6" fill="#fbbf24" opacity="0.9" />
+  <circle cx="480" cy="475" r="4" fill="#fbbf24" opacity="0.7" />
+  <circle cx="520" cy="480" r="5" fill="#f97316" opacity="0.8" />
+  <circle cx="510" cy="465" r="3" fill="#fbbf24" opacity="0.6" />
+</svg>

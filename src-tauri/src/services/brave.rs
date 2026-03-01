@@ -27,6 +27,45 @@ struct BraveResult {
     description: String,
 }
 
+pub struct SearchCategory {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub keywords: &'static [&'static str],
+}
+
+pub const CATEGORIES: &[SearchCategory] = &[
+    SearchCategory { id: "cnc_machining", name: "CNC Machining", keywords: &["CNC machining", "precision turned parts", "5-axis milling"] },
+    SearchCategory { id: "cnc_aerospace", name: "CNC Machining - Aerospace", keywords: &["aerospace machining", "AS9100 CNC", "flight-critical parts"] },
+    SearchCategory { id: "sheet_metal", name: "Sheet Metal Fabrication", keywords: &["sheet metal fabrication", "laser cutting service", "metal forming"] },
+    SearchCategory { id: "injection_molding", name: "Injection Molding & Plastics", keywords: &["injection moulding", "rubber molding", "plastic parts manufacturer"] },
+    SearchCategory { id: "casting_forging", name: "Casting & Forging", keywords: &["investment casting", "die casting", "forging foundry"] },
+    SearchCategory { id: "3d_printing", name: "3D Printing & Additive Mfg", keywords: &["3D printing service", "additive manufacturing", "SLS DMLS printing"] },
+    SearchCategory { id: "electronics", name: "Electronics Manufacturing", keywords: &["PCB assembly", "EMS contract electronics", "electronic manufacturing"] },
+    SearchCategory { id: "composites", name: "Composites & Advanced Materials", keywords: &["carbon fibre manufacturer", "GFRP CFRP composites", "composite parts"] },
+    SearchCategory { id: "welding_steel", name: "Welding & Structural Steel", keywords: &["welding fabrication", "structural steel", "metal stamping"] },
+    SearchCategory { id: "springs_fasteners", name: "Springs, Fasteners & Gears", keywords: &["spring manufacturer", "precision gears", "custom fasteners"] },
+    SearchCategory { id: "surface_treatment", name: "Surface Treatment & Finishing", keywords: &["anodising plating", "heat treatment service", "powder coating"] },
+    SearchCategory { id: "contract_assembly", name: "Assembly & Contract Manufacturing", keywords: &["contract assembly", "turnkey manufacturing", "box build assembly"] },
+    SearchCategory { id: "optics_photonics", name: "Precision Optics & Photonics", keywords: &["optical components manufacturer", "photonics company", "precision lens sensor"] },
+    SearchCategory { id: "hydraulics", name: "Hydraulics & Pneumatics", keywords: &["hydraulic systems", "pneumatic actuators", "fluid power"] },
+    SearchCategory { id: "motors_drives", name: "Motors, Drives & Power Electronics", keywords: &["electric motors manufacturer", "servo drives", "VFD power electronics"] },
+    SearchCategory { id: "bearings_motion", name: "Bearings & Linear Motion", keywords: &["bearings manufacturer", "linear guides", "motion control seals"] },
+    SearchCategory { id: "process_vessels", name: "Process Vessels & Pharma Equipment", keywords: &["stainless vessels", "pharma equipment manufacturer", "GMP tanks"] },
+    SearchCategory { id: "valves_pumps", name: "Valves, Pumps & Flow Control", keywords: &["industrial valves", "pumps manufacturer", "filtration systems"] },
+    SearchCategory { id: "automation_robotics", name: "Automation & Robotics Integration", keywords: &["automation systems integrator", "robot integrator PLC", "control panels"] },
+    SearchCategory { id: "connectors_cabling", name: "Connectors, Cabling & Magnetics", keywords: &["electrical connectors", "HV cable manufacturer", "transformers magnetics"] },
+    SearchCategory { id: "battery_energy", name: "Battery & Energy Components", keywords: &["battery components", "energy storage manufacturer", "renewable equipment"] },
+    SearchCategory { id: "ceramics_glass", name: "Ceramics, Glass & Specialty Coatings", keywords: &["advanced ceramics", "industrial glass manufacturer", "specialty coatings"] },
+    SearchCategory { id: "thermal_management", name: "Thermal Management & Heat Exchangers", keywords: &["heat exchangers manufacturer", "cooling systems", "thermal management"] },
+    SearchCategory { id: "testing_ndt", name: "Testing, Inspection & NDT", keywords: &["NDT services", "environmental testing", "metrology CMM"] },
+    SearchCategory { id: "ai_compute", name: "AI Infrastructure & Compute Hardware", keywords: &["AI chip manufacturer", "compute hardware", "AI inference hardware"] },
+    SearchCategory { id: "quantum", name: "Quantum Computing & Technology", keywords: &["quantum computing company", "quantum sensor", "cryogenics equipment"] },
+    SearchCategory { id: "robotics_autonomous", name: "Robotics & Autonomous Systems", keywords: &["robotics company", "cobot manufacturer", "AMR autonomous robot"] },
+    SearchCategory { id: "cleantech", name: "Cleantech & Energy Hardware", keywords: &["cleantech manufacturer", "solar panel manufacturer", "wind turbine electrolyzer"] },
+    SearchCategory { id: "space_tech", name: "Space Technology & Satellites", keywords: &["satellite manufacturer", "space components", "launch technology"] },
+    SearchCategory { id: "toolmaking", name: "Toolmaking & Mould Making", keywords: &["toolmaker", "mould maker", "die manufacturer jig fixture"] },
+];
+
 pub async fn test_connection(api_key: &str) -> Result<bool> {
     let client = reqwest::Client::new();
     let resp = client
@@ -79,29 +118,48 @@ pub async fn search(api_key: &str, query: &str, country: &str, count: u32) -> Re
     Ok(results)
 }
 
-/// Generate search queries for a given country and manufacturing specialty
-pub fn generate_queries(country: &str, specialties: &[&str]) -> Vec<String> {
-    let country_names = match country {
+fn country_names(country: &str) -> Vec<&'static str> {
+    match country {
         "DE" => vec!["Germany", "Deutschland"],
         "FR" => vec!["France"],
         "NL" => vec!["Netherlands", "Nederland"],
-        "BE" => vec!["Belgium", "België"],
+        "BE" => vec!["Belgium"],
         "IT" => vec!["Italy", "Italia"],
-        _ => vec![country],
-    };
+        "GB" | "UK" => vec!["UK", "United Kingdom", "Britain"],
+        _ => vec![],
+    }
+}
+
+/// Generate search queries for a given country and category.
+/// Returns Vec<(query_string, category_id)>.
+pub fn generate_queries_for_category(country: &str, category: &SearchCategory) -> Vec<(String, String)> {
+    let names = country_names(country);
+    if names.is_empty() {
+        return vec![];
+    }
 
     let mut queries = Vec::new();
-    for country_name in &country_names {
-        for specialty in specialties {
-            queries.push(format!(
-                "{} manufacturer {} precision engineering",
-                specialty, country_name
-            ));
-            queries.push(format!(
-                "{} CNC machining company {}",
-                country_name, specialty
-            ));
-        }
+    let cat_id = category.id.to_string();
+
+    // Use first country name for primary queries
+    let primary = names[0];
+
+    for keyword in category.keywords {
+        queries.push((
+            format!("{} manufacturer {}", keyword, primary),
+            cat_id.clone(),
+        ));
     }
+
+    // If there's an alternate name, add one extra query with it
+    if names.len() > 1 {
+        let alt = names[1];
+        queries.push((
+            format!("{} company {}", category.keywords[0], alt),
+            cat_id.clone(),
+        ));
+    }
+
     queries
 }
+

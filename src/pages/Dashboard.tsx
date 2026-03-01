@@ -77,8 +77,6 @@ export default function Dashboard() {
         "research",
         "enrich",
         "push",
-        "outreach",
-        "report",
       ]);
     } catch (e) {
       setError(String(e));
@@ -115,8 +113,8 @@ export default function Dashboard() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Dashboard</h1>
-          <p className="text-sm text-forge-400 mt-1">
+          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+          <p className="text-sm text-gray-500 mt-1">
             Overnight pipeline status & controls
           </p>
         </div>
@@ -126,7 +124,7 @@ export default function Dashboard() {
             <button
               onClick={handleStopPipeline}
               disabled={pipeline.cancelling}
-              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
             >
               <Square className="w-4 h-4" />
               {pipeline.cancelling ? "Stopping..." : "Stop Pipeline"}
@@ -134,7 +132,7 @@ export default function Dashboard() {
           ) : (
             <button
               onClick={handleStartPipeline}
-              className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 rounded-lg text-sm font-medium transition-colors"
+              className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 rounded-lg text-sm font-medium text-white transition-colors"
             >
               <Play className="w-4 h-4" />
               Start Pipeline
@@ -144,7 +142,7 @@ export default function Dashboard() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 p-3 bg-red-900/30 border border-red-800/50 rounded-lg text-sm text-red-300">
+        <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
           <AlertCircle className="w-4 h-4 shrink-0" />
           {error}
         </div>
@@ -152,9 +150,9 @@ export default function Dashboard() {
 
       {/* Pipeline status banner */}
       {pipeline.running && (
-        <div className="flex items-center gap-3 p-4 bg-forge-700/30 border border-forge-600/50 rounded-xl">
+        <div className="flex items-center gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl">
           <div className="w-3 h-3 rounded-full bg-orange-500 animate-pulse" />
-          <span className="text-sm font-medium">Pipeline running...</span>
+          <span className="text-sm font-medium text-gray-700">Pipeline running...</span>
         </div>
       )}
 
@@ -164,37 +162,37 @@ export default function Dashboard() {
           label="Companies Found"
           value={getStatCount(companiesData)}
           icon={Building2}
-          color="text-blue-400"
+          color="text-blue-600"
         />
         <StatCard
           label="Enriched"
           value={getStatCount(companiesData, "enriched")}
           icon={Search}
-          color="text-purple-400"
+          color="text-purple-600"
         />
         <StatCard
           label="Pushed to ForgeOS"
           value={getStatCount(companiesData, "pushed")}
           icon={Upload}
-          color="text-green-400"
+          color="text-green-600"
         />
         <StatCard
           label="Emails Sent"
           value={getStatCount(emailsData, "sent")}
           icon={Mail}
-          color="text-orange-400"
+          color="text-orange-600"
         />
       </div>
 
       {/* Recent activity */}
-      <div className="bg-forge-900/50 rounded-xl border border-forge-800/50">
-        <div className="flex items-center gap-2 p-4 border-b border-forge-800/50">
-          <Activity className="w-4 h-4 text-forge-400" />
-          <h2 className="text-sm font-semibold">Recent Activity</h2>
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+        <div className="flex items-center gap-2 p-4 border-b border-gray-200">
+          <Activity className="w-4 h-4 text-gray-400" />
+          <h2 className="text-sm font-semibold text-gray-900">Recent Activity</h2>
         </div>
-        <div className="divide-y divide-forge-800/30 max-h-80 overflow-y-auto">
+        <div className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
           {logs.length === 0 ? (
-            <div className="p-8 text-center text-forge-500 text-sm">
+            <div className="p-8 text-center text-gray-400 text-sm">
               No activity yet. Start a pipeline run to begin discovering
               companies.
             </div>
@@ -211,10 +209,10 @@ export default function Dashboard() {
                   }`}
                 />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-forge-200 truncate">
+                  <p className="text-sm text-gray-700 truncate">
                     {String(log.message || "")}
                   </p>
-                  <p className="text-xs text-forge-500 mt-0.5">
+                  <p className="text-xs text-gray-400 mt-0.5">
                     {String(log.stage || "")} &middot;{" "}
                     {String(log.created_at || "")}
                   </p>

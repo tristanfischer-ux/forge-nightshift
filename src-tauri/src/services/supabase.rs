@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 pub async fn test_connection(url: &str, service_key: &str) -> Result<bool> {
     let client = reqwest::Client::new();
@@ -125,6 +126,77 @@ pub async fn push_listing(
         .to_string();
 
     Ok(id)
+}
+
+/// Fetch all known domains from ForgeOS marketplace_listings.
+/// Paginates through the table extracting website_url domains.
+/// Returns a HashSet for O(1) dedup lookups.
+pub async fn fetch_all_known_domains(url: &str, service_key: &str) -> Result<HashSet<String>> {
+    let client = reqwest::Client::new();
+    let mut domains = HashSet::new();
+    let page_size = 1000;
+    let mut offset = 0;
+
+    loop {
+        let resp = client
+            .get(format!("{}/rest/v1/marketplace_listings", url))
+            .header("apikey", service_key)
+            .header("Authorization", format!("Bearer {}", service_key))
+            .header("Range", format!("{}-{}", offset, offset + page_size - 1))
+            .query(&[("select", "attributes->>website_url")])
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() && resp.status().as_u16() != 206 {
+            // 206 = partial content (pagination)
+            break;
+        }
+
+        let rows: Vec<Value> = resp.json().await?;
+        if rows.is_empty() {
+            break;
+        }
+
+        let count = rows.len();
+        for row in rows {
+            if let Some(website) = row.get("website_url").and_then(|v| v.as_str()) {
+                if let Some(domain) = extract_domain(website) {
+                    domains.insert(domain);
+                }
+            }
+        }
+
+        if count < page_size as usize {
+            break;
+        }
+        offset += page_size;
+    }
+
+    Ok(domains)
+}
+
+/// Extract domain from a URL string
+fn extract_domain(url_str: &str) -> Option<String> {
+    let url_str = url_str.trim();
+    if url_str.is_empty() {
+        return None;
+    }
+
+    // Add scheme if missing for URL parsing
+    let full = if url_str.starts_with("http://") || url_str.starts_with("https://") {
+        url_str.to_string()
+    } else {
+        format!("https://{}", url_str)
+    };
+
+    // Simple domain extraction
+    full.split("//")
+        .nth(1)
+        .and_then(|s| s.split('/').next())
+        .map(|s| s.split(':').next().unwrap_or(s))
+        .map(|s| s.to_lowercase())
+        .filter(|s| s.contains('.'))
 }
 
 /// Parse a field that might be a JSON string (from SQLite) or already an array
