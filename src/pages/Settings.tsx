@@ -32,8 +32,8 @@ export default function Settings() {
   const [resendStatus, setResendStatus] = useState<TestStatus>("idle");
   const [backingUp, setBackingUp] = useState(false);
   const [backupPath, setBackupPath] = useState<string | null>(null);
-  const [reenriching, setReenriching] = useState(false);
-  const [reenrichResult, setReenrichResult] = useState<string | null>(null);
+  const [reenrichStage, setReenrichStage] = useState<"idle" | "confirm" | "running" | "done" | "error">("idle");
+  const [reenrichCount, setReenrichCount] = useState(0);
 
   useEffect(() => {
     loadConfig();
@@ -124,21 +124,20 @@ export default function Settings() {
   }
 
   async function handleReenrichAll() {
-    if (
-      !confirm(
-        "This will reset ALL enriched, enriching, and error companies back to discovered. They will need to go through the enrichment pipeline again. Continue?"
-      )
-    )
+    if (reenrichStage === "idle" || reenrichStage === "done" || reenrichStage === "error") {
+      setReenrichStage("confirm");
       return;
-    setReenriching(true);
-    setReenrichResult(null);
-    try {
-      const count = await reenrichAll();
-      setReenrichResult(`${count} companies reset to discovered`);
-    } catch {
-      setReenrichResult("error");
     }
-    setReenriching(false);
+    if (reenrichStage === "confirm") {
+      setReenrichStage("running");
+      try {
+        const count = await reenrichAll();
+        setReenrichCount(count);
+        setReenrichStage("done");
+      } catch {
+        setReenrichStage("error");
+      }
+    }
   }
 
   function StatusIcon({ status }: { status: TestStatus }) {
@@ -367,27 +366,61 @@ export default function Settings() {
           placeholder='["DE","FR","NL","BE","IT","GB"]'
         />
         <div className="border-t border-gray-100 pt-3">
-          <button
-            onClick={handleReenrichAll}
-            disabled={reenriching}
-            className="flex items-center gap-2 px-4 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-200 disabled:opacity-50 rounded-lg text-sm font-medium text-amber-800 transition-colors"
-          >
-            {reenriching ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <RefreshCw className="w-4 h-4" />
-            )}
-            Re-enrich All Companies
-          </button>
-          {reenrichResult && reenrichResult !== "error" && (
-            <p className="text-xs text-green-600 mt-1.5">{reenrichResult}</p>
+          {reenrichStage === "confirm" && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-2">
+              <p className="text-sm font-medium text-amber-800">
+                This will reset all enriched, enriching, and error companies back to discovered.
+              </p>
+              <p className="text-xs text-amber-600 mt-1">
+                They will need to go through the enrichment pipeline again.
+              </p>
+              <div className="flex gap-2 mt-2.5">
+                <button
+                  onClick={handleReenrichAll}
+                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 rounded-lg text-xs font-medium text-white transition-colors"
+                >
+                  Yes, Reset All
+                </button>
+                <button
+                  onClick={() => setReenrichStage("idle")}
+                  className="px-3 py-1.5 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg text-xs font-medium text-gray-600 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
           )}
-          {reenrichResult === "error" && (
-            <p className="text-xs text-red-600 mt-1.5">Re-enrich reset failed</p>
+          {reenrichStage !== "confirm" && (
+            <button
+              onClick={handleReenrichAll}
+              disabled={reenrichStage === "running"}
+              className="flex items-center gap-2 px-4 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-200 disabled:opacity-50 rounded-lg text-sm font-medium text-amber-800 transition-colors"
+            >
+              {reenrichStage === "running" ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4" />
+              )}
+              {reenrichStage === "running" ? "Resetting..." : "Re-enrich All Companies"}
+            </button>
           )}
-          <p className="text-xs text-gray-400 mt-1.5">
-            Resets enriched, enriching, and error companies back to discovered so they go through the new website-scraping enrichment pipeline.
-          </p>
+          {reenrichStage === "done" && (
+            <p className="text-xs text-green-600 mt-1.5 flex items-center gap-1">
+              <CheckCircle className="w-3.5 h-3.5" />
+              {reenrichCount} companies reset to discovered — run the Enrich pipeline to process them.
+            </p>
+          )}
+          {reenrichStage === "error" && (
+            <p className="text-xs text-red-600 mt-1.5 flex items-center gap-1">
+              <XCircle className="w-3.5 h-3.5" />
+              Re-enrich reset failed
+            </p>
+          )}
+          {reenrichStage === "idle" && (
+            <p className="text-xs text-gray-400 mt-1.5">
+              Resets enriched, enriching, and error companies back to discovered so they go through the new website-scraping enrichment pipeline.
+            </p>
+          )}
         </div>
       </section>
 
