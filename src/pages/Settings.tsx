@@ -6,6 +6,7 @@ import {
   XCircle,
   Loader2,
   HardDrive,
+  RefreshCw,
 } from "lucide-react";
 import {
   getConfig,
@@ -15,6 +16,7 @@ import {
   testSupabaseConnection,
   testResendConnection,
   backupDatabase,
+  reenrichAll,
 } from "../lib/tauri";
 
 type TestStatus = "idle" | "testing" | "success" | "error";
@@ -30,6 +32,8 @@ export default function Settings() {
   const [resendStatus, setResendStatus] = useState<TestStatus>("idle");
   const [backingUp, setBackingUp] = useState(false);
   const [backupPath, setBackupPath] = useState<string | null>(null);
+  const [reenriching, setReenriching] = useState(false);
+  const [reenrichResult, setReenrichResult] = useState<string | null>(null);
 
   useEffect(() => {
     loadConfig();
@@ -117,6 +121,24 @@ export default function Settings() {
       setBackupPath("error");
     }
     setBackingUp(false);
+  }
+
+  async function handleReenrichAll() {
+    if (
+      !confirm(
+        "This will reset ALL enriched, enriching, and error companies back to discovered. They will need to go through the enrichment pipeline again. Continue?"
+      )
+    )
+      return;
+    setReenriching(true);
+    setReenrichResult(null);
+    try {
+      const count = await reenrichAll();
+      setReenrichResult(`${count} companies reset to discovered`);
+    } catch {
+      setReenrichResult("error");
+    }
+    setReenriching(false);
   }
 
   function StatusIcon({ status }: { status: TestStatus }) {
@@ -344,6 +366,29 @@ export default function Settings() {
           onChange={(v) => updateField("target_countries", v)}
           placeholder='["DE","FR","NL","BE","IT","GB"]'
         />
+        <div className="border-t border-gray-100 pt-3">
+          <button
+            onClick={handleReenrichAll}
+            disabled={reenriching}
+            className="flex items-center gap-2 px-4 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-200 disabled:opacity-50 rounded-lg text-sm font-medium text-amber-800 transition-colors"
+          >
+            {reenriching ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4" />
+            )}
+            Re-enrich All Companies
+          </button>
+          {reenrichResult && reenrichResult !== "error" && (
+            <p className="text-xs text-green-600 mt-1.5">{reenrichResult}</p>
+          )}
+          {reenrichResult === "error" && (
+            <p className="text-xs text-red-600 mt-1.5">Re-enrich reset failed</p>
+          )}
+          <p className="text-xs text-gray-400 mt-1.5">
+            Resets enriched, enriching, and error companies back to discovered so they go through the new website-scraping enrichment pipeline.
+          </p>
+        </div>
       </section>
 
       {/* Database */}

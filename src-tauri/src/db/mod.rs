@@ -197,6 +197,26 @@ impl Database {
         Ok(conn.changes() as i64)
     }
 
+    /// Reset enriched, enriching, and error companies back to discovered for re-enrichment.
+    /// Clears all enrichment fields so they go through the full pipeline again.
+    pub fn reset_for_reenrichment(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET \
+             status = 'discovered', \
+             description = NULL, description_original = NULL, snippet_english = NULL, \
+             category = NULL, subcategory = NULL, \
+             specialties = NULL, certifications = NULL, company_size = NULL, \
+             relevance_score = NULL, enrichment_quality = NULL, \
+             contact_name = NULL, contact_email = NULL, contact_title = NULL, \
+             attributes_json = NULL, last_error = NULL, \
+             updated_at = datetime('now') \
+             WHERE status IN ('enriched', 'enriching', 'error')",
+            [],
+        )?;
+        Ok(conn.changes() as i64)
+    }
+
     pub fn get_emails(&self, status: Option<&str>, limit: i64) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
         let (query, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(s) = status {

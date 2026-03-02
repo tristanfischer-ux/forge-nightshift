@@ -156,6 +156,11 @@ fn approve_all_enriched(db: tauri::State<'_, Database>) -> Result<i64, String> {
 }
 
 #[tauri::command]
+fn reenrich_all(db: tauri::State<'_, Database>) -> Result<i64, String> {
+    db.reset_for_reenrichment().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_analytics(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
     db.get_analytics().map_err(|e| e.to_string())
 }
@@ -344,6 +349,7 @@ pub fn run() {
             get_run_log,
             reset_error_companies,
             approve_all_enriched,
+            reenrich_all,
             get_analytics,
             get_companies_filtered,
             refresh_email_statuses,

@@ -24,7 +24,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
 
     let companies = {
         let db: tauri::State<'_, Database> = app.state();
-        db.get_companies(Some("discovered"), 100, 0)?
+        db.get_companies(Some("discovered"), 500, 0)?
     };
 
     let total = companies.len();

@@ -89,6 +89,11 @@ export async function approveAllEnriched() {
   return invoke<number>("approve_all_enriched");
 }
 
+// Re-enrich all companies (reset enriched/enriching/error → discovered)
+export async function reenrichAll() {
+  return invoke<number>("reenrich_all");
+}
+
 // Analytics
 export interface ChartDataPoint {
   name: string;
