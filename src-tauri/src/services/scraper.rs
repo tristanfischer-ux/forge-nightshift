@@ -94,7 +94,8 @@ async fn fetch_html(client: &reqwest::Client, url: &str) -> Result<String> {
 
 /// Strip HTML to plain text: remove script/style blocks, tags, collapse whitespace.
 fn html_to_text(html: &str) -> String {
-    let script_re = Regex::new(r"(?si)<(script|style|noscript|svg)[^>]*>.*?</\1>").unwrap();
+    // No backreferences — Rust regex crate doesn't support \1
+    let script_re = Regex::new(r"(?si)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<noscript[^>]*>.*?</noscript>|<svg[^>]*>.*?</svg>").unwrap();
     let cleaned = script_re.replace_all(html, " ");
 
     let tag_re = Regex::new(r"<[^>]+>").unwrap();
