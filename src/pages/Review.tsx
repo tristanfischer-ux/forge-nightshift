@@ -30,6 +30,7 @@ import {
   Search,
   Undo2,
   StopCircle,
+  Trash2,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -44,6 +45,8 @@ import {
   approveAllEnriched,
   importForAudit,
   pushSingleCompany,
+  removeFromMarketplace,
+  removeAllFromMarketplace,
 } from "../lib/tauri";
 
 const COUNTRIES: Record<string, string> = {
@@ -147,6 +150,8 @@ export default function Review() {
   } | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [pushing, setPushing] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [removingAll, setRemovingAll] = useState(false);
   const [auditing, setAuditing] = useState(false);
   const [auditResult, setAuditResult] = useState<{
     fetched: number;
@@ -290,6 +295,44 @@ export default function Review() {
       alert(String(e));
     } finally {
       setPushing(null);
+    }
+  }
+
+  async function handleRemoveFromMarketplace(id: string) {
+    if (!confirm("Remove this company from the ForgeOS marketplace? This cannot be undone.")) return;
+    try {
+      setRemoving(id);
+      await removeFromMarketplace(id);
+      if (selected && String(selected.id) === id) setSelected(null);
+      loadCompanies(filter);
+      loadCounts();
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setRemoving(null);
+    }
+  }
+
+  async function handleRemoveAllFromMarketplace() {
+    const ids = companies
+      .filter((c) => Boolean(c.supabase_listing_id))
+      .map((c) => String(c.id));
+    if (ids.length === 0) {
+      alert("No companies with marketplace listings to remove.");
+      return;
+    }
+    if (!confirm(`Remove ${ids.length} companies from the ForgeOS marketplace? This cannot be undone.`)) return;
+    try {
+      setRemovingAll(true);
+      const result = await removeAllFromMarketplace(ids);
+      alert(`Removed ${result.removed} listings from marketplace${result.errors > 0 ? ` (${result.errors} errors)` : ""}`);
+      setSelected(null);
+      loadCompanies(filter);
+      loadCounts();
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setRemovingAll(false);
     }
   }
 
@@ -455,22 +498,42 @@ export default function Review() {
             </button>
           )}
           {filter === "discovered" && companies.length > 0 && (
-            <button
-              onClick={handleRunEnrich}
-              disabled={enriching}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
-                enriching
-                  ? "bg-forge-400 cursor-not-allowed"
-                  : "bg-forge-600 hover:bg-forge-700"
-              }`}
-            >
-              {enriching ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
-              ) : (
-                <Play className="w-4 h-4" />
+            <>
+              <button
+                onClick={handleRunEnrich}
+                disabled={enriching}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
+                  enriching
+                    ? "bg-forge-400 cursor-not-allowed"
+                    : "bg-forge-600 hover:bg-forge-700"
+                }`}
+              >
+                {enriching ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Play className="w-4 h-4" />
+                )}
+                {enriching ? "Enriching..." : "Enrich All"}
+              </button>
+              {companies.some((c) => Boolean(c.supabase_listing_id)) && (
+                <button
+                  onClick={handleRemoveAllFromMarketplace}
+                  disabled={removingAll}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
+                    removingAll
+                      ? "bg-red-400 cursor-not-allowed"
+                      : "bg-red-600 hover:bg-red-700"
+                  }`}
+                >
+                  {removingAll ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" />
+                  )}
+                  {removingAll ? "Removing..." : "Remove All from Marketplace"}
+                </button>
               )}
-              {enriching ? "Enriching..." : "Enrich All"}
-            </button>
+            </>
           )}
           {filter === "error" && companies.length > 0 && (
             <button
@@ -701,6 +764,23 @@ export default function Review() {
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           ) : (
                             <ArrowUpCircle className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      )}
+                      {Boolean(company.supabase_listing_id) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveFromMarketplace(String(company.id));
+                          }}
+                          disabled={removing === String(company.id)}
+                          className="p-1 rounded hover:bg-red-100 text-red-500 transition-colors"
+                          title="Remove from Marketplace"
+                        >
+                          {removing === String(company.id) ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
                           )}
                         </button>
                       )}
@@ -1286,6 +1366,24 @@ export default function Review() {
                       Un-approve
                     </button>
                   </>
+                )}
+                {Boolean(selected.supabase_listing_id) && (
+                  <button
+                    onClick={() => handleRemoveFromMarketplace(String(selected.id))}
+                    disabled={removing === String(selected.id)}
+                    className={`flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
+                      removing === String(selected.id)
+                        ? "bg-red-400 cursor-not-allowed"
+                        : "bg-red-600 hover:bg-red-700"
+                    }`}
+                  >
+                    {removing === String(selected.id) ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" />
+                    )}
+                    {removing === String(selected.id) ? "Removing..." : "Remove from Marketplace"}
+                  </button>
                 )}
               </div>
             </div>

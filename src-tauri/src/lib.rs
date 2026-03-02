@@ -478,6 +478,94 @@ async fn push_single_company(
     Ok(serde_json::json!({ "pushed": true, "name": name }))
 }
 
+/// Remove a company from the ForgeOS marketplace and delete it locally.
+/// Requires the company to have a supabase_listing_id (i.e. it was imported via audit or pushed).
+#[tauri::command]
+async fn remove_from_marketplace(
+    db: tauri::State<'_, Database>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let config = db.get_all_config().map_err(|e| e.to_string())?;
+    let supabase_url = config.get("supabase_url").and_then(|v| v.as_str()).unwrap_or("");
+    let supabase_key = config.get("supabase_service_key").and_then(|v| v.as_str()).unwrap_or("");
+
+    if supabase_url.is_empty() || supabase_key.is_empty() {
+        return Err("Supabase credentials not configured".to_string());
+    }
+
+    let company = db.get_company(&id).map_err(|e| e.to_string())?;
+    let name = company.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let listing_id = company
+        .get("supabase_listing_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
+    match listing_id {
+        Some(lid) => {
+            services::supabase::delete_listing(supabase_url, supabase_key, lid)
+                .await
+                .map_err(|e| format!("Failed to delete '{}' from marketplace: {}", name, e))?;
+        }
+        None => {
+            return Err(format!("'{}' has no Supabase listing ID — not in marketplace", name));
+        }
+    }
+
+    // Remove from local DB too
+    db.delete_company(&id).map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({ "removed": true, "name": name }))
+}
+
+/// Bulk remove all audit-imported companies from the marketplace.
+#[tauri::command]
+async fn remove_all_from_marketplace(
+    db: tauri::State<'_, Database>,
+    company_ids: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let config = db.get_all_config().map_err(|e| e.to_string())?;
+    let supabase_url = config.get("supabase_url").and_then(|v| v.as_str()).unwrap_or("");
+    let supabase_key = config.get("supabase_service_key").and_then(|v| v.as_str()).unwrap_or("");
+
+    if supabase_url.is_empty() || supabase_key.is_empty() {
+        return Err("Supabase credentials not configured".to_string());
+    }
+
+    let mut removed = 0i64;
+    let mut errors = 0i64;
+
+    for id in &company_ids {
+        let company = match db.get_company(id) {
+            Ok(c) => c,
+            Err(_) => { errors += 1; continue; }
+        };
+
+        let listing_id = company
+            .get("supabase_listing_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+
+        if let Some(lid) = listing_id {
+            match services::supabase::delete_listing(supabase_url, supabase_key, lid).await {
+                Ok(()) => {
+                    let _ = db.delete_company(id);
+                    removed += 1;
+                }
+                Err(_) => { errors += 1; }
+            }
+        } else {
+            // No listing ID — just delete locally
+            let _ = db.delete_company(id);
+            removed += 1;
+        }
+    }
+
+    Ok(serde_json::json!({
+        "removed": removed,
+        "errors": errors,
+    }))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -553,6 +641,8 @@ pub fn run() {
             backup_database,
             import_for_audit,
             push_single_company,
+            remove_from_marketplace,
+            remove_all_from_marketplace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

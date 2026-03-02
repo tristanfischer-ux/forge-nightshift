@@ -149,6 +149,22 @@ export async function importForAudit(threshold?: number) {
   );
 }
 
+// Remove a single company from ForgeOS marketplace and local DB
+export async function removeFromMarketplace(id: string) {
+  return invoke<{ removed: boolean; name: string }>(
+    "remove_from_marketplace",
+    { id }
+  );
+}
+
+// Bulk remove companies from ForgeOS marketplace
+export async function removeAllFromMarketplace(companyIds: string[]) {
+  return invoke<{ removed: number; errors: number }>(
+    "remove_all_from_marketplace",
+    { companyIds }
+  );
+}
+
 // Push a single company to ForgeOS
 export async function pushSingleCompany(id: string) {
   return invoke<{ pushed: boolean; name: string }>("push_single_company", {

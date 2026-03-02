@@ -159,6 +159,12 @@ impl Database {
         Ok(row)
     }
 
+    pub fn delete_company(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM companies WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     pub fn update_company_status(&self, id: &str, status: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(

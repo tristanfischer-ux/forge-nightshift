@@ -328,7 +328,6 @@ pub async fn fetch_low_quality_listings(
     let mut query_params: Vec<(&str, String)> = vec![
         ("select", "*".to_string()),
         ("data_quality_score", format!("lt.{}", threshold)),
-        ("website_url", "not.is.null".to_string()),
         ("order", "data_quality_score.asc".to_string()),
         ("limit", "200".to_string()),
     ];
@@ -393,6 +392,29 @@ fn parse_json_field(company: &Value, field: &str) -> Value {
         }
     }
     json!([])
+}
+
+/// Delete a listing from ForgeOS marketplace_listings by ID.
+pub async fn delete_listing(url: &str, service_key: &str, listing_id: &str) -> Result<()> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .delete(format!(
+            "{}/rest/v1/marketplace_listings?id=eq.{}",
+            url, listing_id
+        ))
+        .header("apikey", service_key)
+        .header("Authorization", format!("Bearer {}", service_key))
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Supabase delete error {}: {}", status, body);
+    }
+
+    Ok(())
 }
 
 /// Parse a JSONB array field directly from an already-parsed attributes object
