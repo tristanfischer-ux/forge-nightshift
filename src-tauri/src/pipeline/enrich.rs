@@ -149,7 +149,7 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
             ollama_url,
             enrich_model,
             &enrich_prompt,
-            false,
+            true,
         )
         .await
         {
@@ -216,7 +216,7 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
             "founded_year": enriched.get("founded_year"),
             "employee_count_exact": enriched.get("employee_count_exact"),
             "key_people": enriched.get("key_people").unwrap_or(&json!([])),
-            "nightshift_score": enriched.get("relevance_score").and_then(|v| v.as_i64()).unwrap_or(0),
+            "nightshift_score": enriched.get("relevance_score").and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)).or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))).unwrap_or(0),
             // New v2 fields
             "products": enriched.get("products").unwrap_or(&json!([])),
             "lead_time": enriched.get("lead_time"),
@@ -535,10 +535,14 @@ fn validate_enrichment(enriched: &mut Value) -> Option<String> {
         }
     }
 
-    // Reject if relevance_score < 20
+    // Reject if relevance_score < 20 (handle both numeric and string-typed scores)
     let relevance = enriched
         .get("relevance_score")
-        .and_then(|v| v.as_i64())
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_f64().map(|f| f as i64))
+                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+        })
         .unwrap_or(0);
     if relevance < 20 {
         return Some(format!("relevance_score {} < 20", relevance));
