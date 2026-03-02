@@ -4,6 +4,26 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+/// Convert a rusqlite Value to a serde_json Value, handling all SQLite types.
+fn sqlite_to_json(val: rusqlite::types::Value) -> Value {
+    match val {
+        rusqlite::types::Value::Null => Value::Null,
+        rusqlite::types::Value::Integer(i) => json!(i),
+        rusqlite::types::Value::Real(f) => json!(f),
+        rusqlite::types::Value::Text(s) => json!(s),
+        rusqlite::types::Value::Blob(b) => json!(base64_encode(&b)),
+    }
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(data.len() * 4 / 3 + 4);
+    for byte in data {
+        write!(s, "{:02x}", byte).unwrap();
+    }
+    s
+}
+
 pub struct Database {
     conn: Mutex<Connection>,
 }
@@ -111,8 +131,8 @@ impl Database {
             .query_map(params_refs.as_slice(), |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col) in columns.iter().enumerate() {
-                    let val: Option<String> = row.get(i).unwrap_or(None);
-                    obj.insert(col.clone(), val.map(|v| json!(v)).unwrap_or(json!(null)));
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
                 }
                 Ok(Value::Object(obj))
             })?
@@ -130,8 +150,8 @@ impl Database {
         let row = stmt.query_row([id], |row| {
             let mut obj = serde_json::Map::new();
             for (i, col) in columns.iter().enumerate() {
-                let val: Option<String> = row.get(i).unwrap_or(None);
-                obj.insert(col.clone(), val.map(|v| json!(v)).unwrap_or(json!(null)));
+                let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                obj.insert(col.clone(), sqlite_to_json(val));
             }
             Ok(Value::Object(obj))
         })?;
@@ -717,8 +737,8 @@ impl Database {
             .query_map(params_refs.as_slice(), |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col) in columns.iter().enumerate() {
-                    let val: Option<String> = row.get(i).unwrap_or(None);
-                    obj.insert(col.clone(), val.map(|v| json!(v)).unwrap_or(json!(null)));
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
                 }
                 Ok(Value::Object(obj))
             })?
@@ -758,8 +778,8 @@ impl Database {
             .query_map(params.as_slice(), |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col) in columns.iter().enumerate() {
-                    let val: Option<String> = row.get(i).unwrap_or(None);
-                    obj.insert(col.clone(), val.map(|v| json!(v)).unwrap_or(json!(null)));
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
                 }
                 Ok(Value::Object(obj))
             })?

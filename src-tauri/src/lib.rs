@@ -417,6 +417,50 @@ async fn import_for_audit(
     }))
 }
 
+#[tauri::command]
+async fn push_single_company(
+    db: tauri::State<'_, Database>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let config = db.get_all_config().map_err(|e| e.to_string())?;
+    let supabase_url = config.get("supabase_url").and_then(|v| v.as_str()).unwrap_or("");
+    let supabase_key = config.get("supabase_service_key").and_then(|v| v.as_str()).unwrap_or("");
+    let foundry_id = config.get("foundry_id").and_then(|v| v.as_str()).unwrap_or("");
+
+    if supabase_url.is_empty() || supabase_key.is_empty() {
+        return Err("Supabase credentials not configured".to_string());
+    }
+    if foundry_id.is_empty() {
+        return Err("Foundry ID not configured".to_string());
+    }
+
+    let company = db.get_company(&id).map_err(|e| e.to_string())?;
+    let name = company.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let status = company.get("status").and_then(|v| v.as_str()).unwrap_or("");
+
+    if status != "approved" {
+        return Err(format!("Company '{}' is not approved (status: {})", name, status));
+    }
+
+    // Check domain dedup against Supabase
+    let domain = company.get("domain").and_then(|v| v.as_str()).unwrap_or("");
+    if !domain.is_empty() {
+        match services::supabase::check_domain_exists(supabase_url, supabase_key, domain).await {
+            Ok(true) => return Err(format!("'{}' already exists in ForgeOS (domain: {})", name, domain)),
+            Ok(false) => {}
+            Err(e) => log::warn!("Domain check failed for {}: {}", domain, e),
+        }
+    }
+
+    services::supabase::push_listing(supabase_url, supabase_key, foundry_id, &company)
+        .await
+        .map_err(|e| format!("Failed to push '{}': {}", name, e))?;
+
+    db.update_company_status(&id, "pushed").map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({ "pushed": true, "name": name }))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -491,6 +535,7 @@ pub fn run() {
             refresh_email_statuses,
             backup_database,
             import_for_audit,
+            push_single_company,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

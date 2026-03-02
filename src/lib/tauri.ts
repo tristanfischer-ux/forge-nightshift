@@ -149,6 +149,13 @@ export async function importForAudit(threshold?: number) {
   );
 }
 
+// Push a single company to ForgeOS
+export async function pushSingleCompany(id: string) {
+  return invoke<{ pushed: boolean; name: string }>("push_single_company", {
+    id,
+  });
+}
+
 // Event listeners
 export function onPipelineStatus(
   callback: (payload: Record<string, unknown>) => void

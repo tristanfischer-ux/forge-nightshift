@@ -49,8 +49,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         let name = company.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let score = company
             .get("relevance_score")
-            .and_then(|v| v.as_str())
-            .and_then(|v| v.parse::<i64>().ok())
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
             .unwrap_or(0);
 
         if score < threshold {

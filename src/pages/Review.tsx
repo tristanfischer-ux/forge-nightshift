@@ -43,6 +43,7 @@ import {
   getPipelineStatus,
   approveAllEnriched,
   importForAudit,
+  pushSingleCompany,
 } from "../lib/tauri";
 
 const COUNTRIES: Record<string, string> = {
@@ -145,6 +146,7 @@ export default function Review() {
     model: string;
   } | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [pushing, setPushing] = useState<string | null>(null);
   const [auditing, setAuditing] = useState(false);
   const [auditResult, setAuditResult] = useState<{
     fetched: number;
@@ -272,6 +274,22 @@ export default function Review() {
     loadCounts();
     if (selected && String(selected.id) === id) {
       setSelected({ ...selected, status: "enriched" });
+    }
+  }
+
+  async function handlePushSingle(id: string) {
+    try {
+      setPushing(id);
+      await pushSingleCompany(id);
+      loadCompanies(filter);
+      loadCounts();
+      if (selected && String(selected.id) === id) {
+        setSelected({ ...selected, status: "pushed" });
+      }
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setPushing(null);
     }
   }
 
@@ -669,6 +687,23 @@ export default function Review() {
                             </span>
                           </div>
                         )}
+                      {cStatus === "approved" && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePushSingle(String(company.id));
+                          }}
+                          disabled={pushing === String(company.id)}
+                          className="p-1 rounded hover:bg-purple-100 text-purple-600 transition-colors"
+                          title="Push to ForgeOS"
+                        >
+                          {pushing === String(company.id) ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <ArrowUpCircle className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      )}
                       <ChevronRight className="w-4 h-4 text-gray-300" />
                     </div>
                   </div>
@@ -1226,13 +1261,31 @@ export default function Review() {
                   </>
                 )}
                 {status === "approved" && (
-                  <button
-                    onClick={() => handleUnapprove(String(selected.id))}
-                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded-lg text-sm font-medium text-white transition-colors"
-                  >
-                    <Undo2 className="w-4 h-4" />
-                    Un-approve
-                  </button>
+                  <>
+                    <button
+                      onClick={() => handlePushSingle(String(selected.id))}
+                      disabled={pushing === String(selected.id)}
+                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
+                        pushing === String(selected.id)
+                          ? "bg-purple-400 cursor-not-allowed"
+                          : "bg-purple-600 hover:bg-purple-700"
+                      }`}
+                    >
+                      {pushing === String(selected.id) ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <ArrowUpCircle className="w-4 h-4" />
+                      )}
+                      {pushing === String(selected.id) ? "Pushing..." : "Push to ForgeOS"}
+                    </button>
+                    <button
+                      onClick={() => handleUnapprove(String(selected.id))}
+                      className="flex items-center justify-center gap-2 px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded-lg text-sm font-medium text-white transition-colors"
+                    >
+                      <Undo2 className="w-4 h-4" />
+                      Un-approve
+                    </button>
+                  </>
                 )}
               </div>
             </div>
