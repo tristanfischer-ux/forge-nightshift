@@ -5,6 +5,7 @@ import {
   CheckCircle,
   XCircle,
   Loader2,
+  HardDrive,
 } from "lucide-react";
 import {
   getConfig,
@@ -13,6 +14,7 @@ import {
   testBraveConnection,
   testSupabaseConnection,
   testResendConnection,
+  backupDatabase,
 } from "../lib/tauri";
 
 type TestStatus = "idle" | "testing" | "success" | "error";
@@ -26,6 +28,8 @@ export default function Settings() {
   const [braveStatus, setBraveStatus] = useState<TestStatus>("idle");
   const [supabaseStatus, setSupabaseStatus] = useState<TestStatus>("idle");
   const [resendStatus, setResendStatus] = useState<TestStatus>("idle");
+  const [backingUp, setBackingUp] = useState(false);
+  const [backupPath, setBackupPath] = useState<string | null>(null);
 
   useEffect(() => {
     loadConfig();
@@ -101,6 +105,18 @@ export default function Settings() {
     } catch {
       setResendStatus("error");
     }
+  }
+
+  async function handleBackup() {
+    setBackingUp(true);
+    setBackupPath(null);
+    try {
+      const path = await backupDatabase();
+      setBackupPath(path);
+    } catch {
+      setBackupPath("error");
+    }
+    setBackingUp(false);
   }
 
   function StatusIcon({ status }: { status: TestStatus }) {
@@ -300,18 +316,27 @@ export default function Settings() {
           value={config.daily_email_limit || ""}
           onChange={(v) => updateField("daily_email_limit", v)}
           placeholder="30"
+          type="number"
+          min={1}
+          max={500}
         />
         <Input
           label="Relevance Threshold (0-100)"
           value={config.relevance_threshold || ""}
           onChange={(v) => updateField("relevance_threshold", v)}
           placeholder="60"
+          type="number"
+          min={0}
+          max={100}
         />
         <Input
           label="Categories per Run"
           value={config.categories_per_run || ""}
           onChange={(v) => updateField("categories_per_run", v)}
           placeholder="8"
+          type="number"
+          min={1}
+          max={37}
         />
         <Input
           label="Target Countries (JSON)"
@@ -319,6 +344,34 @@ export default function Settings() {
           onChange={(v) => updateField("target_countries", v)}
           placeholder='["DE","FR","NL","BE","IT","GB"]'
         />
+      </section>
+
+      {/* Database */}
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+        <h2 className="text-sm font-semibold text-gray-900">Database</h2>
+        <button
+          onClick={handleBackup}
+          disabled={backingUp}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 rounded-lg text-sm font-medium text-gray-700 transition-colors"
+        >
+          {backingUp ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <HardDrive className="w-4 h-4" />
+          )}
+          Backup Database
+        </button>
+        {backupPath && backupPath !== "error" && (
+          <p className="text-xs text-green-600">
+            Backup saved: {backupPath}
+          </p>
+        )}
+        {backupPath === "error" && (
+          <p className="text-xs text-red-600">Backup failed</p>
+        )}
+        <p className="text-xs text-gray-400">
+          Creates a copy of the database. Backups also run automatically before each pipeline run.
+        </p>
       </section>
     </div>
   );
@@ -330,12 +383,16 @@ function Input({
   onChange,
   placeholder,
   type = "text",
+  min,
+  max,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   type?: string;
+  min?: number;
+  max?: number;
 }) {
   return (
     <div>
@@ -345,6 +402,8 @@ function Input({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        min={min}
+        max={max}
         className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-forge-500 focus:border-forge-500 transition-colors"
       />
     </div>

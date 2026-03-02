@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 const RESEND_API_URL: &str = "https://api.resend.com";
 
@@ -60,4 +61,24 @@ pub async fn send_email(
 
     let send_resp: SendEmailResponse = resp.json().await?;
     Ok(send_resp.id)
+}
+
+/// Poll Resend API for the delivery status of a sent email.
+pub async fn get_email_status(api_key: &str, resend_id: &str) -> Result<Value> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/emails/{}", RESEND_API_URL, resend_id))
+        .header("Authorization", format!("Bearer {}", api_key))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Resend status check error {}: {}", status, body);
+    }
+
+    let body: Value = resp.json().await?;
+    Ok(body)
 }

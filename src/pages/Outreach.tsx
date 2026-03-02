@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Mail, Send, Eye } from "lucide-react";
-import { getEmails, updateEmailStatus } from "../lib/tauri";
+import { Mail, Send, Eye, RefreshCw, Loader2 } from "lucide-react";
+import { getEmails, updateEmailStatus, refreshEmailStatuses } from "../lib/tauri";
 
 const STATUS_COLORS: Record<string, string> = {
   draft: "bg-gray-100 text-gray-600",
@@ -19,6 +19,8 @@ export default function Outreach() {
     string,
     unknown
   > | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshCount, setRefreshCount] = useState<number | null>(null);
 
   useEffect(() => {
     loadEmails();
@@ -38,13 +40,50 @@ export default function Outreach() {
     loadEmails();
   }
 
+  async function handleRefreshStatuses() {
+    setRefreshing(true);
+    setRefreshCount(null);
+    try {
+      const count = await refreshEmailStatuses();
+      setRefreshCount(count);
+      loadEmails();
+    } catch {
+      setRefreshCount(-1);
+    }
+    setRefreshing(false);
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Outreach</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Email drafts, approvals, and send tracking
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Outreach</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Email drafts, approvals, and send tracking
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleRefreshStatuses}
+            disabled={refreshing}
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 rounded-lg text-xs text-gray-700 transition-colors"
+          >
+            {refreshing ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <RefreshCw className="w-3 h-3" />
+            )}
+            Refresh Status
+          </button>
+          {refreshCount !== null && refreshCount >= 0 && (
+            <span className="text-xs text-green-600">
+              {refreshCount} updated
+            </span>
+          )}
+          {refreshCount === -1 && (
+            <span className="text-xs text-red-600">Failed</span>
+          )}
+        </div>
       </div>
 
       <div className="flex gap-4">

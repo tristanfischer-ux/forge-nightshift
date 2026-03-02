@@ -87,6 +87,7 @@ pub async fn test_connection(api_key: &str) -> Result<bool> {
 }
 
 pub async fn search(api_key: &str, query: &str, country: &str, count: u32) -> Result<Vec<SearchResult>> {
+    let search_lang = search_lang_for_country(country);
     let client = reqwest::Client::new();
     let resp = client
         .get(BRAVE_SEARCH_URL)
@@ -95,7 +96,7 @@ pub async fn search(api_key: &str, query: &str, country: &str, count: u32) -> Re
             ("q", query),
             ("count", &count.to_string()),
             ("country", country),
-            ("search_lang", "en"),
+            ("search_lang", search_lang),
         ])
         .timeout(std::time::Duration::from_secs(30))
         .send()
@@ -137,6 +138,43 @@ fn country_names(country: &str) -> Vec<&'static str> {
     }
 }
 
+/// Return the Brave search_lang parameter for a country code.
+fn search_lang_for_country(country: &str) -> &'static str {
+    match country {
+        "DE" => "de",
+        "FR" => "fr",
+        "NL" => "nl",
+        "IT" => "it",
+        "BE" => "fr", // Belgium — French is the more common web language
+        "GB" | "UK" => "en",
+        _ => "en",
+    }
+}
+
+/// Native-language manufacturing terms for non-English countries.
+fn native_terms(country: &str) -> Vec<&'static str> {
+    match country {
+        "DE" => vec!["Hersteller", "Fertigung", "Bearbeitung", "Maschinenbau"],
+        "FR" => vec!["fabricant", "usinage", "fabrication", "mécanique"],
+        "NL" => vec!["fabrikant", "machinefabriek", "metaalbewerking"],
+        "IT" => vec!["produttore", "lavorazione", "fabbricazione", "meccanica"],
+        "BE" => vec!["fabricant", "fabrikant", "usinage", "metaalbewerking"],
+        _ => vec![],
+    }
+}
+
+/// Native country name for query building.
+fn native_country_name(country: &str) -> Option<&'static str> {
+    match country {
+        "DE" => Some("Deutschland"),
+        "FR" => Some("France"),
+        "NL" => Some("Nederland"),
+        "IT" => Some("Italia"),
+        "BE" => Some("België"),
+        _ => None,
+    }
+}
+
 /// Generate search queries for a given country and category.
 /// Returns Vec<(query_string, category_id)>.
 pub fn generate_queries_for_category(country: &str, category: &SearchCategory) -> Vec<(String, String)> {
@@ -167,6 +205,24 @@ pub fn generate_queries_for_category(country: &str, category: &SearchCategory) -
         ));
     }
 
+    // Native-language queries (1-2 per category)
+    let terms = native_terms(country);
+    if let Some(native_name) = native_country_name(country) {
+        if !terms.is_empty() {
+            // Use first keyword's core concept + native manufacturer term + native country
+            queries.push((
+                format!("{} {} {}", category.keywords[0], terms[0], native_name),
+                cat_id.clone(),
+            ));
+            // Second variant if we have enough terms
+            if terms.len() > 1 {
+                queries.push((
+                    format!("{} {} {}", category.keywords[0], terms[1], native_name),
+                    cat_id.clone(),
+                ));
+            }
+        }
+    }
+
     queries
 }
-

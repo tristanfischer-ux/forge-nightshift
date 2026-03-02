@@ -3,3 +3,4 @@ pub mod brave;
 pub mod supabase;
 pub mod resend;
 pub mod companies_house;
+pub mod scraper;

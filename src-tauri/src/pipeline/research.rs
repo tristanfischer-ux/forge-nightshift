@@ -230,13 +230,21 @@ Return ONLY valid JSON."#,
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
 
-                    // Dedup: check Supabase domains first, then local DB
+                    // Dedup: check Supabase domains first, then local DB domain, then name
                     if !domain.is_empty() {
                         if supabase_domains.contains(&domain.to_lowercase()) {
                             continue;
                         }
                         let db: tauri::State<'_, Database> = app.state();
                         if db.domain_exists(domain).unwrap_or(true) {
+                            continue;
+                        }
+                    }
+
+                    // Name-based dedup (catches same company with different domains)
+                    if !name.is_empty() {
+                        let db: tauri::State<'_, Database> = app.state();
+                        if db.name_exists_normalized(name).unwrap_or(false) {
                             continue;
                         }
                     }

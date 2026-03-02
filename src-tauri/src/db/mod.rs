@@ -25,11 +25,16 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(include_str!("migrations/001_initial.sql"))?;
         conn.execute_batch(include_str!("migrations/002_category_coverage.sql"))?;
-        // 003: additive ALTER TABLE — ignore "duplicate column" errors on re-run
-        for stmt in include_str!("migrations/003_translation_fields.sql").split(';') {
-            let stmt = stmt.trim();
-            if !stmt.is_empty() {
-                let _ = conn.execute_batch(stmt);
+        // 003 + 004: additive ALTER TABLE — ignore "duplicate column" errors on re-run
+        for migration in &[
+            include_str!("migrations/003_translation_fields.sql"),
+            include_str!("migrations/004_name_normalized.sql"),
+        ] {
+            for stmt in migration.split(';') {
+                let stmt = stmt.trim();
+                if !stmt.is_empty() {
+                    let _ = conn.execute_batch(stmt);
+                }
             }
         }
         Ok(())
@@ -293,12 +298,14 @@ impl Database {
 
     pub fn insert_company(&self, company: &Value) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
+        let name = company.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let name_normalized = normalize_company_name(name);
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO companies (id, name, website_url, domain, country, city, source, source_url, source_query, raw_snippet, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'discovered')",
+            "INSERT INTO companies (id, name, website_url, domain, country, city, source, source_url, source_query, raw_snippet, name_normalized, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'discovered')",
             rusqlite::params![
                 id,
-                company.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                name,
                 company.get("website_url").and_then(|v| v.as_str()).unwrap_or(""),
                 company.get("domain").and_then(|v| v.as_str()).unwrap_or(""),
                 company.get("country").and_then(|v| v.as_str()).unwrap_or(""),
@@ -307,6 +314,7 @@ impl Database {
                 company.get("source_url").and_then(|v| v.as_str()).unwrap_or(""),
                 company.get("source_query").and_then(|v| v.as_str()).unwrap_or(""),
                 company.get("raw_snippet").and_then(|v| v.as_str()).unwrap_or(""),
+                name_normalized,
             ],
         )?;
         Ok(id)
@@ -317,6 +325,18 @@ impl Database {
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM companies WHERE domain = ?1",
             [domain],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Check if a company name already exists (normalized matching).
+    pub fn name_exists_normalized(&self, name: &str) -> Result<bool> {
+        let normalized = normalize_company_name(name);
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM companies WHERE name_normalized = ?1",
+            [&normalized],
             |row| row.get(0),
         )?;
         Ok(count > 0)
@@ -398,6 +418,41 @@ impl Database {
         Ok(())
     }
 
+    /// Update email tracking fields from Resend polling.
+    pub fn update_email_tracking(&self, id: &str, opened_at: Option<&str>, bounced: bool) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        if bounced {
+            conn.execute(
+                "UPDATE emails SET status = 'bounced', bounced_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1",
+                [id],
+            )?;
+        } else if let Some(opened) = opened_at {
+            conn.execute(
+                "UPDATE emails SET status = 'opened', opened_at = ?1, updated_at = datetime('now') WHERE id = ?2",
+                [opened, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Get sent emails with resend_ids for status polling.
+    pub fn get_sent_emails_for_tracking(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, resend_id FROM emails WHERE resend_id IS NOT NULL AND resend_id != '' AND status IN ('sent', 'opened')"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "resend_id": row.get::<_, String>(1)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
     /// Get category coverage for a country, sorted by companies_found ASC (least covered first)
     pub fn get_category_coverage(&self, country: &str) -> Result<Vec<(String, i64, i64)>> {
         let conn = self.conn.lock().unwrap();
@@ -437,7 +492,6 @@ impl Database {
     pub fn get_analytics(&self) -> Result<Value> {
         let conn = self.conn.lock().unwrap();
 
-        // By subcategory
         let mut stmt = conn.prepare(
             "SELECT subcategory, COUNT(*) as count FROM companies WHERE subcategory IS NOT NULL AND subcategory != '' GROUP BY subcategory ORDER BY count DESC LIMIT 20"
         )?;
@@ -448,7 +502,6 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
 
-        // By country
         let mut stmt = conn.prepare(
             "SELECT country, COUNT(*) as count FROM companies WHERE country IS NOT NULL AND country != '' GROUP BY country ORDER BY count DESC"
         )?;
@@ -459,7 +512,6 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
 
-        // Pipeline funnel
         let mut stmt = conn.prepare(
             "SELECT status, COUNT(*) as count FROM companies GROUP BY status ORDER BY count DESC"
         )?;
@@ -470,7 +522,6 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
 
-        // Parse attributes_json for frequency counts
         let mut stmt = conn.prepare(
             "SELECT attributes_json FROM companies WHERE attributes_json IS NOT NULL AND attributes_json != ''"
         )?;
@@ -626,6 +677,7 @@ impl Database {
     }
 
     /// Get companies by list of IDs
+    #[allow(dead_code)]
     pub fn get_companies_by_ids(&self, ids: &[String]) -> Result<Vec<Value>> {
         if ids.is_empty() {
             return Ok(vec![]);
@@ -654,4 +706,27 @@ impl Database {
 
         Ok(rows)
     }
+
+    /// Backup the database to a file using VACUUM INTO.
+    pub fn backup(&self, backup_path: &std::path::Path) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let path_str = backup_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid backup path"))?;
+        conn.execute_batch(&format!("VACUUM INTO '{}'", path_str.replace('\'', "''")))?;
+        Ok(())
+    }
+}
+
+/// Normalize a company name for dedup: lowercase, strip common legal suffixes, trim.
+fn normalize_company_name(name: &str) -> String {
+    let mut n = name.to_lowercase();
+    for suffix in &[
+        " ltd", " limited", " gmbh", " sas", " bv", " ag", " sa", " srl", " nv", " inc",
+        " llc", " co.", " corp", " corporation", " plc", " s.r.l.", " s.a.", " e.k.",
+        " ohg", " kg", " ug",
+    ] {
+        if n.ends_with(suffix) {
+            n = n[..n.len() - suffix.len()].to_string();
+        }
+    }
+    n.trim().to_string()
 }

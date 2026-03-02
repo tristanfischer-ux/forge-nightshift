@@ -5,14 +5,6 @@ use serde_json::{json, Value};
 const DEFAULT_URL: &str = "http://localhost:11434";
 
 #[derive(Debug, Serialize, Deserialize)]
-struct GenerateRequest {
-    model: String,
-    prompt: String,
-    stream: bool,
-    format: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct GenerateResponse {
     model: String,
     response: String,
@@ -127,20 +119,3 @@ fn clean_json_response(raw: &str) -> String {
     s.to_string()
 }
 
-pub async fn list_models(base_url: &str) -> Result<Vec<String>> {
-    let client = reqwest::Client::new();
-    let url = if base_url.is_empty() {
-        DEFAULT_URL.to_string()
-    } else {
-        base_url.to_string()
-    };
-
-    let resp = client
-        .get(format!("{}/api/tags", url))
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await?;
-
-    let tags: TagsResponse = resp.json().await?;
-    Ok(tags.models.into_iter().map(|m| m.name).collect())
-}

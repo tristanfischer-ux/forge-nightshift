@@ -1,5 +1,7 @@
 use anyhow::Result;
+use futures::stream::{self, StreamExt};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use tauri::{Emitter, Manager};
 
 use crate::db::Database;
@@ -29,6 +31,52 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     let mut enriched_count = 0;
     let mut error_count = 0;
 
+    // Parallel website fetching (5 concurrent) before sequential LLM enrichment
+    {
+        let db: tauri::State<'_, Database> = app.state();
+        let _ = db.log_activity(
+            job_id,
+            "enrich",
+            "info",
+            &format!("Pre-fetching websites for {} companies (5 concurrent)...", total),
+        );
+    }
+
+    let website_texts: HashMap<String, String> = {
+        let fetch_tasks: Vec<(String, String)> = companies
+            .iter()
+            .filter_map(|c| {
+                let id = c.get("id").and_then(|v| v.as_str())?.to_string();
+                let url = c.get("website_url").and_then(|v| v.as_str())?.to_string();
+                if url.is_empty() { None } else { Some((id, url)) }
+            })
+            .collect();
+
+        let results: Vec<(String, Option<String>)> = stream::iter(fetch_tasks)
+            .map(|(id, url)| async move {
+                let text = crate::services::scraper::fetch_website_text(&url).await.ok();
+                (id, text)
+            })
+            .buffer_unordered(5)
+            .collect()
+            .await;
+
+        results
+            .into_iter()
+            .filter_map(|(id, text)| text.map(|t| (id, t)))
+            .collect()
+    };
+
+    {
+        let db: tauri::State<'_, Database> = app.state();
+        let _ = db.log_activity(
+            job_id,
+            "enrich",
+            "info",
+            &format!("Fetched website content for {}/{} companies", website_texts.len(), total),
+        );
+    }
+
     for company in &companies {
         if super::is_cancelled() {
             break;
@@ -56,7 +104,17 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             let _ = db.update_company_status(id, "enriching");
         }
 
-        // LLM enrichment with richer prompt
+        // Build data source section — prefer website content over snippet
+        let website_text = website_texts.get(id);
+        let data_source = if let Some(text) = website_text {
+            format!(
+                "Website content (primary source):\n{}\n\nSearch snippet (secondary): {}",
+                text, snippet
+            )
+        } else {
+            format!("Known info: {}", snippet)
+        };
+
         let enrich_prompt = format!(
             r#"You are analyzing a manufacturing/engineering company for a B2B marketplace.
 Based on the information below, provide a detailed analysis. Return JSON with ALL of these fields:
@@ -84,10 +142,10 @@ IMPORTANT: All text fields (description, subcategory, capabilities, etc.) MUST b
 
 Company: {}
 Website: {}
-Known info: {}
+{}
 
 Return ONLY valid JSON. Do not include any thinking or explanation."#,
-            name, website, snippet
+            name, website, data_source
         );
 
         let response = match crate::services::ollama::generate(
@@ -114,7 +172,7 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
             }
         };
 
-        let enriched: Value = match serde_json::from_str(&response) {
+        let mut enriched: Value = match serde_json::from_str(&response) {
             Ok(v) => v,
             Err(e) => {
                 let truncated: String = response.chars().take(200).collect();
@@ -131,6 +189,20 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
                 continue;
             }
         };
+
+        // Score validation & hallucination guard
+        if let Some(rejected) = validate_enrichment(&mut enriched) {
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(
+                job_id,
+                "enrich",
+                "info",
+                &format!("Rejected {} — {}", name, rejected),
+            );
+            let _ = db.set_company_error(id, &format!("Validation rejected: {}", rejected));
+            error_count += 1;
+            continue;
+        }
 
         // Build attributes_json matching ForgeOS marketplace_listings.attributes
         let mut attributes = json!({
@@ -162,7 +234,6 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
 
             match crate::services::companies_house::enrich_company(ch_api_key, name).await {
                 Ok(Some(ch_data)) => {
-                    // Merge CH fields into attributes
                     if let Some(obj) = ch_data.as_object() {
                         if let Some(attrs) = attributes.as_object_mut() {
                             for (k, v) in obj {
@@ -256,4 +327,107 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
         "companies_enriched": enriched_count,
         "errors": error_count,
     }))
+}
+
+/// Validate and adjust enrichment data. Returns Some(reason) if the enrichment should be rejected.
+fn validate_enrichment(enriched: &mut Value) -> Option<String> {
+    // Clamp relevance_score to 0-100
+    if let Some(score) = enriched.get("relevance_score").and_then(|v| v.as_i64()) {
+        enriched["relevance_score"] = json!(score.clamp(0, 100));
+    }
+
+    // Clamp enrichment_quality to 0-100
+    if let Some(quality) = enriched.get("enrichment_quality").and_then(|v| v.as_i64()) {
+        enriched["enrichment_quality"] = json!(quality.clamp(0, 100));
+    }
+
+    let description = enriched
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // If description is empty or too short, cap quality
+    if description.is_empty() || description.len() < 20 {
+        enriched["enrichment_quality"] = json!(
+            enriched.get("enrichment_quality").and_then(|v| v.as_i64()).unwrap_or(0).min(20)
+        );
+    }
+
+    // If no capabilities AND no key_equipment AND no materials, cap quality
+    let has_capabilities = enriched
+        .get("capabilities")
+        .and_then(|v| v.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    let has_equipment = enriched
+        .get("key_equipment")
+        .and_then(|v| v.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    let has_materials = enriched
+        .get("materials")
+        .and_then(|v| v.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+
+    if !has_capabilities && !has_equipment && !has_materials {
+        enriched["enrichment_quality"] = json!(
+            enriched.get("enrichment_quality").and_then(|v| v.as_i64()).unwrap_or(0).min(30)
+        );
+    }
+
+    // Filter out generic equipment entries (no brand name)
+    if let Some(equipment) = enriched.get("key_equipment").and_then(|v| v.as_array()).cloned() {
+        let generic_terms = ["CNC machine", "lathe", "milling machine", "press", "saw"];
+        let filtered: Vec<Value> = equipment
+            .into_iter()
+            .filter(|item| {
+                if let Some(s) = item.as_str() {
+                    // Keep if it has a digit (model number) or is longer than generic
+                    !generic_terms.iter().any(|g| s.eq_ignore_ascii_case(g))
+                } else {
+                    true
+                }
+            })
+            .collect();
+        enriched["key_equipment"] = json!(filtered);
+    }
+
+    // Validate certification formats — keep only known patterns
+    if let Some(certs) = enriched.get("certifications").and_then(|v| v.as_array()).cloned() {
+        let valid_prefixes = [
+            "ISO", "AS9100", "AS/EN", "IATF", "NADCAP", "CE", "UL", "CSA", "ATEX", "PED",
+            "EN", "BS", "DIN", "JOSCAR", "Cyber Essentials", "SC21", "Fit4Nuclear",
+            "OHSAS", "ASME", "API", "DNV", "Lloyd", "TUV", "TÜV",
+        ];
+        let filtered: Vec<Value> = certs
+            .into_iter()
+            .filter(|item| {
+                if let Some(s) = item.as_str() {
+                    valid_prefixes.iter().any(|p| s.contains(p))
+                } else {
+                    false
+                }
+            })
+            .collect();
+        enriched["certifications"] = json!(filtered);
+    }
+
+    // Validate contact_email
+    if let Some(email) = enriched.get("contact_email").and_then(|v| v.as_str()) {
+        if !email.contains('@') {
+            enriched["contact_email"] = json!(null);
+        }
+    }
+
+    // Reject if relevance_score < 20
+    let relevance = enriched
+        .get("relevance_score")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if relevance < 20 {
+        return Some(format!("relevance_score {} < 20", relevance));
+    }
+
+    None
 }

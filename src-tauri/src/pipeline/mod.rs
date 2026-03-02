@@ -75,6 +75,38 @@ pub fn is_cancelled() -> bool {
 async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> Result<Value> {
     let mut summary = json!({});
 
+    // Auto-backup before pipeline run
+    {
+        let db: tauri::State<'_, Database> = app.state();
+        let app_dir = app
+            .path()
+            .app_data_dir()
+            .unwrap_or_default();
+        let backup_dir = app_dir.join("backups");
+        if std::fs::create_dir_all(&backup_dir).is_ok() {
+            let timestamp = chrono::Local::now().format("%Y-%m-%d_%H%M%S");
+            let backup_path = backup_dir.join(format!("nightshift_backup_{}.db", timestamp));
+            match db.backup(&backup_path) {
+                Ok(_) => {
+                    let _ = db.log_activity(
+                        job_id,
+                        "backup",
+                        "info",
+                        &format!("Auto-backup created: {}", backup_path.display()),
+                    );
+                }
+                Err(e) => {
+                    let _ = db.log_activity(
+                        job_id,
+                        "backup",
+                        "warn",
+                        &format!("Auto-backup failed: {}", e),
+                    );
+                }
+            }
+        }
+    }
+
     let db: tauri::State<'_, Database> = app.state();
     let config = db.get_all_config()?;
 
@@ -128,4 +160,61 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
     }
 
     Ok(summary)
+}
+
+/// Automated scheduler — checks every 60s if schedule_time matches current time.
+pub async fn start_scheduler(app: tauri::AppHandle) {
+    let mut last_run_date = String::new();
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+        // Don't interfere if pipeline is already running
+        if RUNNING.load(Ordering::SeqCst) {
+            continue;
+        }
+
+        let db: tauri::State<'_, Database> = app.state();
+        let config = match db.get_all_config() {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let schedule_time = config
+            .get("schedule_time")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if schedule_time.is_empty() {
+            continue;
+        }
+
+        let now = chrono::Local::now();
+        let current_time = now.format("%H:%M").to_string();
+        let current_date = now.format("%Y-%m-%d").to_string();
+
+        // Match HH:MM and haven't run today
+        if current_time == schedule_time && current_date != last_run_date {
+            last_run_date = current_date;
+            log::info!("Scheduler triggered at {}", current_time);
+
+            let stages = vec![
+                "research".to_string(),
+                "enrich".to_string(),
+                "push".to_string(),
+                "outreach".to_string(),
+                "report".to_string(),
+            ];
+
+            let app_clone = app.clone();
+            match start_pipeline(app_clone, stages).await {
+                Ok(job_id) => {
+                    log::info!("Scheduled pipeline started: {}", job_id);
+                }
+                Err(e) => {
+                    log::error!("Scheduled pipeline failed to start: {}", e);
+                }
+            }
+        }
+    }
 }

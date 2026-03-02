@@ -117,6 +117,9 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                         "pushed": pushed_count,
                     }),
                 );
+
+                // Rate limit between Supabase inserts
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
             Err(e) => {
                 let db: tauri::State<'_, Database> = app.state();

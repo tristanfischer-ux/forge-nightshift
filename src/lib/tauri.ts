@@ -126,6 +126,16 @@ export async function getRunLog(jobId?: string, limit?: number) {
   return invoke<Record<string, unknown>[]>("get_run_log", { jobId, limit });
 }
 
+// Refresh email delivery statuses from Resend
+export async function refreshEmailStatuses() {
+  return invoke<number>("refresh_email_statuses");
+}
+
+// Backup database
+export async function backupDatabase() {
+  return invoke<string>("backup_database");
+}
+
 // Event listeners
 export function onPipelineStatus(
   callback: (payload: Record<string, unknown>) => void
