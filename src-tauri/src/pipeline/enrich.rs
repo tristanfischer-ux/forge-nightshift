@@ -149,7 +149,7 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
             ollama_url,
             enrich_model,
             &enrich_prompt,
-            true,
+            false,
         )
         .await
         {
@@ -172,8 +172,8 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
         let mut enriched: Value = match serde_json::from_str(&response) {
             Ok(v) => v,
             Err(e) => {
-                let truncated: String = response.chars().take(200).collect();
-                let error_msg = format!("JSON parse error: {}. Response start: {}", e, truncated);
+                let truncated: String = response.chars().take(300).collect();
+                let error_msg = format!("JSON parse error: {} (len={}). Response start: {}", e, response.len(), truncated);
                 let db: tauri::State<'_, Database> = app.state();
                 let _ = db.log_activity(
                     job_id,

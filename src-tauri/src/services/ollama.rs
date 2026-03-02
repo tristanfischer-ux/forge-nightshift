@@ -80,11 +80,9 @@ pub async fn generate(
 
     let gen_resp: GenerateResponse = resp.json().await?;
 
-    if json_mode {
-        Ok(clean_json_response(&gen_resp.response))
-    } else {
-        Ok(gen_resp.response)
-    }
+    // Always clean the response — qwen3 models may include <think> blocks
+    // even without format: "json", and we need to extract the JSON object
+    Ok(clean_json_response(&gen_resp.response))
 }
 
 /// Strip `<think>...</think>` blocks and extract the JSON object from LLM
