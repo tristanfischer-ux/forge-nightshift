@@ -133,7 +133,7 @@ INSERT OR IGNORE INTO config (key, value) VALUES
     ('relevance_threshold', '60'),
     ('categories_per_run', '8'),
     ('research_model', 'qwen3:8b'),
-    ('enrich_model', 'qwen3:30b-a3b'),
+    ('enrich_model', 'qwen3:30b-a3b-instruct-2507-q4_K_M'),
     ('outreach_model', 'qwen3:32b'),
     ('ollama_url', 'http://localhost:11434'),
     ('from_email', 'ForgeOS <noreply@fractionalforge.app>'),

@@ -206,7 +206,7 @@ export default function Settings() {
           label="Enrichment Model"
           value={config.enrich_model || ""}
           onChange={(v) => updateField("enrich_model", v)}
-          placeholder="qwen3:30b-a3b"
+          placeholder="qwen3:30b-a3b-instruct-2507-q4_K_M"
         />
         <Input
           label="Outreach Model"

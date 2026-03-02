@@ -5,10 +5,16 @@ use serde_json::{json, Value};
 const DEFAULT_URL: &str = "http://localhost:11434";
 
 #[derive(Debug, Serialize, Deserialize)]
-struct GenerateResponse {
+struct ChatResponse {
     model: String,
-    response: String,
+    message: ChatMessage,
     done: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,9 +58,12 @@ pub async fn generate(
         base_url.to_string()
     };
 
+    // Use /api/chat — qwen3's /no_think tag only works with the chat template.
+    // The /api/generate endpoint ignores /no_think, causing the model to spend
+    // its entire token budget on hidden thinking and return empty responses.
     let mut req = json!({
         "model": model,
-        "prompt": prompt,
+        "messages": [{"role": "user", "content": prompt}],
         "stream": false,
         "options": {
             "temperature": 0.3
@@ -66,7 +75,7 @@ pub async fn generate(
     }
 
     let resp = client
-        .post(format!("{}/api/generate", url))
+        .post(format!("{}/api/chat", url))
         .json(&req)
         .timeout(std::time::Duration::from_secs(300))
         .send()
@@ -78,11 +87,10 @@ pub async fn generate(
         anyhow::bail!("Ollama error {}: {}", status, body);
     }
 
-    let gen_resp: GenerateResponse = resp.json().await?;
+    let chat_resp: ChatResponse = resp.json().await?;
 
-    // Always clean the response — qwen3 models may include <think> blocks
-    // even without format: "json", and we need to extract the JSON object
-    Ok(clean_json_response(&gen_resp.response))
+    // Clean the response — extract JSON object, strip any residual tags
+    Ok(clean_json_response(&chat_resp.message.content))
 }
 
 /// Strip `<think>...</think>` blocks and extract the JSON object from LLM
