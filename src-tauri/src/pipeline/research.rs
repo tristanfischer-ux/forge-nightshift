@@ -26,7 +26,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     let research_model = config
         .get("research_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("qwen3:8b");
+        .unwrap_or("qwen3.5:9b");
 
     let countries_str = config
         .get("target_countries")

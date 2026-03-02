@@ -25,7 +25,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     let outreach_model = config
         .get("outreach_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("qwen3:32b");
+        .unwrap_or("qwen3.5:27b-q4_K_M");
 
     let daily_limit: i64 = config
         .get("daily_email_limit")

@@ -13,7 +13,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     let enrich_model = config
         .get("enrich_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("qwen3:30b-a3b-instruct-2507-q4_K_M");
+        .unwrap_or("qwen3.5:27b-q4_K_M");
 
     let ch_api_key = config
         .get("companies_house_api_key")
