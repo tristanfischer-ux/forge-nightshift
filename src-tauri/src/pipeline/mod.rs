@@ -264,15 +264,51 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
     Ok(summary)
 }
 
-/// Automated scheduler — checks every 60s if schedule_time matches current time.
+/// Automated scheduler — checks trigger file every 5s, schedule every 60s.
 pub async fn start_scheduler(app: tauri::AppHandle) {
     let mut last_run_date = String::new();
+    let mut tick: u32 = 0;
+
+    let trigger_path = std::path::PathBuf::from(
+        std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
+    )
+    .join(".nightshift-trigger");
 
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tick += 1;
 
         // Don't interfere if pipeline is already running
         if RUNNING.load(Ordering::SeqCst) {
+            continue;
+        }
+
+        // Check for CLI trigger file (~/.nightshift-trigger)
+        if trigger_path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&trigger_path) {
+                let _ = std::fs::remove_file(&trigger_path);
+                let stages: Vec<String> = contents
+                    .trim()
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !stages.is_empty() {
+                    log::info!("CLI trigger: starting pipeline with stages {:?}", stages);
+                    let app_clone = app.clone();
+                    match start_pipeline(app_clone, stages).await {
+                        Ok(job_id) => log::info!("CLI-triggered pipeline started: {}", job_id),
+                        Err(e) => log::error!("CLI-triggered pipeline failed: {}", e),
+                    }
+                }
+            } else {
+                let _ = std::fs::remove_file(&trigger_path);
+            }
+            continue;
+        }
+
+        // Only check schedule every ~60s (12 ticks × 5s)
+        if tick % 12 != 0 {
             continue;
         }
 

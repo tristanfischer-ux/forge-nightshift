@@ -58,15 +58,18 @@ pub async fn generate(
         base_url.to_string()
     };
 
-    // Use /api/chat — qwen3's /no_think tag only works with the chat template.
-    // The /api/generate endpoint ignores /no_think, causing the model to spend
-    // its entire token budget on hidden thinking and return empty responses.
+    // Use /api/chat with think: false to disable reasoning/thinking mode.
+    // Without this, qwen3/3.5 models spend entire token budget on hidden
+    // reasoning and time out. num_ctx: 8192 keeps prompt processing fast
+    // (default 262144 causes 60s+ prompt eval for simple requests).
     let mut req = json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": false,
+        "think": false,
         "options": {
-            "temperature": 0.3
+            "temperature": 0.3,
+            "num_ctx": 8192
         },
     });
 
