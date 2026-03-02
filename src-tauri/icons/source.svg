@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFF7ED"/>
+      <stop offset="100%" stop-color="#FEF3C7"/>
+    </linearGradient>
+    <linearGradient id="anvil" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#EA580C"/>
+      <stop offset="100%" stop-color="#C2410C"/>
+    </linearGradient>
+    <linearGradient id="anvilDark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#C2410C"/>
+      <stop offset="100%" stop-color="#9A3412"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#FB923C" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#FB923C" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="512" cy="512" r="480" fill="url(#bg)" stroke="#F9A845" stroke-width="6"/>
+
+  <!-- Subtle glow behind anvil -->
+  <ellipse cx="512" cy="560" rx="280" ry="140" fill="url(#glow)"/>
+
+  <!-- Anvil — larger, centered -->
+  <!-- Foot/pedestal -->
+  <rect x="390" y="640" width="244" height="60" rx="6" fill="url(#anvilDark)"/>
+  <!-- Waist (narrow connector) -->
+  <rect x="430" y="600" width="164" height="44" rx="4" fill="url(#anvilDark)"/>
+  <!-- Face (main working surface) -->
+  <path d="M340 530 L684 530 L720 600 L310 600 Z" fill="url(#anvil)"/>
+  <!-- Top face highlight -->
+  <path d="M350 530 L674 530 L670 538 L354 538 Z" fill="#F97316" opacity="0.6"/>
+  <!-- Horn (left side, pointed) -->
+  <path d="M340 530 L230 510 L230 560 L310 600 Z" fill="#DC5409"/>
+  <!-- Horn tip highlight -->
+  <path d="M230 510 L260 515 L260 545 L230 560 Z" fill="#EA580C"/>
+
+  <!-- Data flow nodes — arranged in arc above anvil -->
+  <!-- Large center node -->
+  <circle cx="512" cy="260" r="28" fill="#3B82F6" opacity="0.9"/>
+  <!-- Left nodes -->
+  <circle cx="310" cy="310" r="22" fill="#3B82F6" opacity="0.85"/>
+  <circle cx="230" cy="390" r="14" fill="#60A5FA" opacity="0.6"/>
+  <circle cx="200" cy="300" r="11" fill="#93C5FD" opacity="0.4"/>
+  <!-- Right nodes -->
+  <circle cx="714" cy="310" r="22" fill="#3B82F6" opacity="0.85"/>
+  <circle cx="794" cy="390" r="14" fill="#60A5FA" opacity="0.6"/>
+  <circle cx="820" cy="300" r="11" fill="#93C5FD" opacity="0.4"/>
+  <!-- Mid nodes -->
+  <circle cx="410" cy="240" r="14" fill="#60A5FA" opacity="0.65"/>
+  <circle cx="614" cy="240" r="14" fill="#60A5FA" opacity="0.65"/>
+
+  <!-- Flow lines from nodes to anvil surface -->
+  <line x1="512" y1="288" x2="512" y2="530" stroke="#3B82F6" stroke-width="2.5" opacity="0.25" stroke-dasharray="8,6"/>
+  <line x1="310" y1="332" x2="400" y2="530" stroke="#3B82F6" stroke-width="2.5" opacity="0.25" stroke-dasharray="8,6"/>
+  <line x1="714" y1="332" x2="620" y2="530" stroke="#3B82F6" stroke-width="2.5" opacity="0.25" stroke-dasharray="8,6"/>
+  <line x1="410" y1="254" x2="460" y2="530" stroke="#60A5FA" stroke-width="2" opacity="0.18" stroke-dasharray="6,6"/>
+  <line x1="614" y1="254" x2="564" y2="530" stroke="#60A5FA" stroke-width="2" opacity="0.18" stroke-dasharray="6,6"/>
+  <line x1="230" y1="404" x2="360" y2="530" stroke="#60A5FA" stroke-width="1.5" opacity="0.15" stroke-dasharray="5,6"/>
+  <line x1="794" y1="404" x2="660" y2="530" stroke="#60A5FA" stroke-width="1.5" opacity="0.15" stroke-dasharray="5,6"/>
+
+  <!-- Spark dots on anvil surface -->
+  <circle cx="470" cy="518" r="6" fill="#FCD34D"/>
+  <circle cx="500" cy="510" r="5" fill="#FBBF24"/>
+  <circle cx="530" cy="514" r="7" fill="#F59E0B"/>
+  <circle cx="555" cy="508" r="4" fill="#FCD34D"/>
+  <circle cx="440" cy="512" r="4" fill="#FDE68A"/>
+
+  <!-- Crescent moon (nightshift) top-right -->
+  <g transform="translate(770, 190)">
+    <circle cx="0" cy="0" r="36" fill="#F59E0B" opacity="0.75"/>
+    <circle cx="14" cy="-12" r="30" fill="#FEF3C7"/>
+  </g>
+
+  <!-- Small stars near moon -->
+  <circle cx="700" cy="160" r="3" fill="#F59E0B" opacity="0.5"/>
+  <circle cx="730" cy="140" r="2" fill="#FBBF24" opacity="0.4"/>
+  <circle cx="820" cy="160" r="2.5" fill="#F59E0B" opacity="0.45"/>
+
+  <!-- Anvil base shadow -->
+  <ellipse cx="512" cy="704" rx="140" ry="10" fill="#9A3412" opacity="0.1"/>
+</svg>
