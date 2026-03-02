@@ -9,6 +9,7 @@ import {
   Square,
   Activity,
   AlertCircle,
+  CheckCircle,
 } from "lucide-react";
 import StatCard from "../components/StatCard";
 import ChartCard from "../components/ChartCard";
@@ -164,7 +165,7 @@ export default function Dashboard() {
       )}
 
       {/* Stats cards */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-5 gap-4">
         <StatCard
           label="Companies Found"
           value={getStatCount(companiesData)}
@@ -173,9 +174,22 @@ export default function Dashboard() {
         />
         <StatCard
           label="Enriched"
-          value={getStatCount(companiesData, "enriched")}
+          value={
+            getStatCount(companiesData, "enriched") +
+            getStatCount(companiesData, "approved") +
+            getStatCount(companiesData, "pushed")
+          }
           icon={Search}
           color="text-purple-600"
+        />
+        <StatCard
+          label="Approved"
+          value={
+            getStatCount(companiesData, "approved") +
+            getStatCount(companiesData, "pushed")
+          }
+          icon={CheckCircle}
+          color="text-yellow-600"
         />
         <StatCard
           label="Pushed to ForgeOS"

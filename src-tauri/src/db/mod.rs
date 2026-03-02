@@ -30,6 +30,7 @@ impl Database {
             include_str!("migrations/003_translation_fields.sql"),
             include_str!("migrations/004_name_normalized.sql"),
             include_str!("migrations/005_enrichment_v2.sql"),
+            include_str!("migrations/006_qwen35_models.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();

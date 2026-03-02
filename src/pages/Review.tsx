@@ -29,6 +29,7 @@ import {
   ArrowUpCircle,
   Search,
   Undo2,
+  StopCircle,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -37,6 +38,7 @@ import {
   getStats,
   updateCompanyStatus,
   startPipeline,
+  stopPipeline,
   resetErrorCompanies,
   getPipelineStatus,
   approveAllEnriched,
@@ -142,6 +144,7 @@ export default function Review() {
     total: number;
     model: string;
   } | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [auditing, setAuditing] = useState(false);
   const [auditResult, setAuditResult] = useState<{
     fetched: number;
@@ -176,6 +179,7 @@ export default function Review() {
       setEnriching(running);
       if (!running) {
         setEnrichProgress(null);
+        setCancelling(false);
         loadCompanies(filter);
         loadCounts();
       }
@@ -284,6 +288,15 @@ export default function Review() {
       await startPipeline(["enrich"]);
     } catch {
       setEnriching(false);
+    }
+  }
+
+  async function handleStop() {
+    try {
+      setCancelling(true);
+      await stopPipeline();
+    } catch {
+      setCancelling(false);
     }
   }
 
@@ -409,6 +422,20 @@ export default function Review() {
             {auditing ? "Importing..." : "Audit Marketplace"}
           </button>
 
+          {enriching && (
+            <button
+              onClick={handleStop}
+              disabled={cancelling}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                cancelling
+                  ? "bg-red-300 text-white cursor-not-allowed"
+                  : "bg-red-600 hover:bg-red-700 text-white"
+              }`}
+            >
+              <StopCircle className="w-4 h-4" />
+              {cancelling ? "Stopping..." : "Stop Pipeline"}
+            </button>
+          )}
           {filter === "discovered" && companies.length > 0 && (
             <button
               onClick={handleRunEnrich}
@@ -568,6 +595,18 @@ export default function Review() {
               <span className="font-medium text-gray-700">
                 {Math.round(((enrichProgress.currentIndex + 1) / enrichProgress.total) * 100)}%
               </span>
+              <button
+                onClick={handleStop}
+                disabled={cancelling}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                  cancelling
+                    ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                    : "bg-red-100 text-red-700 hover:bg-red-200"
+                }`}
+              >
+                <StopCircle className="w-3.5 h-3.5" />
+                {cancelling ? "Stopping..." : "Stop"}
+              </button>
             </div>
           </div>
           <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
