@@ -77,7 +77,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         );
     }
 
-    for company in &companies {
+    for (idx, company) in companies.iter().enumerate() {
         if super::is_cancelled() {
             break;
         }
@@ -103,6 +103,19 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             let _ = db.log_activity(job_id, "enrich", "info", &format!("Enriching: {}", name));
             let _ = db.update_company_status(id, "enriching");
         }
+
+        let _ = app.emit(
+            "pipeline:progress",
+            json!({
+                "stage": "enrich",
+                "phase": "start",
+                "current_company": name,
+                "current_index": idx,
+                "total": total,
+                "enriched": enriched_count,
+                "errors": error_count,
+            }),
+        );
 
         // Build data source section — prefer website content over snippet
         let website_text = website_texts.get(id);
@@ -317,7 +330,11 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
             "pipeline:progress",
             json!({
                 "stage": "enrich",
+                "phase": "done",
+                "current_company": name,
+                "current_index": idx,
                 "enriched": enriched_count,
+                "errors": error_count,
                 "total": total,
             }),
         );

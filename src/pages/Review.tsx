@@ -19,6 +19,7 @@ import {
   Play,
   RotateCcw,
   Languages,
+  Loader2,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -44,6 +45,7 @@ type StatusFilter = "all" | "discovered" | "enriched" | "error";
 
 const STATUS_BADGE: Record<string, string> = {
   discovered: "bg-blue-100 text-blue-700",
+  enriching: "bg-forge-100 text-forge-700 animate-pulse",
   enriched: "bg-green-100 text-green-700",
   approved: "bg-yellow-100 text-yellow-700",
   rejected: "bg-gray-100 text-gray-500",
@@ -119,6 +121,13 @@ export default function Review() {
     error: 0,
   });
   const [enriching, setEnriching] = useState(false);
+  const [enrichProgress, setEnrichProgress] = useState<{
+    currentCompany: string;
+    currentIndex: number;
+    enriched: number;
+    errors: number;
+    total: number;
+  } | null>(null);
 
   // Drill-down filters from URL params
   const drillSubcategory = searchParams.get("subcategory");
@@ -146,6 +155,7 @@ export default function Review() {
       const running = event.payload.status === "running";
       setEnriching(running);
       if (!running) {
+        setEnrichProgress(null);
         loadCompanies(filter);
         loadCounts();
       }
@@ -153,15 +163,32 @@ export default function Review() {
     return () => { unlisten.then((fn) => fn()); };
   }, [filter]);
 
-  // Poll for updates while enriching
+  // Listen for per-company progress events instead of polling
   useEffect(() => {
-    if (!enriching) return;
-    const interval = setInterval(() => {
+    const unlisten = listen<{
+      stage: string;
+      phase: string;
+      current_company: string;
+      current_index: number;
+      enriched: number;
+      errors: number;
+      total: number;
+    }>("pipeline:progress", (event) => {
+      const p = event.payload;
+      if (p.stage !== "enrich") return;
+      setEnrichProgress({
+        currentCompany: p.current_company,
+        currentIndex: p.current_index,
+        enriched: p.enriched,
+        errors: p.errors,
+        total: p.total,
+      });
+      // Refresh list on each company event so badges update live
       loadCompanies(filter);
       loadCounts();
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [enriching, filter]);
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [filter]);
 
   async function loadCounts() {
     try {
@@ -379,6 +406,41 @@ export default function Review() {
             <X className="w-3 h-3" />
             Clear
           </button>
+        </div>
+      )}
+
+      {/* Enrichment progress banner */}
+      {enriching && enrichProgress && (
+        <div className="bg-white rounded-xl border border-forge-200 shadow-sm p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 min-w-0">
+              <Loader2 className="w-4 h-4 text-forge-600 animate-spin shrink-0" />
+              <span className="text-sm font-medium text-gray-900 truncate">
+                Enriching: {enrichProgress.currentCompany}
+              </span>
+            </div>
+            <div className="flex items-center gap-3 shrink-0 text-xs text-gray-500">
+              <span>
+                {enrichProgress.currentIndex + 1} of {enrichProgress.total}
+              </span>
+              {enrichProgress.errors > 0 && (
+                <span className="text-red-600">
+                  {enrichProgress.errors} error{enrichProgress.errors !== 1 ? "s" : ""}
+                </span>
+              )}
+              <span className="font-medium text-gray-700">
+                {Math.round(((enrichProgress.currentIndex + 1) / enrichProgress.total) * 100)}%
+              </span>
+            </div>
+          </div>
+          <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+            <div
+              className="bg-forge-500 h-2 rounded-full transition-all duration-500 ease-out"
+              style={{
+                width: `${((enrichProgress.currentIndex + 1) / enrichProgress.total) * 100}%`,
+              }}
+            />
+          </div>
         </div>
       )}
 
