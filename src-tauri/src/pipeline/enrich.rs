@@ -91,58 +91,23 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             None
         };
 
-        // Build data source section — prefer website content over snippet
-        let data_source = if let Some(ref text) = website_text {
-            format!(
-                "Website content (primary source):\n{}\n\nSearch snippet (secondary): {}",
-                text, snippet
-            )
-        } else {
-            format!("Known info: {}", snippet)
-        };
-
         let enrich_prompt = format!(
-            r#"You are analyzing a manufacturing/engineering company for a B2B marketplace.
-Based on the information below, provide a detailed analysis. Return JSON with ALL of these fields:
+            r#"Analyze this manufacturing company for a B2B marketplace. Return JSON with these fields:
+description (2-3 sentences, English), description_original (original language if not English, else null), snippet_english (English translation of snippet, null if already English), category ("Products"/"Services"), subcategory, capabilities (array), industries (array), materials (array), key_equipment (array with brand+model), production_capacity (string or null), certifications (array), company_size ("1-9"/"10-49"/"50-99"/"100-249"/"250-499"/"500+"), employee_count_exact (int or null), key_people (array of name+title, max 5), founded_year (int or null), contact_name, contact_email, contact_title, address (full with postcode or null), products (array), lead_time (string or null), minimum_order (string or null), quality_systems (string or null), export_controls (string or null), security_clearances (array), relevance_score (0-100, 80+=clearly manufacturing), enrichment_quality (0-100).
 
-IMPORTANT: All text fields (description, subcategory, capabilities, etc.) MUST be in English. If the source material is in another language, translate it to English.
-
-CRITICAL: If you cannot find evidence for a field on the website, return null. Do NOT guess or invent data. An honest null is better than a hallucinated value. Only include information that is explicitly stated or strongly implied by the source material.
-
-- description: 2-3 sentence description IN ENGLISH of the company and what they manufacture/provide
-- description_original: if the source text was NOT in English, put the original-language description here; otherwise set to null
-- snippet_english: English translation of the raw snippet/known info below; null if already in English
-- category: "Products" or "Services"
-- subcategory: specific type (e.g., "CNC Machining", "Sheet Metal Fabrication", "Electronics")
-- capabilities: array of specific services/processes (e.g., ["5-axis CNC milling", "wire EDM", "surface grinding"])
-- industries: array of sectors served (e.g., ["Automotive", "Aerospace", "Defence", "Medical", "Oil & Gas"])
-- materials: array of materials worked with (e.g., ["aluminium", "titanium", "stainless steel", "Inconel"])
-- key_equipment: array of SPECIFIC machinery with brand and model where possible (e.g., ["DMG Mori DMU 50 5-axis", "Trumpf TruLaser 3030", "Zeiss Contura CMM", "FANUC R-2000iC robot"]). Include axis count, tonnage, or power rating where relevant. Include metrology (CMMs), robots, welding equipment. NEVER use generic terms like "CNC machine" without brand context.
-- production_capacity: facility/volume info string (e.g., "30 CNC machines, 5,000 sqm facility, 24/7 operation") or null if unknown
-- certifications: array (e.g., ["ISO 9001", "AS9100", "ISO 14001", "JOSCAR", "Cyber Essentials"])
-- company_size: estimated size ("1-9", "10-49", "50-99", "100-249", "250-499", "500+")
-- employee_count_exact: exact headcount if stated on site (integer or null)
-- key_people: array of {{"name": "...", "title": "..."}} — directors, founders, MD, key leadership (max 5). Only include people whose names are explicitly mentioned on the website. Return empty array if none found.
-- founded_year: year established if mentioned (integer or null)
-- contact_name: best contact person name if found
-- contact_email: contact email if found
-- contact_title: contact person's title if found
-- address: full street address with postcode if found on contact/about page (string or null)
-- products: array of specific product lines/types distinct from capabilities/processes (e.g., ["hydraulic cylinders", "precision gears", "turbine blades"]). Return empty array if none found.
-- lead_time: typical turnaround/lead time if stated (string, e.g. "2-4 weeks", or null)
-- minimum_order: MOQ if stated (string, e.g. "No minimum", "£5,000+", or null)
-- quality_systems: detailed quality info beyond cert names (e.g., "In-house CMM inspection lab", "UKAS-accredited testing", "Full PPAP/APQP capability"). Return null if nothing found.
-- export_controls: export/compliance info (e.g., "ITAR registered", "EAR compliant", "SC cleared facility"). Return null if nothing found.
-- security_clearances: array of clearances found (e.g., ["SC", "DV", "NATO Secret", "Cyber Essentials Plus"]). Return empty array if none found.
-- relevance_score: 0-100 how relevant for a manufacturing marketplace (be strict: 80+ = clearly manufacturing)
-- enrichment_quality: 0-100 confidence in this data (be honest: only high if real data extracted)
+CRITICAL: Return null if no evidence. Do NOT guess. All text in English.
 
 Company: {}
 Website: {}
+Data:
 {}
 
-Return ONLY valid JSON. Do not include any thinking or explanation."#,
-            name, website, data_source
+Snippet: {}
+
+Return ONLY valid JSON. /no_think"#,
+            name, website,
+            website_text.as_deref().unwrap_or(""),
+            snippet
         );
 
         let response = match crate::services::ollama::generate(

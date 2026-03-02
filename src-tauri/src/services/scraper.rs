@@ -34,7 +34,7 @@ pub async fn fetch_website_text(url: &str) -> Result<String> {
         log::info!("No scored subpages found for {}, using root only", url);
         return Ok(truncate_text(
             &format!("--- PAGE: / ---\n{}", root_text),
-            24000,
+            3000,
             url,
         ));
     }
@@ -74,7 +74,7 @@ pub async fn fetch_website_text(url: &str) -> Result<String> {
         }
     }
 
-    Ok(truncate_text(&combined, 24000, url))
+    Ok(truncate_text(&combined, 3000, url))
 }
 
 /// Fetch raw HTML from a URL.
