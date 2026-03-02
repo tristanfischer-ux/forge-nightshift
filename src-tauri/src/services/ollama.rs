@@ -56,6 +56,9 @@ pub async fn generate(
         "model": model,
         "prompt": prompt,
         "stream": false,
+        "options": {
+            "temperature": 0.3
+        },
     });
 
     if json_mode {

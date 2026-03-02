@@ -300,6 +300,12 @@ export default function Review() {
   const attrSicCodes = Array.isArray(attrs.sic_codes)
     ? (attrs.sic_codes as string[])
     : [];
+  const attrKeyPeople = Array.isArray(attrs.key_people)
+    ? (attrs.key_people as { name: string; title: string }[])
+    : [];
+  const attrChDirectors = Array.isArray(attrs.ch_directors)
+    ? (attrs.ch_directors as string[])
+    : [];
 
   return (
     <div className="space-y-6">
@@ -729,10 +735,13 @@ export default function Review() {
                 attrs.founded_year ||
                 attrs.company_size ||
                 attrs.employees ||
-                attrs.nightshift_score ||
+                attrs.employee_count_exact ||
+                attrs.production_capacity ||
                 selected.company_size ||
                 selected.year_founded ||
                 attrs.company_number ||
+                attrKeyPeople.length > 0 ||
+                attrChDirectors.length > 0 ||
                 attrSicCodes.length > 0) && (
                 <div>
                   <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
@@ -793,8 +802,12 @@ export default function Review() {
                         }
                       />
                       <DetailField
-                        label="Nightshift Score"
-                        value={attrs.nightshift_score as string}
+                        label="Employees (exact)"
+                        value={attrs.employee_count_exact as string}
+                      />
+                      <DetailField
+                        label="Production Capacity"
+                        value={attrs.production_capacity as string}
                       />
                       <DetailField
                         label="Company Number"
@@ -811,6 +824,47 @@ export default function Review() {
                         />
                       </div>
                     )}
+                  </div>
+                </div>
+              )}
+
+              {/* Key People (from LLM enrichment) */}
+              {attrKeyPeople.length > 0 && (
+                <div>
+                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                    <User className="w-3 h-3" /> Key People
+                  </h4>
+                  <div className="space-y-1.5">
+                    {attrKeyPeople.map((person, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <User className="w-3 h-3 text-gray-300 shrink-0" />
+                        <span className="text-sm text-gray-900 font-medium">
+                          {person.name}
+                        </span>
+                        {person.title && (
+                          <span className="text-xs text-gray-500">
+                            — {person.title}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Directors from Companies House */}
+              {attrChDirectors.length > 0 && (
+                <div>
+                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                    <Building2 className="w-3 h-3" /> Directors (Companies House)
+                  </h4>
+                  <div className="space-y-1">
+                    {attrChDirectors.map((director, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <User className="w-3 h-3 text-gray-300 shrink-0" />
+                        <span className="text-sm text-gray-700">{director}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}

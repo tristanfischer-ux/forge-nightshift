@@ -146,6 +146,8 @@ IMPORTANT: All text fields (description, subcategory, capabilities, etc.) MUST b
 - production_capacity: facility/volume info string (e.g., "30 CNC machines, 5,000 sqm facility, 24/7 operation") or null if unknown
 - certifications: array (e.g., ["ISO 9001", "AS9100", "ISO 14001", "JOSCAR", "Cyber Essentials"])
 - company_size: estimated size ("1-9", "10-49", "50-99", "100-249", "250-499", "500+")
+- employee_count_exact: exact headcount if stated on site (integer or null)
+- key_people: array of {{"name": "...", "title": "..."}} — directors, founders, MD, key leadership (max 5). Only include people whose names are explicitly mentioned on the website. Return empty array if none found.
 - founded_year: year established if mentioned (integer or null)
 - contact_name: best contact person name if found
 - contact_email: contact email if found
@@ -230,6 +232,8 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
             "key_equipment": enriched.get("key_equipment").unwrap_or(&json!([])),
             "production_capacity": enriched.get("production_capacity").and_then(|v| v.as_str()).unwrap_or(""),
             "founded_year": enriched.get("founded_year"),
+            "employee_count_exact": enriched.get("employee_count_exact"),
+            "key_people": enriched.get("key_people").unwrap_or(&json!([])),
             "nightshift_score": enriched.get("relevance_score").and_then(|v| v.as_i64()).unwrap_or(0),
         });
 

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use log;
 use regex::Regex;
 
 /// Fetch a website's text content, stripping HTML tags and truncating to fit LLM context.
@@ -34,9 +35,10 @@ pub async fn fetch_website_text(url: &str) -> Result<String> {
 
     let text = text.trim().to_string();
 
-    // Truncate to 4000 chars
-    if text.len() > 4000 {
-        Ok(text[..4000].to_string())
+    // Truncate to 12000 chars (enough to capture multi-page content for LLM)
+    if text.len() > 12000 {
+        log::info!("Truncating website text from {} to 12000 chars for {}", text.len(), url);
+        Ok(text[..12000].to_string())
     } else {
         Ok(text)
     }
