@@ -59,6 +59,21 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             .get("raw_snippet")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+
+        // Gate: website is required for enrichment
+        if website.is_empty() {
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(
+                job_id,
+                "enrich",
+                "info",
+                &format!("Skipping {} — no website found", name),
+            );
+            let _ = db.set_company_error(id, "No website — cannot enrich");
+            error_count += 1;
+            continue;
+        }
+
         let country = company
             .get("country")
             .and_then(|v| v.as_str())

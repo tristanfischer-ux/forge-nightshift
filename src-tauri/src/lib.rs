@@ -302,10 +302,21 @@ async fn import_for_audit(
 
     let quality_threshold = threshold.unwrap_or(50);
 
+    // Use target_countries config to filter audit imports to relevant regions
+    let target_countries: Vec<String> = config
+        .get("target_countries")
+        .and_then(|v| v.as_str())
+        .unwrap_or("DE")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     let listings = services::supabase::fetch_low_quality_listings(
         supabase_url,
         supabase_key,
         quality_threshold,
+        &target_countries,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -347,6 +358,12 @@ async fn import_for_audit(
         } else {
             String::new()
         };
+
+        // Skip listings without a website — can't enrich without one
+        if website_url.is_empty() {
+            skipped += 1;
+            continue;
+        }
 
         // Dedup: skip if domain already in local SQLite
         if !domain.is_empty() {

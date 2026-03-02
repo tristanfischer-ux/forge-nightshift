@@ -317,22 +317,32 @@ pub async fn fetch_all_known_domains(url: &str, service_key: &str) -> Result<Has
 }
 
 /// Fetch low-quality listings from ForgeOS for audit re-enrichment.
+/// Filters by quality threshold, requires website_url, and optionally filters by country.
 pub async fn fetch_low_quality_listings(
     url: &str,
     service_key: &str,
     threshold: i32,
+    countries: &[String],
 ) -> Result<Vec<Value>> {
     let client = reqwest::Client::new();
+    let mut query_params: Vec<(&str, String)> = vec![
+        ("select", "*".to_string()),
+        ("data_quality_score", format!("lt.{}", threshold)),
+        ("website_url", "not.is.null".to_string()),
+        ("order", "data_quality_score.asc".to_string()),
+        ("limit", "200".to_string()),
+    ];
+
+    if !countries.is_empty() {
+        let country_list = countries.join(",");
+        query_params.push(("country", format!("in.({})", country_list)));
+    }
+
     let resp = client
         .get(format!("{}/rest/v1/marketplace_listings", url))
         .header("apikey", service_key)
         .header("Authorization", format!("Bearer {}", service_key))
-        .query(&[
-            ("select", "*"),
-            ("data_quality_score", &format!("lt.{}", threshold)),
-            ("order", "data_quality_score.asc"),
-            ("limit", "200"),
-        ])
+        .query(&query_params)
         .timeout(std::time::Duration::from_secs(30))
         .send()
         .await?;
