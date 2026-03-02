@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -16,6 +17,10 @@ pub struct CHCompany {
     pub date_of_creation: Option<String>,
     pub registered_office_address: Option<Value>,
     pub sic_codes: Option<Vec<String>>,
+    pub accounts_type: Option<String>,
+    pub last_accounts_date: Option<String>,
+    pub has_charges: Option<bool>,
+    pub has_insolvency_history: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,6 +61,21 @@ struct CompanyProfile {
     date_of_creation: Option<String>,
     registered_office_address: Option<Value>,
     sic_codes: Option<Vec<String>>,
+    accounts: Option<AccountsInfo>,
+    has_charges: Option<bool>,
+    has_insolvency_history: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccountsInfo {
+    last_accounts: Option<LastAccounts>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LastAccounts {
+    #[serde(rename = "type")]
+    account_type: Option<String>,
+    made_up_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +160,10 @@ pub async fn search_company(api_key: &str, name: &str) -> Result<Option<CHCompan
             date_of_creation: item.date_of_creation,
             registered_office_address: item.address,
             sic_codes: None, // Need full profile for SIC codes
+            accounts_type: None,
+            last_accounts_date: None,
+            has_charges: None,
+            has_insolvency_history: None,
         })),
         None => Ok(None),
     }
@@ -161,6 +185,19 @@ pub async fn get_company(api_key: &str, company_number: &str) -> Result<CHCompan
     }
 
     let profile: CompanyProfile = resp.json().await?;
+
+    let accounts_type = profile
+        .accounts
+        .as_ref()
+        .and_then(|a| a.last_accounts.as_ref())
+        .and_then(|la| la.account_type.clone());
+
+    let last_accounts_date = profile
+        .accounts
+        .as_ref()
+        .and_then(|a| a.last_accounts.as_ref())
+        .and_then(|la| la.made_up_to.clone());
+
     Ok(CHCompany {
         company_number: profile.company_number,
         company_name: profile.company_name,
@@ -169,6 +206,10 @@ pub async fn get_company(api_key: &str, company_number: &str) -> Result<CHCompan
         date_of_creation: profile.date_of_creation,
         registered_office_address: profile.registered_office_address,
         sic_codes: profile.sic_codes,
+        accounts_type,
+        last_accounts_date,
+        has_charges: profile.has_charges,
+        has_insolvency_history: profile.has_insolvency_history,
     })
 }
 
@@ -298,6 +339,52 @@ pub async fn enrich_company(api_key: &str, company_name: &str) -> Result<Option<
         })
         .collect();
 
+    // Extract financial signals
+    let accounts_type = profile.accounts_type.as_deref().unwrap_or("").to_string();
+    let last_accounts_date = profile.last_accounts_date.as_deref().unwrap_or("").to_string();
+    let has_charges = profile.has_charges.unwrap_or(false);
+    let has_insolvency = profile.has_insolvency_history.unwrap_or(false);
+
+    let company_status_str = profile.company_status.as_deref().unwrap_or("");
+    let creation_date = profile.date_of_creation.as_deref().unwrap_or("");
+
+    // Calculate years trading
+    let years_trading = if !creation_date.is_empty() {
+        let now = chrono::Utc::now().format("%Y").to_string();
+        let creation_year: i32 = creation_date
+            .split('-')
+            .next()
+            .and_then(|y| y.parse().ok())
+            .unwrap_or(0);
+        let current_year: i32 = now.parse().unwrap_or(2026);
+        if creation_year > 0 {
+            Some(current_year - creation_year)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Derive health score
+    let health = derive_financial_health(
+        company_status_str,
+        &last_accounts_date,
+        has_insolvency,
+        years_trading,
+    );
+
+    let financial_signals = json!({
+        "company_status": company_status_str,
+        "incorporation_date": creation_date,
+        "years_trading": years_trading,
+        "accounts_type": accounts_type,
+        "last_accounts_date": last_accounts_date,
+        "has_insolvency_history": has_insolvency,
+        "has_charges": has_charges,
+        "health": health,
+    });
+
     Ok(Some(json!({
         "ch_company_number": profile.company_number,
         "ch_company_status": profile.company_status,
@@ -308,7 +395,45 @@ pub async fn enrich_company(api_key: &str, company_name: &str) -> Result<Option<
         "ch_directors": directors_json,
         "ch_psc": psc_json,
         "ch_sic_codes": profile.sic_codes.unwrap_or_default(),
+        "financial_signals": financial_signals,
     })))
+}
+
+/// Derive a financial health label from Companies House data.
+/// "good" = active + recent accounts + no insolvency + >5 years trading
+/// "caution" = missing data or <5 years
+/// "risk" = dissolved/insolvency/stale accounts (>2 years old)
+fn derive_financial_health(
+    status: &str,
+    last_accounts_date: &str,
+    has_insolvency: bool,
+    years_trading: Option<i32>,
+) -> String {
+    // Immediate risk signals
+    if status == "dissolved" || status == "liquidation" || has_insolvency {
+        return "risk".to_string();
+    }
+
+    // Check accounts staleness (>2 years = risk)
+    if !last_accounts_date.is_empty() {
+        if let Ok(filed) = chrono::NaiveDate::parse_from_str(last_accounts_date, "%Y-%m-%d") {
+            let now = chrono::Utc::now().date_naive();
+            let months_old = (now.year() - filed.year()) * 12 + (now.month() as i32 - filed.month() as i32);
+            if months_old > 24 {
+                return "risk".to_string();
+            }
+        }
+    }
+
+    // Active + recent accounts + no insolvency + >5 years
+    let mature = years_trading.map(|y| y >= 5).unwrap_or(false);
+    let has_accounts = !last_accounts_date.is_empty();
+
+    if status == "active" && has_accounts && mature {
+        "good".to_string()
+    } else {
+        "caution".to_string()
+    }
 }
 
 async fn rate_limit_pause() {

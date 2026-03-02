@@ -22,6 +22,11 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
+    let oc_api_key = config
+        .get("opencorporates_api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
     let companies = {
         let db: tauri::State<'_, Database> = app.state();
         db.get_companies(Some("discovered"), 500, 0)?
@@ -134,6 +139,8 @@ Based on the information below, provide a detailed analysis. Return JSON with AL
 
 IMPORTANT: All text fields (description, subcategory, capabilities, etc.) MUST be in English. If the source material is in another language, translate it to English.
 
+CRITICAL: If you cannot find evidence for a field on the website, return null. Do NOT guess or invent data. An honest null is better than a hallucinated value. Only include information that is explicitly stated or strongly implied by the source material.
+
 - description: 2-3 sentence description IN ENGLISH of the company and what they manufacture/provide
 - description_original: if the source text was NOT in English, put the original-language description here; otherwise set to null
 - snippet_english: English translation of the raw snippet/known info below; null if already in English
@@ -152,6 +159,13 @@ IMPORTANT: All text fields (description, subcategory, capabilities, etc.) MUST b
 - contact_name: best contact person name if found
 - contact_email: contact email if found
 - contact_title: contact person's title if found
+- address: full street address with postcode if found on contact/about page (string or null)
+- products: array of specific product lines/types distinct from capabilities/processes (e.g., ["hydraulic cylinders", "precision gears", "turbine blades"]). Return empty array if none found.
+- lead_time: typical turnaround/lead time if stated (string, e.g. "2-4 weeks", or null)
+- minimum_order: MOQ if stated (string, e.g. "No minimum", "£5,000+", or null)
+- quality_systems: detailed quality info beyond cert names (e.g., "In-house CMM inspection lab", "UKAS-accredited testing", "Full PPAP/APQP capability"). Return null if nothing found.
+- export_controls: export/compliance info (e.g., "ITAR registered", "EAR compliant", "SC cleared facility"). Return null if nothing found.
+- security_clearances: array of clearances found (e.g., ["SC", "DV", "NATO Secret", "Cyber Essentials Plus"]). Return empty array if none found.
 - relevance_score: 0-100 how relevant for a manufacturing marketplace (be strict: 80+ = clearly manufacturing)
 - enrichment_quality: 0-100 confidence in this data (be honest: only high if real data extracted)
 
@@ -235,6 +249,13 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
             "employee_count_exact": enriched.get("employee_count_exact"),
             "key_people": enriched.get("key_people").unwrap_or(&json!([])),
             "nightshift_score": enriched.get("relevance_score").and_then(|v| v.as_i64()).unwrap_or(0),
+            // New v2 fields
+            "products": enriched.get("products").unwrap_or(&json!([])),
+            "lead_time": enriched.get("lead_time"),
+            "minimum_order": enriched.get("minimum_order"),
+            "quality_systems": enriched.get("quality_systems"),
+            "export_controls": enriched.get("export_controls"),
+            "security_clearances": enriched.get("security_clearances").unwrap_or(&json!([])),
         });
 
         // Companies House enrichment for UK companies
@@ -292,8 +313,93 @@ Return ONLY valid JSON. Do not include any thinking or explanation."#,
             }
         }
 
+        // OpenCorporates enrichment for non-UK companies (or UK without CH key)
+        if country != "GB" && country != "UK" && !country.is_empty() {
+            {
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(
+                    job_id,
+                    "enrich",
+                    "info",
+                    &format!("Looking up {} on OpenCorporates ({})...", name, country),
+                );
+            }
+
+            match crate::services::opencorporates::enrich_company(oc_api_key, name, country).await {
+                Ok(Some(oc_data)) => {
+                    if let Some(obj) = oc_data.as_object() {
+                        if let Some(attrs) = attributes.as_object_mut() {
+                            for (k, v) in obj {
+                                attrs.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+
+                    let db: tauri::State<'_, Database> = app.state();
+                    let oc_number = oc_data
+                        .get("oc_company_number")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let _ = db.log_activity(
+                        job_id,
+                        "enrich",
+                        "info",
+                        &format!("OC match for {}: #{}", name, oc_number),
+                    );
+                }
+                Ok(None) => {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(
+                        job_id,
+                        "enrich",
+                        "info",
+                        &format!("No OC match found for {}", name),
+                    );
+                }
+                Err(e) => {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(
+                        job_id,
+                        "enrich",
+                        "warn",
+                        &format!("OC lookup failed for {}: {}", name, e),
+                    );
+                }
+            }
+        }
+
+        // Extract financial health from whichever registry provided data
+        let financial_health = attributes
+            .get("financial_signals")
+            .and_then(|fs| fs.get("health"))
+            .and_then(|h| h.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Extract address: prefer LLM-extracted address, fall back to registry address
+        let address = enriched
+            .get("address")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                attributes
+                    .get("ch_registered_address")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+            })
+            .or_else(|| {
+                attributes
+                    .get("oc_registered_address")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or("")
+            .to_string();
+
         let mut enriched_with_attrs = enriched.clone();
         enriched_with_attrs["attributes_json"] = attributes;
+        enriched_with_attrs["address"] = json!(address);
+        enriched_with_attrs["financial_health"] = json!(financial_health);
 
         // Pass through translation fields from LLM response
         if let Some(v) = enriched.get("description_original") {
@@ -432,6 +538,26 @@ fn validate_enrichment(enriched: &mut Value) -> Option<String> {
             })
             .collect();
         enriched["certifications"] = json!(filtered);
+    }
+
+    // Validate security_clearances — keep only known patterns
+    if let Some(clearances) = enriched.get("security_clearances").and_then(|v| v.as_array()).cloned() {
+        let valid_clearances = [
+            "SC", "DV", "CTC", "BPSS", "NATO", "ITAR", "EAR",
+            "Cyber Essentials", "Cyber Essentials Plus",
+            "List X", "List N",
+        ];
+        let filtered: Vec<Value> = clearances
+            .into_iter()
+            .filter(|item| {
+                if let Some(s) = item.as_str() {
+                    valid_clearances.iter().any(|vc| s.contains(vc))
+                } else {
+                    false
+                }
+            })
+            .collect();
+        enriched["security_clearances"] = json!(filtered);
     }
 
     // Validate contact_email

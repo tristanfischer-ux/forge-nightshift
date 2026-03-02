@@ -20,11 +20,17 @@ import {
   RotateCcw,
   Languages,
   Loader2,
+  MapPin,
+  ShieldCheck,
+  Clock,
+  Package,
+  HeartPulse,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
   getCompanies,
   getCompaniesFiltered,
+  getStats,
   updateCompanyStatus,
   startPipeline,
   resetErrorCompanies,
@@ -192,13 +198,15 @@ export default function Review() {
 
   async function loadCounts() {
     try {
-      const all = await getCompanies(undefined, 1000, 0);
-      const c = { all: all.length, discovered: 0, enriched: 0, error: 0 };
-      for (const co of all) {
-        const s = String(co.status || "");
-        if (s === "discovered") c.discovered++;
-        else if (s === "enriched" || s === "approved") c.enriched++;
-        else if (s === "error") c.error++;
+      const stats = await getStats();
+      const rows = (stats.companies as { status: string; count: number }[]) || [];
+      const c = { all: 0, discovered: 0, enriched: 0, error: 0 };
+      for (const row of rows) {
+        c.all += Number(row.count) || 0;
+        if (row.status === "discovered") c.discovered += Number(row.count) || 0;
+        else if (row.status === "enriched" || row.status === "approved")
+          c.enriched += Number(row.count) || 0;
+        else if (row.status === "error") c.error += Number(row.count) || 0;
       }
       setCounts(c);
     } catch {
@@ -214,13 +222,13 @@ export default function Review() {
           subcategory: drillSubcategory || undefined,
           country: drillCountry || undefined,
           search: drillSearch || undefined,
-          limit: 500,
+          limit: 2000,
           offset: 0,
         });
         setCompanies(data);
       } else {
         const s = status === "all" ? undefined : status;
-        const data = await getCompanies(s, 500, 0);
+        const data = await getCompanies(s, 2000, 0);
         setCompanies(data);
       }
     } catch {
@@ -306,6 +314,19 @@ export default function Review() {
   const attrChDirectors = Array.isArray(attrs.ch_directors)
     ? (attrs.ch_directors as string[])
     : [];
+  const attrProducts = Array.isArray(attrs.products)
+    ? (attrs.products as string[])
+    : [];
+  const attrSecurityClearances = Array.isArray(attrs.security_clearances)
+    ? (attrs.security_clearances as string[])
+    : [];
+  const attrFinancialSignals = attrs.financial_signals as
+    | Record<string, unknown>
+    | undefined;
+  const financialHealth = selected
+    ? String(selected.financial_health || "")
+    : "";
+  const companyAddress = selected ? String(selected.address || "") : "";
 
   return (
     <div className="space-y-6">
@@ -590,6 +611,149 @@ export default function Review() {
                     </p>
                   </div>
                 )}
+
+              {/* Address */}
+              {companyAddress && (
+                <div>
+                  <h4 className="text-xs text-gray-400 uppercase mb-1 flex items-center gap-1">
+                    <MapPin className="w-3 h-3" /> Address
+                  </h4>
+                  <p className="text-sm text-gray-700">{companyAddress}</p>
+                </div>
+              )}
+
+              {/* Financial Health */}
+              {financialHealth && (
+                <div>
+                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                    <HeartPulse className="w-3 h-3" /> Financial Health
+                  </h4>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span
+                      className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
+                        financialHealth === "good"
+                          ? "bg-green-100 text-green-700"
+                          : financialHealth === "caution"
+                            ? "bg-yellow-100 text-yellow-700"
+                            : financialHealth === "risk"
+                              ? "bg-red-100 text-red-700"
+                              : "bg-gray-100 text-gray-500"
+                      }`}
+                    >
+                      {financialHealth.charAt(0).toUpperCase() +
+                        financialHealth.slice(1)}
+                    </span>
+                  </div>
+                  {attrFinancialSignals && (
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <DetailField
+                        label="Status"
+                        value={attrFinancialSignals.company_status as string}
+                      />
+                      <DetailField
+                        label="Years Trading"
+                        value={attrFinancialSignals.years_trading as number}
+                      />
+                      <DetailField
+                        label="Accounts Type"
+                        value={attrFinancialSignals.accounts_type as string}
+                      />
+                      <DetailField
+                        label="Last Accounts"
+                        value={
+                          attrFinancialSignals.last_accounts_date as string
+                        }
+                      />
+                      {attrFinancialSignals.has_insolvency_history === true && (
+                        <div className="col-span-2 flex items-center gap-1 text-red-600">
+                          <AlertTriangle className="w-3 h-3" />
+                          <span>Insolvency history</span>
+                        </div>
+                      )}
+                      {attrFinancialSignals.has_charges === true && (
+                        <div className="col-span-2 flex items-center gap-1 text-amber-600">
+                          <AlertTriangle className="w-3 h-3" />
+                          <span>Has secured charges</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Products */}
+              {attrProducts.length > 0 && (
+                <div>
+                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                    <Package className="w-3 h-3" /> Products
+                  </h4>
+                  <TagPills
+                    items={attrProducts}
+                    color="bg-rose-50 text-rose-700"
+                  />
+                </div>
+              )}
+
+              {/* Lead Time & MOQ */}
+              {!!(attrs.lead_time || attrs.minimum_order) && (
+                <div>
+                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                    <Clock className="w-3 h-3" /> Lead Time &amp; MOQ
+                  </h4>
+                  <div className="grid grid-cols-2 gap-3">
+                    <DetailField
+                      label="Lead Time"
+                      value={attrs.lead_time as string}
+                    />
+                    <DetailField
+                      label="Minimum Order"
+                      value={attrs.minimum_order as string}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Quality & Compliance */}
+              {!!(attrs.quality_systems ||
+                attrs.export_controls ||
+                attrSecurityClearances.length > 0) && (
+                <div>
+                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                    <ShieldCheck className="w-3 h-3" /> Quality &amp; Compliance
+                  </h4>
+                  {!!attrs.quality_systems && (
+                    <div className="mb-2">
+                      <p className="text-xs text-gray-400 mb-0.5">
+                        Quality Systems
+                      </p>
+                      <p className="text-sm text-gray-700">
+                        {String(attrs.quality_systems)}
+                      </p>
+                    </div>
+                  )}
+                  {!!attrs.export_controls && (
+                    <div className="mb-2">
+                      <p className="text-xs text-gray-400 mb-0.5">
+                        Export Controls
+                      </p>
+                      <p className="text-sm text-gray-700">
+                        {String(attrs.export_controls)}
+                      </p>
+                    </div>
+                  )}
+                  {attrSecurityClearances.length > 0 && (
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">
+                        Security Clearances
+                      </p>
+                      <TagPills
+                        items={attrSecurityClearances}
+                        color="bg-red-50 text-red-700"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Basic Info */}
               <div>

@@ -25,10 +25,11 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(include_str!("migrations/001_initial.sql"))?;
         conn.execute_batch(include_str!("migrations/002_category_coverage.sql"))?;
-        // 003 + 004: additive ALTER TABLE — ignore "duplicate column" errors on re-run
+        // 003+: additive ALTER TABLE — ignore "duplicate column" errors on re-run
         for migration in &[
             include_str!("migrations/003_translation_fields.sql"),
             include_str!("migrations/004_name_normalized.sql"),
+            include_str!("migrations/005_enrichment_v2.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -155,9 +156,11 @@ impl Database {
              relevance_score = ?7, enrichment_quality = ?8, \
              contact_name = ?9, contact_email = ?10, contact_title = ?11, \
              attributes_json = ?12, \
-             description_original = ?13, snippet_english = ?14, last_error = NULL, \
+             description_original = ?13, snippet_english = ?14, \
+             address = ?15, financial_health = ?16, \
+             last_error = NULL, \
              status = 'enriched', updated_at = datetime('now') \
-             WHERE id = ?15",
+             WHERE id = ?17",
             rusqlite::params![
                 enriched.get("description").and_then(|v| v.as_str()).unwrap_or(""),
                 enriched.get("category").and_then(|v| v.as_str()).unwrap_or("Services"),
@@ -173,6 +176,8 @@ impl Database {
                 enriched.get("attributes_json").unwrap_or(&json!({})).to_string(),
                 enriched.get("description_original").and_then(|v| v.as_str()).unwrap_or(""),
                 enriched.get("snippet_english").and_then(|v| v.as_str()).unwrap_or(""),
+                enriched.get("address").and_then(|v| v.as_str()).unwrap_or(""),
+                enriched.get("financial_health").and_then(|v| v.as_str()).unwrap_or(""),
                 id,
             ],
         )?;
@@ -209,7 +214,8 @@ impl Database {
              specialties = NULL, certifications = NULL, company_size = NULL, \
              relevance_score = NULL, enrichment_quality = NULL, \
              contact_name = NULL, contact_email = NULL, contact_title = NULL, \
-             attributes_json = NULL, last_error = NULL, \
+             attributes_json = NULL, address = NULL, financial_health = NULL, \
+             last_error = NULL, \
              updated_at = datetime('now') \
              WHERE status IN ('enriched', 'enriching', 'error')",
             [],
