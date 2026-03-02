@@ -50,7 +50,7 @@ export default function Research() {
 
   async function loadCompanies() {
     try {
-      const data = await getCompanies("discovered", 100, 0);
+      const data = await getCompanies("discovered", 2000, 0);
       setCompanies(data);
     } catch {
       // DB may not be ready yet

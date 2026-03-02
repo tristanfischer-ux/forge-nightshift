@@ -1,7 +1,5 @@
 use anyhow::Result;
-use futures::stream::{self, StreamExt};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use tauri::{Emitter, Manager};
 
 use crate::db::Database;
@@ -36,49 +34,13 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     let mut enriched_count = 0;
     let mut error_count = 0;
 
-    // Parallel website fetching (5 concurrent) before sequential LLM enrichment
     {
         let db: tauri::State<'_, Database> = app.state();
         let _ = db.log_activity(
             job_id,
             "enrich",
             "info",
-            &format!("Pre-fetching websites for {} companies (5 concurrent)...", total),
-        );
-    }
-
-    let website_texts: HashMap<String, String> = {
-        let fetch_tasks: Vec<(String, String)> = companies
-            .iter()
-            .filter_map(|c| {
-                let id = c.get("id").and_then(|v| v.as_str())?.to_string();
-                let url = c.get("website_url").and_then(|v| v.as_str())?.to_string();
-                if url.is_empty() { None } else { Some((id, url)) }
-            })
-            .collect();
-
-        let results: Vec<(String, Option<String>)> = stream::iter(fetch_tasks)
-            .map(|(id, url)| async move {
-                let text = crate::services::scraper::fetch_website_text(&url).await.ok();
-                (id, text)
-            })
-            .buffer_unordered(5)
-            .collect()
-            .await;
-
-        results
-            .into_iter()
-            .filter_map(|(id, text)| text.map(|t| (id, t)))
-            .collect()
-    };
-
-    {
-        let db: tauri::State<'_, Database> = app.state();
-        let _ = db.log_activity(
-            job_id,
-            "enrich",
-            "info",
-            &format!("Fetched website content for {}/{} companies", website_texts.len(), total),
+            &format!("Starting enrichment for {} companies (fetch + enrich per company)...", total),
         );
     }
 
@@ -122,9 +84,15 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             }),
         );
 
+        // Fetch website content inline (multi-page crawl per company)
+        let website_text = if !website.is_empty() {
+            crate::services::scraper::fetch_website_text(website).await.ok()
+        } else {
+            None
+        };
+
         // Build data source section — prefer website content over snippet
-        let website_text = website_texts.get(id);
-        let data_source = if let Some(text) = website_text {
+        let data_source = if let Some(ref text) = website_text {
             format!(
                 "Website content (primary source):\n{}\n\nSearch snippet (secondary): {}",
                 text, snippet
