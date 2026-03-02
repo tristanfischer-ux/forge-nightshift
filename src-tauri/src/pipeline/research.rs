@@ -52,6 +52,19 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
+    {
+        let db: tauri::State<'_, Database> = app.state();
+        let _ = db.log_activity(
+            job_id,
+            "research",
+            "info",
+            &format!(
+                "Starting research using Brave Search API + LLM parser (model: {})",
+                research_model
+            ),
+        );
+    }
+
     // Step 1: Fetch known domains from Supabase (one-time)
     let supabase_domains = if !supabase_url.is_empty() && !supabase_key.is_empty() {
         {

@@ -40,7 +40,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             job_id,
             "enrich",
             "info",
-            &format!("Starting enrichment for {} companies (fetch + enrich per company)...", total),
+            &format!("Starting enrichment for {} companies using model: {} (fetch + enrich per company)...", total, enrich_model),
         );
     }
 
@@ -81,6 +81,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 "total": total,
                 "enriched": enriched_count,
                 "errors": error_count,
+                "model": enrich_model,
             }),
         );
 
@@ -93,7 +94,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
 
         let enrich_prompt = format!(
             r#"Analyze this manufacturing company for a B2B marketplace. Return JSON with these fields:
-description (2-3 sentences, English), description_original (original language if not English, else null), snippet_english (English translation of snippet, null if already English), category ("Products"/"Services"), subcategory, capabilities (array), industries (array), materials (array), key_equipment (array with brand+model), production_capacity (string or null), certifications (array), company_size ("1-9"/"10-49"/"50-99"/"100-249"/"250-499"/"500+"), employee_count_exact (int or null), key_people (array of name+title, max 5), founded_year (int or null), contact_name, contact_email, contact_title, address (full with postcode or null), products (array), lead_time (string or null), minimum_order (string or null), quality_systems (string or null), export_controls (string or null), security_clearances (array), relevance_score (0-100, 80+=clearly manufacturing), enrichment_quality (0-100).
+description (2-3 sentences, English), description_original (original language if not English, else null), snippet_english (English translation of snippet, null if already English), category ("Products"/"Services"), subcategory, capabilities (array), industries (array), materials (array of specific materials with grades/alloys, e.g. ["Aluminium 6061-T6", "Stainless Steel 316L", "Titanium Ti-6Al-4V", "ABS", "Carbon Fibre", "PA12 Nylon", "Brass CZ121", "Mild Steel S275"]), key_equipment (array with brand+model), production_capacity (string or null), certifications (array), company_size ("1-9"/"10-49"/"50-99"/"100-249"/"250-499"/"500+"), employee_count_exact (int or null), key_people (array of name+title, max 5), founded_year (int or null), contact_name, contact_email, contact_title, address (full with postcode or null), products (array), lead_time (string or null), minimum_order (string or null), quality_systems (string or null), export_controls (string or null), security_clearances (array), relevance_score (0-100, 80+=clearly manufacturing), enrichment_quality (0-100).
 
 CRITICAL: Return null if no evidence. Do NOT guess. All text in English.
 
@@ -379,6 +380,7 @@ Return ONLY valid JSON. /no_think"#,
                 "enriched": enriched_count,
                 "errors": error_count,
                 "total": total,
+                "model": enrich_model,
             }),
         );
     }

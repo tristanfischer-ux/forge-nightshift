@@ -141,6 +141,14 @@ export async function backupDatabase() {
   return invoke<string>("backup_database");
 }
 
+// Import low-quality listings from Supabase for audit re-enrichment
+export async function importForAudit(threshold?: number) {
+  return invoke<{ fetched: number; imported: number; skipped: number }>(
+    "import_for_audit",
+    { threshold }
+  );
+}
+
 // Event listeners
 export function onPipelineStatus(
   callback: (payload: Record<string, unknown>) => void

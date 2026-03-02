@@ -17,14 +17,14 @@ pub async fn test_connection(url: &str, service_key: &str) -> Result<bool> {
 
 pub async fn check_domain_exists(url: &str, service_key: &str, domain: &str) -> Result<bool> {
     let client = reqwest::Client::new();
-    // Search in attributes JSONB for website_url containing the domain
+    // Query the promoted website_url column
     let resp = client
         .get(format!("{}/rest/v1/marketplace_listings", url))
         .header("apikey", service_key)
         .header("Authorization", format!("Bearer {}", service_key))
         .query(&[
             ("select", "id"),
-            ("attributes->>website_url", &format!("ilike.*{}*", domain)),
+            ("website_url", &format!("ilike.*{}*", domain)),
             ("limit", "1"),
         ])
         .timeout(std::time::Duration::from_secs(10))
@@ -43,6 +43,7 @@ pub async fn check_domain_exists(url: &str, service_key: &str, domain: &str) -> 
 /// Schema has NO foundry_id — it's a global catalogue.
 /// contact_source must be one of: 'manual', 'ai_enriched', 'self_reported', 'csv_import'
 /// We use 'ai_enriched' for Nightshift-discovered companies.
+/// If company has supabase_listing_id, updates the existing listing (PATCH).
 pub async fn push_listing(
     url: &str,
     service_key: &str,
@@ -62,18 +63,21 @@ pub async fn push_listing(
     // Parse specialties/certifications — may be stored as JSON strings in SQLite
     let specialties = parse_json_field(company, "specialties");
     let certifications = parse_json_field(company, "certifications");
+    let industries = parse_json_field(company, "industries");
 
     // Overlay standard fields onto the base attributes
     let city = company.get("city").and_then(|v| v.as_str()).unwrap_or("");
     let country = company.get("country").and_then(|v| v.as_str()).unwrap_or("");
     let subcategory = company.get("subcategory").and_then(|v| v.as_str()).unwrap_or("");
+    let website = company.get("website_url").and_then(|v| v.as_str()).unwrap_or("");
+    let company_size = company.get("company_size").and_then(|v| v.as_str()).unwrap_or("");
 
-    attributes["website_url"] = json!(company.get("website_url").and_then(|v| v.as_str()).unwrap_or(""));
+    attributes["website_url"] = json!(website);
     attributes["country"] = json!(country);
     attributes["city"] = json!(city);
-    attributes["specialties"] = specialties;
-    attributes["certifications"] = certifications;
-    attributes["employees"] = json!(company.get("company_size").and_then(|v| v.as_str()).unwrap_or(""));
+    attributes["specialties"] = specialties.clone();
+    attributes["certifications"] = certifications.clone();
+    attributes["employees"] = json!(company_size);
     attributes["year_founded"] = json!(company.get("year_founded").and_then(|v| v.as_i64()));
     attributes["nightshift_score"] = json!(company.get("relevance_score").and_then(|v| v.as_str()).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0));
     attributes["discovered_at"] = json!(chrono::Utc::now().to_rfc3339());
@@ -93,6 +97,41 @@ pub async fn push_listing(
         attributes["company_type"] = json!(subcategory);
     }
 
+    // Parse attributes_json for array fields not stored as direct SQLite columns
+    let attrs_parsed = company
+        .get("attributes_json")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or_else(|| json!({}));
+
+    let materials = parse_json_field_from_attrs(&attrs_parsed, "materials");
+    let key_equipment = parse_json_field_from_attrs(&attrs_parsed, "key_equipment");
+    let products = parse_json_field_from_attrs(&attrs_parsed, "products");
+    let key_people = parse_json_field_from_attrs(&attrs_parsed, "key_people");
+    let security_clearances = parse_json_field_from_attrs(&attrs_parsed, "security_clearances");
+
+    let relevance_score = company.get("relevance_score")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse::<i64>().ok())
+        .or_else(|| company.get("relevance_score").and_then(|v| v.as_i64()))
+        .unwrap_or(0);
+    let enrichment_quality = company.get("enrichment_quality")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse::<i64>().ok())
+        .or_else(|| company.get("enrichment_quality").and_then(|v| v.as_i64()))
+        .unwrap_or(30);
+    let founded_year = company.get("year_founded")
+        .and_then(|v| v.as_i64())
+        .or_else(|| attrs_parsed.get("founded_year").and_then(|v| v.as_i64()));
+    let employee_count_exact = attrs_parsed.get("employee_count_exact").and_then(|v| v.as_i64());
+    let production_capacity = attrs_parsed.get("production_capacity").and_then(|v| v.as_str()).unwrap_or("");
+    let address = company.get("address").and_then(|v| v.as_str()).unwrap_or("");
+    let financial_health = company.get("financial_health").and_then(|v| v.as_str()).unwrap_or("");
+    let lead_time = attrs_parsed.get("lead_time").and_then(|v| v.as_str()).unwrap_or("");
+    let minimum_order = attrs_parsed.get("minimum_order").and_then(|v| v.as_str()).unwrap_or("");
+    let quality_systems = attrs_parsed.get("quality_systems").and_then(|v| v.as_str()).unwrap_or("");
+    let export_controls = attrs_parsed.get("export_controls").and_then(|v| v.as_str()).unwrap_or("");
+
     let mut listing = json!({
         "title": company.get("name").and_then(|v| v.as_str()).unwrap_or(""),
         "description": company.get("description").and_then(|v| v.as_str()).unwrap_or(""),
@@ -103,8 +142,52 @@ pub async fn push_listing(
         "outreach_status": "not_started",
         "is_verified": false,
         "approval_status": "pending",
-        "data_quality_score": company.get("enrichment_quality").and_then(|v| v.as_str()).and_then(|v| v.parse::<i64>().ok()).unwrap_or(30),
+        "data_quality_score": enrichment_quality,
+        // Promoted columns
+        "website_url": website,
+        "country": country,
+        "city": city,
+        "specialties": specialties,
+        "certifications": certifications,
+        "industries": industries,
+        "materials": materials,
+        "key_equipment": key_equipment,
+        "products": products,
+        "key_people": key_people,
+        "security_clearances": security_clearances,
+        "company_size": company_size,
+        "relevance_score": relevance_score,
+        "enrichment_quality": enrichment_quality,
     });
+
+    // Optional fields — only set if non-empty to avoid overwriting with empty
+    if founded_year.is_some() {
+        listing["founded_year"] = json!(founded_year);
+    }
+    if employee_count_exact.is_some() {
+        listing["employee_count_exact"] = json!(employee_count_exact);
+    }
+    if !production_capacity.is_empty() {
+        listing["production_capacity"] = json!(production_capacity);
+    }
+    if !address.is_empty() {
+        listing["address"] = json!(address);
+    }
+    if !financial_health.is_empty() {
+        listing["financial_health"] = json!(financial_health);
+    }
+    if !lead_time.is_empty() {
+        listing["lead_time"] = json!(lead_time);
+    }
+    if !minimum_order.is_empty() {
+        listing["minimum_order"] = json!(minimum_order);
+    }
+    if !quality_systems.is_empty() {
+        listing["quality_systems"] = json!(quality_systems);
+    }
+    if !export_controls.is_empty() {
+        listing["export_controls"] = json!(export_controls);
+    }
 
     // Only include contact fields if they have values
     let contact_name = company.get("contact_name").and_then(|v| v.as_str()).unwrap_or("");
@@ -125,32 +208,64 @@ pub async fn push_listing(
         listing["contact_phone"] = json!(contact_phone);
     }
 
-    let resp = client
-        .post(format!("{}/rest/v1/marketplace_listings", url))
-        .header("apikey", service_key)
-        .header("Authorization", format!("Bearer {}", service_key))
-        .header("Content-Type", "application/json")
-        .header("Prefer", "return=representation")
-        .json(&listing)
-        .timeout(std::time::Duration::from_secs(15))
-        .send()
-        .await?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Supabase insert error {}: {}", status, body);
-    }
-
-    let results: Vec<Value> = resp.json().await?;
-    let id = results
-        .first()
-        .and_then(|r| r.get("id"))
+    // Check if this is an audit re-enrichment (has existing supabase_listing_id)
+    let existing_listing_id = company
+        .get("supabase_listing_id")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+        .filter(|s| !s.is_empty());
 
-    Ok(id)
+    if let Some(listing_id) = existing_listing_id {
+        // UPDATE existing listing via PATCH
+        let resp = client
+            .patch(format!(
+                "{}/rest/v1/marketplace_listings?id=eq.{}",
+                url, listing_id
+            ))
+            .header("apikey", service_key)
+            .header("Authorization", format!("Bearer {}", service_key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&listing)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Supabase update error {}: {}", status, body);
+        }
+
+        Ok(listing_id.to_string())
+    } else {
+        // INSERT new listing via POST
+        let resp = client
+            .post(format!("{}/rest/v1/marketplace_listings", url))
+            .header("apikey", service_key)
+            .header("Authorization", format!("Bearer {}", service_key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&listing)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Supabase insert error {}: {}", status, body);
+        }
+
+        let results: Vec<Value> = resp.json().await?;
+        let id = results
+            .first()
+            .and_then(|r| r.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        Ok(id)
+    }
 }
 
 /// Fetch all known domains from ForgeOS marketplace_listings.
@@ -168,7 +283,7 @@ pub async fn fetch_all_known_domains(url: &str, service_key: &str) -> Result<Has
             .header("apikey", service_key)
             .header("Authorization", format!("Bearer {}", service_key))
             .header("Range", format!("{}-{}", offset, offset + page_size - 1))
-            .query(&[("select", "attributes->>website_url")])
+            .query(&[("select", "website_url")])
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await?;
@@ -199,6 +314,37 @@ pub async fn fetch_all_known_domains(url: &str, service_key: &str) -> Result<Has
     }
 
     Ok(domains)
+}
+
+/// Fetch low-quality listings from ForgeOS for audit re-enrichment.
+pub async fn fetch_low_quality_listings(
+    url: &str,
+    service_key: &str,
+    threshold: i32,
+) -> Result<Vec<Value>> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/rest/v1/marketplace_listings", url))
+        .header("apikey", service_key)
+        .header("Authorization", format!("Bearer {}", service_key))
+        .query(&[
+            ("select", "*"),
+            ("data_quality_score", &format!("lt.{}", threshold)),
+            ("order", "data_quality_score.asc"),
+            ("limit", "200"),
+        ])
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Supabase fetch error {}: {}", status, body);
+    }
+
+    let listings: Vec<Value> = resp.json().await?;
+    Ok(listings)
 }
 
 /// Extract domain from a URL string
@@ -237,4 +383,13 @@ fn parse_json_field(company: &Value, field: &str) -> Value {
         }
     }
     json!([])
+}
+
+/// Parse a JSONB array field directly from an already-parsed attributes object
+fn parse_json_field_from_attrs(attrs: &Value, field: &str) -> Value {
+    attrs
+        .get(field)
+        .filter(|v| v.is_array())
+        .cloned()
+        .unwrap_or_else(|| json!([]))
 }

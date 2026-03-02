@@ -110,53 +110,155 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
     let db: tauri::State<'_, Database> = app.state();
     let config = db.get_all_config()?;
 
-    for stage in stages {
-        if is_cancelled() {
+    // Check if both research and enrich are in the stage list for parallel execution
+    let has_research = stages.iter().any(|s| s == "research");
+    let has_enrich = stages.iter().any(|s| s == "enrich");
+    let run_parallel = has_research && has_enrich;
+
+    if run_parallel {
+        // Run research + enrich concurrently, then remaining stages sequentially
+        {
             let db: tauri::State<'_, Database> = app.state();
-            let _ = db.log_activity(job_id, stage, "warn", "Pipeline cancelled by user");
-            break;
+            let _ = db.log_activity(job_id, "pipeline", "info", "Running research + enrich in parallel");
         }
 
-        let _ = app.emit("pipeline:stage", json!({
-            "stage": stage,
-            "status": "running",
-        }));
+        let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "running"}));
+        let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "running"}));
 
         {
             let db: tauri::State<'_, Database> = app.state();
-            let _ = db.log_activity(job_id, stage, "info", &format!("Starting {} stage", stage));
+            let _ = db.log_activity(job_id, "research", "info", "Starting research stage");
+            let _ = db.log_activity(job_id, "enrich", "info", "Starting enrich stage");
         }
 
-        let stage_result = match stage.as_str() {
-            "research" => research::run(app, job_id, &config).await,
-            "enrich" => enrich::run(app, job_id, &config).await,
-            "push" => push::run(app, job_id, &config).await,
-            "outreach" => outreach::run(app, job_id, &config).await,
-            "report" => report::run(app, job_id, &config).await,
-            unknown => {
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, unknown, "error", "Unknown stage");
-                Err(anyhow::anyhow!("Unknown stage: {}", unknown))
-            }
-        };
+        let (research_result, enrich_result) = tokio::join!(
+            research::run(app, job_id, &config),
+            enrich::run(app, job_id, &config)
+        );
 
-        match stage_result {
+        // Process research result
+        match research_result {
             Ok(result) => {
-                summary[stage] = result;
+                summary["research"] = result;
                 let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, stage, "info", &format!("{} stage completed", stage));
+                let _ = db.log_activity(job_id, "research", "info", "research stage completed");
             }
             Err(e) => {
                 let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, stage, "error", &format!("{} stage failed: {}", stage, e));
-                summary[stage] = json!({"error": e.to_string()});
+                let _ = db.log_activity(job_id, "research", "error", &format!("research stage failed: {}", e));
+                summary["research"] = json!({"error": e.to_string()});
             }
         }
+        let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "completed"}));
 
-        let _ = app.emit("pipeline:stage", json!({
-            "stage": stage,
-            "status": "completed",
-        }));
+        // Process enrich result
+        match enrich_result {
+            Ok(result) => {
+                summary["enrich"] = result;
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, "enrich", "info", "enrich stage completed");
+            }
+            Err(e) => {
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, "enrich", "error", &format!("enrich stage failed: {}", e));
+                summary["enrich"] = json!({"error": e.to_string()});
+            }
+        }
+        let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "completed"}));
+
+        // Run remaining stages sequentially (skip research and enrich)
+        for stage in stages {
+            if stage == "research" || stage == "enrich" {
+                continue;
+            }
+            if is_cancelled() {
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, stage, "warn", "Pipeline cancelled by user");
+                break;
+            }
+
+            let _ = app.emit("pipeline:stage", json!({"stage": stage, "status": "running"}));
+            {
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, stage, "info", &format!("Starting {} stage", stage));
+            }
+
+            let stage_result = match stage.as_str() {
+                "push" => push::run(app, job_id, &config).await,
+                "outreach" => outreach::run(app, job_id, &config).await,
+                "report" => report::run(app, job_id, &config).await,
+                unknown => {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(job_id, unknown, "error", "Unknown stage");
+                    Err(anyhow::anyhow!("Unknown stage: {}", unknown))
+                }
+            };
+
+            match stage_result {
+                Ok(result) => {
+                    summary[stage] = result;
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(job_id, stage, "info", &format!("{} stage completed", stage));
+                }
+                Err(e) => {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(job_id, stage, "error", &format!("{} stage failed: {}", stage, e));
+                    summary[stage] = json!({"error": e.to_string()});
+                }
+            }
+
+            let _ = app.emit("pipeline:stage", json!({"stage": stage, "status": "completed"}));
+        }
+    } else {
+        // Sequential execution (original behavior)
+        for stage in stages {
+            if is_cancelled() {
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, stage, "warn", "Pipeline cancelled by user");
+                break;
+            }
+
+            let _ = app.emit("pipeline:stage", json!({
+                "stage": stage,
+                "status": "running",
+            }));
+
+            {
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, stage, "info", &format!("Starting {} stage", stage));
+            }
+
+            let stage_result = match stage.as_str() {
+                "research" => research::run(app, job_id, &config).await,
+                "enrich" => enrich::run(app, job_id, &config).await,
+                "push" => push::run(app, job_id, &config).await,
+                "outreach" => outreach::run(app, job_id, &config).await,
+                "report" => report::run(app, job_id, &config).await,
+                unknown => {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(job_id, unknown, "error", "Unknown stage");
+                    Err(anyhow::anyhow!("Unknown stage: {}", unknown))
+                }
+            };
+
+            match stage_result {
+                Ok(result) => {
+                    summary[stage] = result;
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(job_id, stage, "info", &format!("{} stage completed", stage));
+                }
+                Err(e) => {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(job_id, stage, "error", &format!("{} stage failed: {}", stage, e));
+                    summary[stage] = json!({"error": e.to_string()});
+                }
+            }
+
+            let _ = app.emit("pipeline:stage", json!({
+                "stage": stage,
+                "status": "completed",
+            }));
+        }
     }
 
     Ok(summary)

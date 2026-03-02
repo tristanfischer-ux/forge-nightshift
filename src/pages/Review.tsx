@@ -25,6 +25,10 @@ import {
   Clock,
   Package,
   HeartPulse,
+  Upload,
+  ArrowUpCircle,
+  Search,
+  Undo2,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -36,6 +40,7 @@ import {
   resetErrorCompanies,
   getPipelineStatus,
   approveAllEnriched,
+  importForAudit,
 } from "../lib/tauri";
 
 const COUNTRIES: Record<string, string> = {
@@ -47,7 +52,7 @@ const COUNTRIES: Record<string, string> = {
   GB: "United Kingdom",
 };
 
-type StatusFilter = "all" | "discovered" | "enriched" | "error";
+type StatusFilter = "all" | "discovered" | "enriched" | "approved" | "pushed" | "error";
 
 const STATUS_BADGE: Record<string, string> = {
   discovered: "bg-blue-100 text-blue-700",
@@ -124,6 +129,8 @@ export default function Review() {
     all: 0,
     discovered: 0,
     enriched: 0,
+    approved: 0,
+    pushed: 0,
     error: 0,
   });
   const [enriching, setEnriching] = useState(false);
@@ -133,6 +140,13 @@ export default function Review() {
     enriched: number;
     errors: number;
     total: number;
+    model: string;
+  } | null>(null);
+  const [auditing, setAuditing] = useState(false);
+  const [auditResult, setAuditResult] = useState<{
+    fetched: number;
+    imported: number;
+    skipped: number;
   } | null>(null);
 
   // Drill-down filters from URL params
@@ -179,6 +193,7 @@ export default function Review() {
       enriched: number;
       errors: number;
       total: number;
+      model?: string;
     }>("pipeline:progress", (event) => {
       const p = event.payload;
       if (p.stage !== "enrich") return;
@@ -188,6 +203,7 @@ export default function Review() {
         enriched: p.enriched,
         errors: p.errors,
         total: p.total,
+        model: p.model || "",
       });
       // Refresh list on each company event so badges update live
       loadCompanies(filter);
@@ -200,12 +216,13 @@ export default function Review() {
     try {
       const stats = await getStats();
       const rows = (stats.companies as { status: string; count: number }[]) || [];
-      const c = { all: 0, discovered: 0, enriched: 0, error: 0 };
+      const c: Record<StatusFilter, number> = { all: 0, discovered: 0, enriched: 0, approved: 0, pushed: 0, error: 0 };
       for (const row of rows) {
         c.all += Number(row.count) || 0;
         if (row.status === "discovered") c.discovered += Number(row.count) || 0;
-        else if (row.status === "enriched" || row.status === "approved")
-          c.enriched += Number(row.count) || 0;
+        else if (row.status === "enriched") c.enriched += Number(row.count) || 0;
+        else if (row.status === "approved") c.approved += Number(row.count) || 0;
+        else if (row.status === "pushed") c.pushed += Number(row.count) || 0;
         else if (row.status === "error") c.error += Number(row.count) || 0;
       }
       setCounts(c);
@@ -245,6 +262,15 @@ export default function Review() {
     }
   }
 
+  async function handleUnapprove(id: string) {
+    await updateCompanyStatus(id, "enriched");
+    loadCompanies(filter);
+    loadCounts();
+    if (selected && String(selected.id) === id) {
+      setSelected({ ...selected, status: "enriched" });
+    }
+  }
+
   async function handleReject(id: string) {
     await updateCompanyStatus(id, "rejected");
     loadCompanies(filter);
@@ -256,6 +282,15 @@ export default function Review() {
     try {
       setEnriching(true);
       await startPipeline(["enrich"]);
+    } catch {
+      setEnriching(false);
+    }
+  }
+
+  async function handlePushToForgeOS() {
+    try {
+      setEnriching(true);
+      await startPipeline(["push"]);
     } catch {
       setEnriching(false);
     }
@@ -282,10 +317,27 @@ export default function Review() {
     }
   }
 
+  async function handleAuditMarketplace() {
+    try {
+      setAuditing(true);
+      setAuditResult(null);
+      const result = await importForAudit(50);
+      setAuditResult(result);
+      loadCompanies(filter);
+      loadCounts();
+    } catch {
+      // handled elsewhere
+    } finally {
+      setAuditing(false);
+    }
+  }
+
   const tabs: { key: StatusFilter; label: string }[] = [
     { key: "all", label: "All" },
     { key: "discovered", label: "Discovered" },
     { key: "enriched", label: "Enriched" },
+    { key: "approved", label: "Approved" },
+    { key: "pushed", label: "Pushed" },
     { key: "error", label: "Error" },
   ];
 
@@ -339,6 +391,24 @@ export default function Review() {
         </div>
 
         <div className="flex gap-2">
+          {/* Audit Marketplace button — always visible */}
+          <button
+            onClick={handleAuditMarketplace}
+            disabled={auditing || enriching}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              auditing
+                ? "bg-indigo-400 text-white cursor-not-allowed"
+                : "bg-indigo-600 hover:bg-indigo-700 text-white"
+            }`}
+          >
+            {auditing ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Search className="w-4 h-4" />
+            )}
+            {auditing ? "Importing..." : "Audit Marketplace"}
+          </button>
+
           {filter === "discovered" && companies.length > 0 && (
             <button
               onClick={handleRunEnrich}
@@ -375,8 +445,43 @@ export default function Review() {
               Approve All
             </button>
           )}
+          {filter === "approved" && companies.length > 0 && (
+            <button
+              onClick={handlePushToForgeOS}
+              disabled={enriching}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
+                enriching
+                  ? "bg-purple-400 cursor-not-allowed"
+                  : "bg-purple-600 hover:bg-purple-700"
+              }`}
+            >
+              {enriching ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <ArrowUpCircle className="w-4 h-4" />
+              )}
+              {enriching ? "Pushing..." : "Push to ForgeOS"}
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Audit result banner */}
+      {auditResult && (
+        <div className="flex items-center gap-3 p-3 bg-indigo-50 border border-indigo-200 rounded-lg">
+          <Upload className="w-4 h-4 text-indigo-600 shrink-0" />
+          <span className="text-sm text-indigo-700">
+            Audit complete: fetched {auditResult.fetched} low-quality listings,
+            imported {auditResult.imported}, skipped {auditResult.skipped} (already in Nightshift)
+          </span>
+          <button
+            onClick={() => setAuditResult(null)}
+            className="ml-auto text-indigo-400 hover:text-indigo-600"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Status filter tabs */}
       <div className="flex gap-1 bg-white rounded-xl border border-gray-200 p-1 shadow-sm">
@@ -444,6 +549,11 @@ export default function Review() {
               <Loader2 className="w-4 h-4 text-forge-600 animate-spin shrink-0" />
               <span className="text-sm font-medium text-gray-900 truncate">
                 Enriching: {enrichProgress.currentCompany}
+                {enrichProgress.model && (
+                  <span className="text-gray-400 font-normal ml-1">
+                    ({enrichProgress.model})
+                  </span>
+                )}
               </span>
             </div>
             <div className="flex items-center gap-3 shrink-0 text-xs text-gray-500">
@@ -551,6 +661,11 @@ export default function Review() {
                   <p className="text-sm text-gray-500 flex items-center gap-1 mt-1">
                     <Globe className="w-3 h-3" />
                     {String(selected.domain)}
+                  </p>
+                )}
+                {status === "pushed" && !!selected.supabase_listing_id && (
+                  <p className="text-xs text-purple-600 mt-1 font-mono">
+                    Listing ID: {String(selected.supabase_listing_id)}
                   </p>
                 )}
               </div>
@@ -1070,6 +1185,15 @@ export default function Review() {
                       Reject
                     </button>
                   </>
+                )}
+                {status === "approved" && (
+                  <button
+                    onClick={() => handleUnapprove(String(selected.id))}
+                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded-lg text-sm font-medium text-white transition-colors"
+                  >
+                    <Undo2 className="w-4 h-4" />
+                    Un-approve
+                  </button>
                 )}
               </div>
             </div>

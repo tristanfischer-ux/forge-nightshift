@@ -281,6 +281,142 @@ fn backup_database(
     Ok(backup_path.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+async fn import_for_audit(
+    db: tauri::State<'_, Database>,
+    threshold: Option<i32>,
+) -> Result<serde_json::Value, String> {
+    let config = db.get_all_config().map_err(|e| e.to_string())?;
+    let supabase_url = config
+        .get("supabase_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let supabase_key = config
+        .get("supabase_service_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if supabase_url.is_empty() || supabase_key.is_empty() {
+        return Err("Supabase credentials not configured".to_string());
+    }
+
+    let quality_threshold = threshold.unwrap_or(50);
+
+    let listings = services::supabase::fetch_low_quality_listings(
+        supabase_url,
+        supabase_key,
+        quality_threshold,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let total_fetched = listings.len();
+    let mut imported = 0i64;
+    let mut skipped = 0i64;
+
+    for listing in &listings {
+        let listing_id = listing
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if listing_id.is_empty() {
+            skipped += 1;
+            continue;
+        }
+
+        // Extract website_url from promoted column or attributes fallback
+        let website_url = listing
+            .get("website_url")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                listing
+                    .get("attributes")
+                    .and_then(|a| a.get("website_url"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("");
+
+        // Extract domain from website_url
+        let domain = if !website_url.is_empty() {
+            let d = website_url
+                .replace("https://", "")
+                .replace("http://", "")
+                .replace("www.", "");
+            d.split('/').next().unwrap_or("").to_lowercase()
+        } else {
+            String::new()
+        };
+
+        // Dedup: skip if domain already in local SQLite
+        if !domain.is_empty() {
+            if db.domain_exists(&domain).unwrap_or(false) {
+                skipped += 1;
+                continue;
+            }
+        }
+
+        let title = listing
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        // Name-based dedup
+        if !title.is_empty() && db.name_exists_normalized(title).unwrap_or(false) {
+            skipped += 1;
+            continue;
+        }
+
+        let country = listing
+            .get("country")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                listing
+                    .get("attributes")
+                    .and_then(|a| a.get("country"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("");
+
+        let city = listing
+            .get("city")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                listing
+                    .get("attributes")
+                    .and_then(|a| a.get("city"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("");
+
+        let company = serde_json::json!({
+            "name": title,
+            "website_url": website_url,
+            "domain": domain,
+            "country": country,
+            "city": city,
+            "description": listing.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+            "contact_name": listing.get("contact_name").and_then(|v| v.as_str()).unwrap_or(""),
+            "contact_email": listing.get("contact_email").and_then(|v| v.as_str()).unwrap_or(""),
+            "contact_title": listing.get("contact_title").and_then(|v| v.as_str()).unwrap_or(""),
+            "contact_phone": listing.get("contact_phone").and_then(|v| v.as_str()).unwrap_or(""),
+        });
+
+        match db.insert_company_for_audit(&company, listing_id) {
+            Ok(_) => imported += 1,
+            Err(_) => skipped += 1,
+        }
+    }
+
+    Ok(serde_json::json!({
+        "fetched": total_fetched,
+        "imported": imported,
+        "skipped": skipped,
+    }))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -354,6 +490,7 @@ pub fn run() {
             get_companies_filtered,
             refresh_email_statuses,
             backup_database,
+            import_for_audit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

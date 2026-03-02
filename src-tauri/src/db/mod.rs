@@ -346,6 +346,41 @@ impl Database {
         Ok(id)
     }
 
+    /// Insert a company imported from Supabase for audit re-enrichment.
+    /// Sets supabase_listing_id so push stage knows to UPDATE, not INSERT.
+    pub fn insert_company_for_audit(
+        &self,
+        company: &Value,
+        supabase_listing_id: &str,
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let name = company
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let name_normalized = normalize_company_name(name);
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companies (id, name, website_url, domain, country, city, source, description, contact_name, contact_email, contact_title, contact_phone, supabase_listing_id, name_normalized, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'audit', ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'discovered')",
+            rusqlite::params![
+                id,
+                name,
+                company.get("website_url").and_then(|v| v.as_str()).unwrap_or(""),
+                company.get("domain").and_then(|v| v.as_str()).unwrap_or(""),
+                company.get("country").and_then(|v| v.as_str()).unwrap_or(""),
+                company.get("city").and_then(|v| v.as_str()).unwrap_or(""),
+                company.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+                company.get("contact_name").and_then(|v| v.as_str()).unwrap_or(""),
+                company.get("contact_email").and_then(|v| v.as_str()).unwrap_or(""),
+                company.get("contact_title").and_then(|v| v.as_str()).unwrap_or(""),
+                company.get("contact_phone").and_then(|v| v.as_str()).unwrap_or(""),
+                supabase_listing_id,
+                name_normalized,
+            ],
+        )?;
+        Ok(id)
+    }
+
     pub fn domain_exists(&self, domain: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row(
