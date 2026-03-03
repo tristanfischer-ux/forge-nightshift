@@ -149,6 +149,7 @@ export default function MapPage() {
       loadCompanies();
     } catch (e) {
       console.error("Geocoding failed:", e);
+      alert(`Geocoding error: ${e}`);
     }
     setGeocoding(false);
   }

@@ -56,6 +56,7 @@ impl Database {
             include_str!("migrations/009_auto_approve_threshold.sql"),
             include_str!("migrations/010_enrich_concurrency.sql"),
             include_str!("migrations/011_geocoding.sql"),
+            include_str!("migrations/012_normalize_country.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -878,13 +879,13 @@ impl Database {
         Ok(())
     }
 
-    /// Get companies that have an address but no lat/lng (for backfill geocoding).
+    /// Get companies that have an address or city but no lat/lng (for backfill geocoding).
     pub fn get_companies_needing_geocoding(&self) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, address, city, country FROM companies \
-             WHERE latitude IS NULL AND (address IS NOT NULL AND address != '') \
-             AND (country = 'GB' OR country = 'UK')"
+             WHERE latitude IS NULL \
+             AND ((address IS NOT NULL AND address != '') OR (city IS NOT NULL AND city != ''))"
         )?;
         let rows: Vec<Value> = stmt
             .query_map([], |row| {

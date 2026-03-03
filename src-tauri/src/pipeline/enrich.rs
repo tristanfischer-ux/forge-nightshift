@@ -381,11 +381,11 @@ Return ONLY valid JSON. /no_think"#,
                     .unwrap_or("")
                     .to_string();
 
-                // Geocode UK companies using postcodes.io
+                // Geocode all companies
                 let mut geo_lat: Option<f64> = None;
                 let mut geo_lng: Option<f64> = None;
-                if country == "GB" || country == "UK" {
-                    // Try postcode extraction from address first
+                if country == "GB" {
+                    // UK: use postcodes.io (fast, no rate limit issues)
                     if let Some(postcode) = crate::services::postcodes::extract_uk_postcode(&address) {
                         match crate::services::postcodes::geocode_postcode(&postcode).await {
                             Ok((lat, lng)) => {
@@ -395,9 +395,22 @@ Return ONLY valid JSON. /no_think"#,
                             Err(_) => {} // fall through to city fallback
                         }
                     }
-                    // Fallback: geocode by city name
                     if geo_lat.is_none() && !city.is_empty() {
                         if let Ok((lat, lng)) = crate::services::postcodes::geocode_place(&city).await {
+                            geo_lat = Some(lat);
+                            geo_lng = Some(lng);
+                        }
+                    }
+                } else if !country.is_empty() {
+                    // Non-UK: use Nominatim (1.1s rate limit built in)
+                    if !address.is_empty() {
+                        if let Ok((lat, lng)) = crate::services::nominatim::geocode_address(&address).await {
+                            geo_lat = Some(lat);
+                            geo_lng = Some(lng);
+                        }
+                    }
+                    if geo_lat.is_none() && !city.is_empty() {
+                        if let Ok((lat, lng)) = crate::services::nominatim::geocode_city_country(&city, &country).await {
                             geo_lat = Some(lat);
                             geo_lng = Some(lng);
                         }

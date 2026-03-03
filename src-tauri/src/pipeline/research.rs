@@ -127,6 +127,15 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
 
             let queries = crate::services::brave::generate_queries_for_category(country, category);
             let mut batch_discovered = 0;
+            let mut batch_results = 0u64;
+            let mut skipped_llm_error = 0u64;
+            let mut skipped_llm_skip = 0u64;
+            let mut skipped_domain_supabase = 0u64;
+            let mut skipped_domain_local = 0u64;
+            let mut skipped_name_supabase = 0u64;
+            let mut skipped_name_local = 0u64;
+            let mut skipped_parse = 0u64;
+            let mut skipped_no_name = 0u64;
 
             for (query, _cat_id) in &queries {
                 if super::is_cancelled() {
@@ -178,6 +187,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                     if super::is_cancelled() {
                         break;
                     }
+                    batch_results += 1;
 
                     let parse_prompt = format!(
                         r#"Extract company information from this search result. Return JSON with these fields:
@@ -210,6 +220,7 @@ Return ONLY valid JSON."#,
                     {
                         Ok(r) => r,
                         Err(e) => {
+                            skipped_llm_error += 1;
                             let db: tauri::State<'_, Database> = app.state();
                             let _ = db.log_activity(
                                 job_id,
@@ -223,7 +234,7 @@ Return ONLY valid JSON."#,
 
                     let parsed: Value = match serde_json::from_str(&llm_response) {
                         Ok(v) => v,
-                        Err(_) => continue,
+                        Err(_) => { skipped_parse += 1; continue; }
                     };
 
                     if parsed
@@ -231,11 +242,13 @@ Return ONLY valid JSON."#,
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false)
                     {
+                        skipped_llm_skip += 1;
                         continue;
                     }
 
                     let name = parsed.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     if name.is_empty() {
+                        skipped_no_name += 1;
                         continue;
                     }
 
@@ -249,11 +262,12 @@ Return ONLY valid JSON."#,
                         let normalized_domain = domain.to_lowercase();
                         let stripped_domain = normalized_domain.strip_prefix("www.").unwrap_or(&normalized_domain);
                         if supabase_domains.contains(stripped_domain) {
+                            skipped_domain_supabase += 1;
                             continue;
                         }
                         let db: tauri::State<'_, Database> = app.state();
                         match db.domain_exists(domain) {
-                            Ok(true) => continue,
+                            Ok(true) => { skipped_domain_local += 1; continue; }
                             Ok(false) => {} // new domain, proceed
                             Err(e) => {
                                 let _ = db.log_activity(
@@ -281,10 +295,12 @@ Return ONLY valid JSON."#,
                         }
                         let normalized_name = n.trim().to_string();
                         if supabase_names.contains(&normalized_name) {
+                            skipped_name_supabase += 1;
                             continue;
                         }
                         let db: tauri::State<'_, Database> = app.state();
                         if db.name_exists_normalized(name).unwrap_or(false) {
+                            skipped_name_local += 1;
                             continue;
                         }
                     }
@@ -341,6 +357,7 @@ Return ONLY valid JSON."#,
 
                             for result in &page2_results {
                                 if super::is_cancelled() { break; }
+                                batch_results += 1;
 
                                 let parse_prompt = format!(
                                     r#"Extract company information from this search result. Return JSON with these fields:
@@ -367,33 +384,33 @@ Return ONLY valid JSON."#,
                                     ollama_url, research_model, &parse_prompt, true,
                                 ).await {
                                     Ok(r) => r,
-                                    Err(_) => continue,
+                                    Err(_) => { skipped_llm_error += 1; continue; }
                                 };
 
                                 let parsed: Value = match serde_json::from_str(&llm_response) {
                                     Ok(v) => v,
-                                    Err(_) => continue,
+                                    Err(_) => { skipped_parse += 1; continue; }
                                 };
 
-                                if parsed.get("skip").and_then(|v| v.as_bool()).unwrap_or(false) { continue; }
+                                if parsed.get("skip").and_then(|v| v.as_bool()).unwrap_or(false) { skipped_llm_skip += 1; continue; }
 
                                 let name = parsed.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                                if name.is_empty() { continue; }
+                                if name.is_empty() { skipped_no_name += 1; continue; }
 
                                 let domain = parsed.get("domain").and_then(|v| v.as_str()).unwrap_or("");
 
                                 if !domain.is_empty() {
                                     let normalized_domain = domain.to_lowercase();
                                     let stripped_domain = normalized_domain.strip_prefix("www.").unwrap_or(&normalized_domain);
-                                    if supabase_domains.contains(stripped_domain) { continue; }
+                                    if supabase_domains.contains(stripped_domain) { skipped_domain_supabase += 1; continue; }
                                     let db: tauri::State<'_, Database> = app.state();
-                                    if db.domain_exists(domain).unwrap_or(false) { continue; }
+                                    if db.domain_exists(domain).unwrap_or(false) { skipped_domain_local += 1; continue; }
                                 }
 
                                 if !name.is_empty() {
-                                    if supabase_names.contains(&name.to_lowercase().trim().to_string()) { continue; }
+                                    if supabase_names.contains(&name.to_lowercase().trim().to_string()) { skipped_name_supabase += 1; continue; }
                                     let db: tauri::State<'_, Database> = app.state();
-                                    if db.name_exists_normalized(name).unwrap_or(false) { continue; }
+                                    if db.name_exists_normalized(name).unwrap_or(false) { skipped_name_local += 1; continue; }
                                 }
 
                                 let mut company = parsed.clone();
@@ -432,7 +449,14 @@ Return ONLY valid JSON."#,
                     job_id,
                     "research",
                     "info",
-                    &format!("[{}] {} — found {} new companies", country, category.name, batch_discovered),
+                    &format!(
+                        "[{}] {} — {} results: {} new, {} skip, {} parse-err, {} no-name, {} domain-supabase, {} domain-local, {} name-supabase, {} name-local, {} llm-error",
+                        country, category.name, batch_results, batch_discovered,
+                        skipped_llm_skip, skipped_parse, skipped_no_name,
+                        skipped_domain_supabase, skipped_domain_local,
+                        skipped_name_supabase, skipped_name_local,
+                        skipped_llm_error,
+                    ),
                 );
             }
         }

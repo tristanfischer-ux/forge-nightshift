@@ -535,28 +535,43 @@ async fn geocode_companies(db: tauri::State<'_, Database>) -> Result<serde_json:
     let mut geocoded = 0i64;
     let mut failed = 0i64;
 
-    // Collect postcodes for bulk geocoding
-    let mut postcode_map: Vec<(String, String)> = Vec::new(); // (company_id, postcode)
-    let mut city_fallbacks: Vec<(String, String)> = Vec::new(); // (company_id, city)
+    // Separate UK companies (use fast postcodes.io bulk) from non-UK (use Nominatim)
+    let mut uk_postcode_map: Vec<(String, String)> = Vec::new(); // (company_id, postcode)
+    let mut uk_city_fallbacks: Vec<(String, String)> = Vec::new(); // (company_id, city)
+    let mut non_uk_companies: Vec<(String, String, String, String)> = Vec::new(); // (id, address, city, country)
 
     for company in &companies {
         let id = company.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let address = company.get("address").and_then(|v| v.as_str()).unwrap_or("");
         let city = company.get("city").and_then(|v| v.as_str()).unwrap_or("");
+        let country = company.get("country").and_then(|v| v.as_str()).unwrap_or("");
 
-        if let Some(postcode) = services::postcodes::extract_uk_postcode(address) {
-            postcode_map.push((id.to_string(), postcode));
-        } else if !city.is_empty() {
-            city_fallbacks.push((id.to_string(), city.to_string()));
+        if country == "GB" {
+            if let Some(postcode) = services::postcodes::extract_uk_postcode(address) {
+                uk_postcode_map.push((id.to_string(), postcode));
+            } else if !city.is_empty() {
+                uk_city_fallbacks.push((id.to_string(), city.to_string()));
+            }
+        } else {
+            non_uk_companies.push((
+                id.to_string(),
+                address.to_string(),
+                city.to_string(),
+                country.to_string(),
+            ));
         }
     }
 
-    // Bulk geocode postcodes in batches of 100
-    for chunk in postcode_map.chunks(100) {
+    log::info!(
+        "Geocoding: total={}, uk_postcodes={}, uk_cities={}, non_uk={}",
+        total, uk_postcode_map.len(), uk_city_fallbacks.len(), non_uk_companies.len()
+    );
+
+    // UK: Bulk geocode postcodes in batches of 100 (fast, postcodes.io)
+    for chunk in uk_postcode_map.chunks(100) {
         let postcodes: Vec<String> = chunk.iter().map(|(_, pc)| pc.clone()).collect();
         match services::postcodes::geocode_bulk(&postcodes).await {
             Ok(results) => {
-                // Build a lookup from postcode -> (lat, lng)
                 let lookup: std::collections::HashMap<String, (f64, f64)> = results
                     .into_iter()
                     .map(|(pc, lat, lng)| (pc, (lat, lng)))
@@ -575,12 +590,11 @@ async fn geocode_companies(db: tauri::State<'_, Database>) -> Result<serde_json:
                 failed += chunk.len() as i64;
             }
         }
-        // Rate limit
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
-    // City fallbacks (one at a time)
-    for (id, city) in &city_fallbacks {
+    // UK city fallbacks via postcodes.io
+    for (id, city) in &uk_city_fallbacks {
         match services::postcodes::geocode_place(city).await {
             Ok((lat, lng)) => {
                 let _ = db.update_company_geocode(id, lat, lng);
@@ -591,6 +605,33 @@ async fn geocode_companies(db: tauri::State<'_, Database>) -> Result<serde_json:
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // Non-UK: Nominatim (1.1s rate limit per call built into the service)
+    for (id, address, city, country) in &non_uk_companies {
+        let mut success = false;
+
+        // Try full address first
+        if !address.is_empty() {
+            if let Ok((lat, lng)) = services::nominatim::geocode_address(address).await {
+                let _ = db.update_company_geocode(id, lat, lng);
+                geocoded += 1;
+                success = true;
+            }
+        }
+
+        // Fallback: city + country
+        if !success && !city.is_empty() && !country.is_empty() {
+            if let Ok((lat, lng)) = services::nominatim::geocode_city_country(city, country).await {
+                let _ = db.update_company_geocode(id, lat, lng);
+                geocoded += 1;
+                success = true;
+            }
+        }
+
+        if !success {
+            failed += 1;
+        }
     }
 
     Ok(serde_json::json!({
