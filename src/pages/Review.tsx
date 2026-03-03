@@ -362,8 +362,15 @@ export default function Review() {
   }
 
   async function handlePushToForgeOS() {
+    setEnriching(true);
     try {
-      setEnriching(true);
+      // Wait for any previous pipeline to fully stop (up to 30s)
+      for (let i = 0; i < 30; i++) {
+        const status = await getPipelineStatus();
+        if (!status.running) break;
+        if (i === 29) throw new Error("Previous pipeline did not stop in time");
+        await new Promise((r) => setTimeout(r, 1000));
+      }
       await startPipeline(["push"]);
     } catch {
       setEnriching(false);
