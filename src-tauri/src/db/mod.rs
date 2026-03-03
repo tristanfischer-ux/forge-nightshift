@@ -52,6 +52,7 @@ impl Database {
             include_str!("migrations/005_enrichment_v2.sql"),
             include_str!("migrations/006_qwen35_models.sql"),
             include_str!("migrations/007_qwen35_research.sql"),
+            include_str!("migrations/008_research_fixes.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -473,7 +474,7 @@ impl Database {
     pub fn search_already_done(&self, query: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM search_history WHERE query = ?1",
+            "SELECT COUNT(*) FROM search_history WHERE query = ?1 AND created_at > datetime('now', '-7 days')",
             [query],
             |row| row.get(0),
         )?;

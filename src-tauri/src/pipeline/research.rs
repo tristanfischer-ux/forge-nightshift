@@ -153,7 +153,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 }
 
                 let results =
-                    match crate::services::brave::search(brave_key, query, country, 10).await {
+                    match crate::services::brave::search(brave_key, query, country, 20).await {
                         Ok(r) => r,
                         Err(e) => {
                             let db: tauri::State<'_, Database> = app.state();
@@ -249,8 +249,18 @@ Return ONLY valid JSON."#,
                             continue;
                         }
                         let db: tauri::State<'_, Database> = app.state();
-                        if db.domain_exists(domain).unwrap_or(true) {
-                            continue;
+                        match db.domain_exists(domain) {
+                            Ok(true) => continue,
+                            Ok(false) => {} // new domain, proceed
+                            Err(e) => {
+                                let _ = db.log_activity(
+                                    job_id,
+                                    "research",
+                                    "warn",
+                                    &format!("domain_exists check failed for {}: {} — keeping company", domain, e),
+                                );
+                                // Don't skip on DB error — let the company through
+                            }
                         }
                     }
 
@@ -328,15 +338,16 @@ fn pick_categories(
     let db: tauri::State<'_, Database> = app.state();
     let coverage = db.get_category_coverage(country).unwrap_or_default();
 
-    // Build a map of category_id -> companies_found
-    let coverage_map: std::collections::HashMap<String, i64> = coverage
+    // Build a map of category_id -> (companies_found, searches_run)
+    let coverage_map: std::collections::HashMap<String, (i64, i64)> = coverage
         .into_iter()
-        .map(|(cat_id, _searches, companies)| (cat_id, companies))
+        .map(|(cat_id, searches, companies)| (cat_id, (companies, searches)))
         .collect();
 
-    // Sort all categories by coverage (ascending), then take `count`
+    // Sort by (companies_found, searches_run) tuple — guarantees rotation
+    // when all have 0 found, those with fewer searches get picked first
     let mut categories: Vec<&crate::services::brave::SearchCategory> = CATEGORIES.iter().collect();
-    categories.sort_by_key(|cat| coverage_map.get(cat.id).copied().unwrap_or(0));
+    categories.sort_by_key(|cat| coverage_map.get(cat.id).copied().unwrap_or((0, 0)));
     categories.truncate(count);
     categories
 }

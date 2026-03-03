@@ -131,7 +131,7 @@ INSERT OR IGNORE INTO config (key, value) VALUES
     ('schedule_time', '23:00'),
     ('daily_email_limit', '30'),
     ('relevance_threshold', '60'),
-    ('categories_per_run', '8'),
+    ('categories_per_run', '12'),
     ('research_model', 'qwen3.5:9b'),
     ('enrich_model', 'qwen3.5:27b-q4_K_M'),
     ('outreach_model', 'qwen3.5:27b-q4_K_M'),
