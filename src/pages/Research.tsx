@@ -2,6 +2,15 @@ import { useEffect, useState } from "react";
 import { Search, Globe, RefreshCw } from "lucide-react";
 import { getCompanies, getConfig, setConfig, startPipeline } from "../lib/tauri";
 
+const STATUS_BADGE: Record<string, string> = {
+  discovered: "bg-blue-100 text-blue-700",
+  enriching: "bg-amber-100 text-amber-700 animate-pulse",
+  enriched: "bg-green-100 text-green-700",
+  approved: "bg-yellow-100 text-yellow-700",
+  pushed: "bg-purple-100 text-purple-700",
+  error: "bg-red-100 text-red-700",
+};
+
 const COUNTRIES: Record<string, string> = {
   DE: "Germany",
   FR: "France",
@@ -50,7 +59,7 @@ export default function Research() {
 
   async function loadCompanies() {
     try {
-      const data = await getCompanies("discovered", 2000, 0);
+      const data = await getCompanies(undefined, 2000, 0);
       setCompanies(data);
     } catch {
       // DB may not be ready yet
@@ -121,7 +130,7 @@ export default function Research() {
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
         <div className="p-4 border-b border-gray-200">
           <h2 className="text-sm font-semibold text-gray-900">
-            Discovered Companies ({companies.length})
+            All Companies ({companies.length})
           </h2>
         </div>
 
@@ -177,7 +186,7 @@ export default function Research() {
                       {String(company.source || "")}
                     </td>
                     <td className="px-4 py-3">
-                      <span className="px-2 py-0.5 rounded-full text-xs bg-blue-100 text-blue-700">
+                      <span className={`px-2 py-0.5 rounded-full text-xs ${STATUS_BADGE[String(company.status || "")] || "bg-gray-100 text-gray-700"}`}>
                         {String(company.status || "")}
                       </span>
                     </td>

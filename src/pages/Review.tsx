@@ -568,7 +568,7 @@ export default function Review() {
               ) : (
                 <ArrowUpCircle className="w-4 h-4" />
               )}
-              {enriching ? "Pushing..." : "Push to ForgeOS"}
+              {enriching ? "Pipeline Running..." : "Push to ForgeOS"}
             </button>
           )}
         </div>

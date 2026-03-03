@@ -31,16 +31,26 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .and_then(|v| v.parse().ok())
         .unwrap_or(60);
 
-    let enriched = {
-        let db: tauri::State<'_, Database> = app.state();
-        db.get_companies(Some("approved"), 200, 0)?
-    };
-
     let mut pushed_count = 0;
     let mut skipped_count = 0;
     let mut error_count = 0;
 
-    for company in &enriched {
+    let batch_size: i64 = 200;
+    let mut offset: i64 = 0;
+
+    loop {
+        let batch = {
+            let db: tauri::State<'_, Database> = app.state();
+            db.get_companies(Some("approved"), batch_size, offset)?
+        };
+
+        if batch.is_empty() {
+            break;
+        }
+
+        let batch_len = batch.len() as i64;
+
+    for company in &batch {
         if super::is_cancelled() {
             break;
         }
@@ -131,6 +141,14 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 let _ = db.update_company_status(id, "error");
                 error_count += 1;
             }
+        }
+    }
+
+        offset += batch_len;
+
+        // If we got fewer than batch_size, we've reached the end
+        if batch_len < batch_size {
+            break;
         }
     }
 

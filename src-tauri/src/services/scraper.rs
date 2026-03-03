@@ -23,6 +23,9 @@ pub async fn fetch_website_text(url: &str) -> Result<String> {
     // Step 1: Fetch root page HTML
     let root_html = fetch_html(&client, url).await?;
 
+    // Step 1.5: Extract emails from root HTML before stripping tags
+    let mut all_emails: Vec<String> = extract_emails(&root_html);
+
     // Step 2: Extract root page text
     let root_text = html_to_text(&root_html);
 
@@ -32,11 +35,16 @@ pub async fn fetch_website_text(url: &str) -> Result<String> {
 
     if subpage_urls.is_empty() {
         log::info!("No scored subpages found for {}, using root only", url);
-        return Ok(truncate_text(
-            &format!("--- PAGE: / ---\n{}", root_text),
-            3000,
-            url,
-        ));
+        let mut content = format!("--- PAGE: / ---\n{}", root_text);
+        if !all_emails.is_empty() {
+            let unique: Vec<String> = {
+                let mut seen = HashSet::new();
+                all_emails.into_iter().filter(|e| seen.insert(e.clone())).collect()
+            };
+            log::info!("Found {} contact emails for {}: {}", unique.len(), url, unique.join(", "));
+            content = format!("CONTACT EMAILS FOUND: {}\n\n{}", unique.join(", "), content);
+        }
+        return Ok(truncate_text(&content, 3000, url));
     }
 
     log::info!(
@@ -48,30 +56,45 @@ pub async fn fetch_website_text(url: &str) -> Result<String> {
 
     // Step 4: Fetch top 5 subpages in parallel
     let top_urls: Vec<String> = subpage_urls.into_iter().take(5).collect();
-    let subpage_results: Vec<(String, Option<String>)> = stream::iter(top_urls)
+    let subpage_results: Vec<(String, Option<String>, Vec<String>)> = stream::iter(top_urls)
         .map(|sub_url| {
             let client = client.clone();
             async move {
-                let text = fetch_html(&client, &sub_url)
-                    .await
-                    .ok()
-                    .map(|html| html_to_text(&html));
-                (sub_url, text)
+                match fetch_html(&client, &sub_url).await {
+                    Ok(html) => {
+                        let emails = extract_emails(&html);
+                        let text = html_to_text(&html);
+                        (sub_url, Some(text), emails)
+                    }
+                    Err(_) => (sub_url, None, vec![]),
+                }
             }
         })
         .buffer_unordered(5)
         .collect()
         .await;
 
-    // Step 5: Concatenate with section headers
+    // Step 5: Collect subpage emails and concatenate with section headers
     let mut combined = format!("--- PAGE: / ---\n{}", root_text);
-    for (sub_url, text) in &subpage_results {
+    for (sub_url, text, emails) in &subpage_results {
+        all_emails.extend(emails.iter().cloned());
         if let Some(t) = text {
             if !t.is_empty() {
                 let path = sub_url.strip_prefix(&base_url).unwrap_or(sub_url);
                 combined.push_str(&format!("\n\n--- PAGE: {} ---\n{}", path, t));
             }
         }
+    }
+
+    // Deduplicate and prepend email header if any found
+    let unique_emails: Vec<String> = {
+        let mut seen = HashSet::new();
+        all_emails.into_iter().filter(|e| seen.insert(e.clone())).collect()
+    };
+
+    if !unique_emails.is_empty() {
+        log::info!("Found {} contact emails for {}: {}", unique_emails.len(), url, unique_emails.join(", "));
+        combined = format!("CONTACT EMAILS FOUND: {}\n\n{}", unique_emails.join(", "), combined);
     }
 
     Ok(truncate_text(&combined, 3000, url))
@@ -90,6 +113,40 @@ async fn fetch_html(client: &reqwest::Client, url: &str) -> Result<String> {
     }
 
     Ok(resp.text().await?)
+}
+
+/// Extract email addresses from raw HTML before it gets stripped.
+/// Finds mailto: hrefs and inline email patterns, filters false positives.
+fn extract_emails(html: &str) -> Vec<String> {
+    let mut emails = HashSet::new();
+
+    // 1. Extract mailto: hrefs
+    let mailto_re = Regex::new(r#"mailto:([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})"#).unwrap();
+    for cap in mailto_re.captures_iter(html) {
+        emails.insert(cap[1].to_lowercase());
+    }
+
+    // 2. Extract inline email patterns
+    let email_re = Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap();
+    for m in email_re.find_iter(html) {
+        emails.insert(m.as_str().to_lowercase());
+    }
+
+    // 3. Filter false positives
+    let blacklist_prefixes = ["noreply@", "no-reply@", "example@", "test@", "user@", "admin@"];
+    let blacklist_domains = ["sentry.io", "w3.org", "example.com", "schema.org", "gravatar.com", "wordpress.org", "googleapis.com"];
+
+    emails
+        .into_iter()
+        .filter(|e| {
+            !blacklist_prefixes.iter().any(|p| e.starts_with(p))
+                && !blacklist_domains.iter().any(|d| e.ends_with(d))
+                && !e.ends_with(".png")
+                && !e.ends_with(".jpg")
+                && !e.ends_with(".js")
+                && !e.ends_with(".css")
+        })
+        .collect()
 }
 
 /// Strip HTML to plain text: remove script/style blocks, tags, collapse whitespace.
