@@ -50,7 +50,9 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
 
         let batch_len = batch.len() as i64;
 
-    for company in &batch {
+    let batch_total = batch.len();
+
+    for (batch_idx, company) in batch.iter().enumerate() {
         if super::is_cancelled() {
             break;
         }
@@ -123,7 +125,13 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                     "pipeline:progress",
                     json!({
                         "stage": "push",
+                        "phase": "done",
+                        "current_company": name,
+                        "current_index": offset as usize + batch_idx,
                         "pushed": pushed_count,
+                        "skipped": skipped_count,
+                        "errors": error_count,
+                        "total": batch_total,
                     }),
                 );
 

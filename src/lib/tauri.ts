@@ -172,6 +172,29 @@ export async function pushSingleCompany(id: string) {
   });
 }
 
+// Map data
+export interface MapCompany {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  subcategory: string | null;
+  city: string | null;
+  country: string | null;
+  relevance_score: number | null;
+  website_url: string | null;
+}
+
+export async function getCompaniesForMap() {
+  return invoke<MapCompany[]>("get_companies_for_map");
+}
+
+export async function geocodeCompanies() {
+  return invoke<{ total: number; geocoded: number; failed: number }>(
+    "geocode_companies"
+  );
+}
+
 // Event listeners
 export function onPipelineStatus(
   callback: (payload: Record<string, unknown>) => void

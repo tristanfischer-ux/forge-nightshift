@@ -5,3 +5,4 @@ pub mod resend;
 pub mod companies_house;
 pub mod opencorporates;
 pub mod scraper;
+pub mod postcodes;

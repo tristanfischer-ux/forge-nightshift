@@ -148,6 +148,14 @@ export default function Review() {
     total: number;
     model: string;
   } | null>(null);
+  const [pushProgress, setPushProgress] = useState<{
+    currentCompany: string;
+    currentIndex: number;
+    pushed: number;
+    skipped: number;
+    errors: number;
+    total: number;
+  } | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [pushing, setPushing] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
@@ -186,6 +194,7 @@ export default function Review() {
       setEnriching(running);
       if (!running) {
         setEnrichProgress(null);
+        setPushProgress(null);
         setCancelling(false);
         loadCompanies(filter);
         loadCounts();
@@ -201,21 +210,35 @@ export default function Review() {
       phase: string;
       current_company: string;
       current_index: number;
-      enriched: number;
+      enriched?: number;
+      pushed?: number;
+      skipped?: number;
       errors: number;
       total: number;
       model?: string;
     }>("pipeline:progress", (event) => {
       const p = event.payload;
-      if (p.stage !== "enrich") return;
-      setEnrichProgress({
-        currentCompany: p.current_company,
-        currentIndex: p.current_index,
-        enriched: p.enriched,
-        errors: p.errors,
-        total: p.total,
-        model: p.model || "",
-      });
+      if (p.stage === "enrich") {
+        setEnrichProgress({
+          currentCompany: p.current_company,
+          currentIndex: p.current_index,
+          enriched: p.enriched || 0,
+          errors: p.errors,
+          total: p.total,
+          model: p.model || "",
+        });
+      } else if (p.stage === "push") {
+        setPushProgress({
+          currentCompany: p.current_company,
+          currentIndex: p.current_index,
+          pushed: p.pushed || 0,
+          skipped: p.skipped || 0,
+          errors: p.errors,
+          total: p.total,
+        });
+      } else {
+        return;
+      }
       // Refresh list on each company event so badges update live
       loadCompanies(filter);
       loadCounts();
@@ -673,7 +696,7 @@ export default function Review() {
             </div>
             <div className="flex items-center gap-3 shrink-0 text-xs text-gray-500">
               <span>
-                {enrichProgress.currentIndex + 1} of {enrichProgress.total}
+                {enrichProgress.enriched + enrichProgress.errors} of {enrichProgress.total}
               </span>
               {enrichProgress.errors > 0 && (
                 <span className="text-red-600">
@@ -681,7 +704,7 @@ export default function Review() {
                 </span>
               )}
               <span className="font-medium text-gray-700">
-                {Math.round(((enrichProgress.currentIndex + 1) / enrichProgress.total) * 100)}%
+                {Math.round(((enrichProgress.enriched + enrichProgress.errors) / enrichProgress.total) * 100)}%
               </span>
               <button
                 onClick={handleStop}
@@ -701,7 +724,56 @@ export default function Review() {
             <div
               className="bg-forge-500 h-2 rounded-full transition-all duration-500 ease-out"
               style={{
-                width: `${((enrichProgress.currentIndex + 1) / enrichProgress.total) * 100}%`,
+                width: `${((enrichProgress.enriched + enrichProgress.errors) / enrichProgress.total) * 100}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Push progress banner */}
+      {enriching && pushProgress && (
+        <div className="bg-white rounded-xl border border-purple-200 shadow-sm p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 min-w-0">
+              <Loader2 className="w-4 h-4 text-purple-600 animate-spin shrink-0" />
+              <span className="text-sm font-medium text-gray-900 truncate">
+                Pushing: {pushProgress.currentCompany}
+              </span>
+            </div>
+            <div className="flex items-center gap-3 shrink-0 text-xs text-gray-500">
+              <span>
+                {pushProgress.pushed} pushed
+              </span>
+              {pushProgress.skipped > 0 && (
+                <span className="text-amber-600">
+                  {pushProgress.skipped} skipped
+                </span>
+              )}
+              {pushProgress.errors > 0 && (
+                <span className="text-red-600">
+                  {pushProgress.errors} error{pushProgress.errors !== 1 ? "s" : ""}
+                </span>
+              )}
+              <button
+                onClick={handleStop}
+                disabled={cancelling}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                  cancelling
+                    ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                    : "bg-red-100 text-red-700 hover:bg-red-200"
+                }`}
+              >
+                <StopCircle className="w-3.5 h-3.5" />
+                {cancelling ? "Stopping..." : "Stop"}
+              </button>
+            </div>
+          </div>
+          <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+            <div
+              className="bg-purple-500 h-2 rounded-full transition-all duration-500 ease-out"
+              style={{
+                width: `${pushProgress.total > 0 ? ((pushProgress.pushed + pushProgress.skipped + pushProgress.errors) / pushProgress.total) * 100 : 0}%`,
               }}
             />
           </div>

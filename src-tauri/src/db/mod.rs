@@ -53,6 +53,9 @@ impl Database {
             include_str!("migrations/006_qwen35_models.sql"),
             include_str!("migrations/007_qwen35_research.sql"),
             include_str!("migrations/008_research_fixes.sql"),
+            include_str!("migrations/009_auto_approve_threshold.sql"),
+            include_str!("migrations/010_enrich_concurrency.sql"),
+            include_str!("migrations/011_geocoding.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -131,6 +134,39 @@ impl Database {
 
         let rows: Vec<Value> = stmt
             .query_map(params_refs.as_slice(), |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(rows)
+    }
+
+    /// Batch-mark all discovered companies without a website as errors in one UPDATE.
+    pub fn batch_mark_no_website_errors(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET status = 'error', last_error = 'No website — cannot enrich', updated_at = datetime('now') WHERE status = 'discovered' AND (website_url IS NULL OR website_url = '')",
+            [],
+        )?;
+        Ok(conn.changes() as i64)
+    }
+
+    /// Get discovered companies that have a website (enrichable).
+    pub fn get_enrichable_companies(&self, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT * FROM companies WHERE status = 'discovered' AND website_url IS NOT NULL AND website_url != '' ORDER BY created_at DESC LIMIT ?1"
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+
+        let rows: Vec<Value> = stmt
+            .query_map([limit], |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col) in columns.iter().enumerate() {
                     let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
@@ -803,6 +839,65 @@ impl Database {
         let path_str = backup_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid backup path"))?;
         conn.execute_batch(&format!("VACUUM INTO '{}'", path_str.replace('\'', "''")))?;
         Ok(())
+    }
+
+    /// Get companies with lat/lng for the map view. Lightweight payload.
+    pub fn get_companies_for_map(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, latitude, longitude, subcategory, city, country, relevance_score, website_url \
+             FROM companies \
+             WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "latitude": row.get::<_, f64>(2)?,
+                    "longitude": row.get::<_, f64>(3)?,
+                    "subcategory": row.get::<_, Option<String>>(4)?,
+                    "city": row.get::<_, Option<String>>(5)?,
+                    "country": row.get::<_, Option<String>>(6)?,
+                    "relevance_score": row.get::<_, Option<i64>>(7)?,
+                    "website_url": row.get::<_, Option<String>>(8)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Update latitude and longitude for a company.
+    pub fn update_company_geocode(&self, id: &str, lat: f64, lng: f64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET latitude = ?1, longitude = ?2, updated_at = datetime('now') WHERE id = ?3",
+            rusqlite::params![lat, lng, id],
+        )?;
+        Ok(())
+    }
+
+    /// Get companies that have an address but no lat/lng (for backfill geocoding).
+    pub fn get_companies_needing_geocoding(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, address, city, country FROM companies \
+             WHERE latitude IS NULL AND (address IS NOT NULL AND address != '') \
+             AND (country = 'GB' OR country = 'UK')"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "address": row.get::<_, Option<String>>(1)?,
+                    "city": row.get::<_, Option<String>>(2)?,
+                    "country": row.get::<_, Option<String>>(3)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
     }
 }
 

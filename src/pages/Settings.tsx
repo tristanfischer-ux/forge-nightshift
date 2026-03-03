@@ -360,6 +360,15 @@ export default function Settings() {
           max={37}
         />
         <Input
+          label="Enrich Concurrency (1-10)"
+          value={config.enrich_concurrency || ""}
+          onChange={(v) => updateField("enrich_concurrency", v)}
+          placeholder="3"
+          type="number"
+          min={1}
+          max={10}
+        />
+        <Input
           label="Target Countries (JSON)"
           value={config.target_countries || ""}
           onChange={(v) => updateField("target_countries", v)}

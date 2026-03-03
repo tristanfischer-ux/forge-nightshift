@@ -268,12 +268,13 @@ pub async fn push_listing(
     }
 }
 
-/// Fetch all known domains from ForgeOS marketplace_listings.
-/// Paginates through the table extracting website_url domains.
-/// Returns a HashSet for O(1) dedup lookups.
-pub async fn fetch_all_known_domains(url: &str, service_key: &str) -> Result<HashSet<String>> {
+/// Fetch all known domains and company names from ForgeOS marketplace_listings.
+/// Paginates through the table extracting website_url domains and title (name).
+/// Returns (domains, names) HashSets for O(1) dedup lookups.
+pub async fn fetch_all_known_domains_and_names(url: &str, service_key: &str) -> Result<(HashSet<String>, HashSet<String>)> {
     let client = reqwest::Client::new();
     let mut domains = HashSet::new();
+    let mut names = HashSet::new();
     let page_size = 1000;
     let mut offset = 0;
 
@@ -283,7 +284,7 @@ pub async fn fetch_all_known_domains(url: &str, service_key: &str) -> Result<Has
             .header("apikey", service_key)
             .header("Authorization", format!("Bearer {}", service_key))
             .header("Range", format!("{}-{}", offset, offset + page_size - 1))
-            .query(&[("select", "website_url")])
+            .query(&[("select", "website_url,title")])
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await?;
@@ -302,7 +303,14 @@ pub async fn fetch_all_known_domains(url: &str, service_key: &str) -> Result<Has
         for row in rows {
             if let Some(website) = row.get("website_url").and_then(|v| v.as_str()) {
                 if let Some(domain) = extract_domain(website) {
-                    domains.insert(domain);
+                    // Strip www. prefix for normalized matching
+                    let normalized = domain.strip_prefix("www.").unwrap_or(&domain).to_string();
+                    domains.insert(normalized);
+                }
+            }
+            if let Some(title) = row.get("title").and_then(|v| v.as_str()) {
+                if !title.is_empty() {
+                    names.insert(normalize_name_for_dedup(title));
                 }
             }
         }
@@ -313,7 +321,22 @@ pub async fn fetch_all_known_domains(url: &str, service_key: &str) -> Result<Has
         offset += page_size;
     }
 
-    Ok(domains)
+    Ok((domains, names))
+}
+
+/// Normalize a company name for dedup: lowercase, strip common legal suffixes, trim.
+fn normalize_name_for_dedup(name: &str) -> String {
+    let mut n = name.to_lowercase();
+    for suffix in &[
+        " ltd", " limited", " gmbh", " sas", " bv", " ag", " sa", " srl", " nv", " inc",
+        " llc", " co.", " corp", " corporation", " plc", " s.r.l.", " s.a.", " e.k.",
+        " ohg", " kg", " ug",
+    ] {
+        if n.ends_with(suffix) {
+            n = n[..n.len() - suffix.len()].to_string();
+        }
+    }
+    n.trim().to_string()
 }
 
 /// Fetch low-quality listings from ForgeOS for audit re-enrichment.

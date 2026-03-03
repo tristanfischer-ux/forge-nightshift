@@ -5,6 +5,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import {
   LayoutDashboard,
   Search,
+  MapPin,
   CheckSquare,
   Mail,
   Settings,
@@ -15,6 +16,7 @@ import { getPipelineStatus } from "../lib/tauri";
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
   { path: "/research", label: "Research", icon: Search },
+  { path: "/map", label: "Map", icon: MapPin },
   { path: "/review", label: "Review", icon: CheckSquare },
   { path: "/outreach", label: "Outreach", icon: Mail },
   { path: "/settings", label: "Settings", icon: Settings },

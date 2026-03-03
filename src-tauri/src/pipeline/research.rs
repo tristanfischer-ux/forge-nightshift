@@ -65,23 +65,22 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         );
     }
 
-    // Step 1: Fetch known domains from Supabase (one-time)
-    let supabase_domains = if !supabase_url.is_empty() && !supabase_key.is_empty() {
+    // Step 1: Fetch known domains + names from Supabase (one-time)
+    let (supabase_domains, supabase_names) = if !supabase_url.is_empty() && !supabase_key.is_empty() {
         {
             let db: tauri::State<'_, Database> = app.state();
-            let _ = db.log_activity(job_id, "research", "info", "Fetching known domains from ForgeOS...");
+            let _ = db.log_activity(job_id, "research", "info", "Fetching known domains & names from ForgeOS...");
         }
-        match crate::services::supabase::fetch_all_known_domains(supabase_url, supabase_key).await {
-            Ok(domains) => {
-                let count = domains.len();
+        match crate::services::supabase::fetch_all_known_domains_and_names(supabase_url, supabase_key).await {
+            Ok((domains, names)) => {
                 let db: tauri::State<'_, Database> = app.state();
                 let _ = db.log_activity(
                     job_id,
                     "research",
                     "info",
-                    &format!("Loaded {} known domains from ForgeOS", count),
+                    &format!("Loaded {} known domains + {} names from ForgeOS", domains.len(), names.len()),
                 );
-                domains
+                (domains, names)
             }
             Err(e) => {
                 let db: tauri::State<'_, Database> = app.state();
@@ -89,13 +88,13 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                     job_id,
                     "research",
                     "warn",
-                    &format!("Could not fetch ForgeOS domains: {}. Continuing without dedup.", e),
+                    &format!("Could not fetch ForgeOS data: {}. Continuing without dedup.", e),
                 );
-                HashSet::new()
+                (HashSet::new(), HashSet::new())
             }
         }
     } else {
-        HashSet::new()
+        (HashSet::new(), HashSet::new())
     };
 
     let mut total_discovered = 0;
@@ -153,7 +152,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 }
 
                 let results =
-                    match crate::services::brave::search(brave_key, query, country, 20).await {
+                    match crate::services::brave::search(brave_key, query, country, 20, 0).await {
                         Ok(r) => r,
                         Err(e) => {
                             let db: tauri::State<'_, Database> = app.state();
@@ -166,6 +165,8 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                             continue;
                         }
                     };
+
+                let page1_full = results.len() >= 20;
 
                 {
                     let db: tauri::State<'_, Database> = app.state();
@@ -243,9 +244,11 @@ Return ONLY valid JSON."#,
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
 
-                    // Dedup: check Supabase domains first, then local DB domain, then name
+                    // Dedup: check Supabase domains first (www-stripped), then local DB domain, then name
                     if !domain.is_empty() {
-                        if supabase_domains.contains(&domain.to_lowercase()) {
+                        let normalized_domain = domain.to_lowercase();
+                        let stripped_domain = normalized_domain.strip_prefix("www.").unwrap_or(&normalized_domain);
+                        if supabase_domains.contains(stripped_domain) {
                             continue;
                         }
                         let db: tauri::State<'_, Database> = app.state();
@@ -259,13 +262,27 @@ Return ONLY valid JSON."#,
                                     "warn",
                                     &format!("domain_exists check failed for {}: {} — keeping company", domain, e),
                                 );
-                                // Don't skip on DB error — let the company through
                             }
                         }
                     }
 
-                    // Name-based dedup (catches same company with different domains)
+                    // Name-based dedup: check Supabase names, then local DB
                     if !name.is_empty() {
+                        let name_lower = name.to_lowercase().trim().to_string();
+                        let mut n = name_lower.clone();
+                        for suffix in &[
+                            " ltd", " limited", " gmbh", " sas", " bv", " ag", " sa", " srl", " nv", " inc",
+                            " llc", " co.", " corp", " corporation", " plc", " s.r.l.", " s.a.", " e.k.",
+                            " ohg", " kg", " ug",
+                        ] {
+                            if n.ends_with(suffix) {
+                                n = n[..n.len() - suffix.len()].to_string();
+                            }
+                        }
+                        let normalized_name = n.trim().to_string();
+                        if supabase_names.contains(&normalized_name) {
+                            continue;
+                        }
                         let db: tauri::State<'_, Database> = app.state();
                         if db.name_exists_normalized(name).unwrap_or(false) {
                             continue;
@@ -306,6 +323,105 @@ Return ONLY valid JSON."#,
 
                 // Rate limit between searches
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                // Brave pagination: if page 1 returned a full page, fetch page 2
+                if page1_full && !super::is_cancelled() {
+                    let page2_key = format!("{} [page 2]", query);
+                    let already_done = {
+                        let db: tauri::State<'_, Database> = app.state();
+                        db.search_already_done(&page2_key).unwrap_or(false)
+                    };
+                    if !already_done {
+                        if let Ok(page2_results) = crate::services::brave::search(brave_key, query, country, 20, 1).await {
+                            {
+                                let db: tauri::State<'_, Database> = app.state();
+                                let _ = db.record_search(&page2_key, country, page2_results.len() as i64);
+                            }
+                            total_queries += 1;
+
+                            for result in &page2_results {
+                                if super::is_cancelled() { break; }
+
+                                let parse_prompt = format!(
+                                    r#"Extract company information from this search result. Return JSON with these fields:
+- name: company name (required)
+- website_url: company website URL
+- domain: just the domain (e.g. "example.com")
+- country: "{}"
+- city: city if mentioned
+- description: brief description of what they do
+- category: one of "Products" or "Services"
+- subcategory: "{}"
+
+Search result:
+Title: {}
+URL: {}
+Description: {}
+
+If this is NOT a manufacturing/engineering company, return {{"skip": true}}.
+Return ONLY valid JSON."#,
+                                    country, category.name, result.title, result.url, result.description
+                                );
+
+                                let llm_response = match crate::services::ollama::generate(
+                                    ollama_url, research_model, &parse_prompt, true,
+                                ).await {
+                                    Ok(r) => r,
+                                    Err(_) => continue,
+                                };
+
+                                let parsed: Value = match serde_json::from_str(&llm_response) {
+                                    Ok(v) => v,
+                                    Err(_) => continue,
+                                };
+
+                                if parsed.get("skip").and_then(|v| v.as_bool()).unwrap_or(false) { continue; }
+
+                                let name = parsed.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                if name.is_empty() { continue; }
+
+                                let domain = parsed.get("domain").and_then(|v| v.as_str()).unwrap_or("");
+
+                                if !domain.is_empty() {
+                                    let normalized_domain = domain.to_lowercase();
+                                    let stripped_domain = normalized_domain.strip_prefix("www.").unwrap_or(&normalized_domain);
+                                    if supabase_domains.contains(stripped_domain) { continue; }
+                                    let db: tauri::State<'_, Database> = app.state();
+                                    if db.domain_exists(domain).unwrap_or(false) { continue; }
+                                }
+
+                                if !name.is_empty() {
+                                    if supabase_names.contains(&name.to_lowercase().trim().to_string()) { continue; }
+                                    let db: tauri::State<'_, Database> = app.state();
+                                    if db.name_exists_normalized(name).unwrap_or(false) { continue; }
+                                }
+
+                                let mut company = parsed.clone();
+                                company["source"] = json!("brave");
+                                company["source_url"] = json!(result.url);
+                                company["source_query"] = json!(page2_key);
+                                company["raw_snippet"] = json!(result.description);
+
+                                let db: tauri::State<'_, Database> = app.state();
+                                if let Ok(_) = db.insert_company(&company) {
+                                    total_discovered += 1;
+                                    batch_discovered += 1;
+                                    let _ = app.emit(
+                                        "pipeline:progress",
+                                        json!({
+                                            "stage": "research",
+                                            "discovered": total_discovered,
+                                            "category": category.name,
+                                            "country": country,
+                                        }),
+                                    );
+                                }
+                            }
+
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                    }
+                }
             }
 
             // Update category coverage

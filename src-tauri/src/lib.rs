@@ -63,10 +63,16 @@ fn get_config(db: tauri::State<'_, Database>) -> Result<serde_json::Value, Strin
 fn set_config(db: tauri::State<'_, Database>, key: String, value: String) -> Result<(), String> {
     // Config validation
     match key.as_str() {
-        "relevance_threshold" => {
+        "relevance_threshold" | "auto_approve_quality_threshold" => {
             let v: i64 = value.parse().map_err(|_| "Must be a number".to_string())?;
             if !(0..=100).contains(&v) {
                 return Err("Must be between 0 and 100".to_string());
+            }
+        }
+        "enrich_concurrency" => {
+            let v: i64 = value.parse().map_err(|_| "Must be a number".to_string())?;
+            if !(1..=10).contains(&v) {
+                return Err("Must be between 1 and 10".to_string());
             }
         }
         "categories_per_run" => {
@@ -517,6 +523,83 @@ async fn remove_from_marketplace(
     Ok(serde_json::json!({ "removed": true, "name": name }))
 }
 
+#[tauri::command]
+fn get_companies_for_map(db: tauri::State<'_, Database>) -> Result<Vec<serde_json::Value>, String> {
+    db.get_companies_for_map().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn geocode_companies(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
+    let companies = db.get_companies_needing_geocoding().map_err(|e| e.to_string())?;
+    let total = companies.len();
+    let mut geocoded = 0i64;
+    let mut failed = 0i64;
+
+    // Collect postcodes for bulk geocoding
+    let mut postcode_map: Vec<(String, String)> = Vec::new(); // (company_id, postcode)
+    let mut city_fallbacks: Vec<(String, String)> = Vec::new(); // (company_id, city)
+
+    for company in &companies {
+        let id = company.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let address = company.get("address").and_then(|v| v.as_str()).unwrap_or("");
+        let city = company.get("city").and_then(|v| v.as_str()).unwrap_or("");
+
+        if let Some(postcode) = services::postcodes::extract_uk_postcode(address) {
+            postcode_map.push((id.to_string(), postcode));
+        } else if !city.is_empty() {
+            city_fallbacks.push((id.to_string(), city.to_string()));
+        }
+    }
+
+    // Bulk geocode postcodes in batches of 100
+    for chunk in postcode_map.chunks(100) {
+        let postcodes: Vec<String> = chunk.iter().map(|(_, pc)| pc.clone()).collect();
+        match services::postcodes::geocode_bulk(&postcodes).await {
+            Ok(results) => {
+                // Build a lookup from postcode -> (lat, lng)
+                let lookup: std::collections::HashMap<String, (f64, f64)> = results
+                    .into_iter()
+                    .map(|(pc, lat, lng)| (pc, (lat, lng)))
+                    .collect();
+
+                for (id, postcode) in chunk {
+                    if let Some((lat, lng)) = lookup.get(postcode) {
+                        let _ = db.update_company_geocode(id, *lat, *lng);
+                        geocoded += 1;
+                    } else {
+                        failed += 1;
+                    }
+                }
+            }
+            Err(_) => {
+                failed += chunk.len() as i64;
+            }
+        }
+        // Rate limit
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // City fallbacks (one at a time)
+    for (id, city) in &city_fallbacks {
+        match services::postcodes::geocode_place(city).await {
+            Ok((lat, lng)) => {
+                let _ = db.update_company_geocode(id, lat, lng);
+                geocoded += 1;
+            }
+            Err(_) => {
+                failed += 1;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    Ok(serde_json::json!({
+        "total": total,
+        "geocoded": geocoded,
+        "failed": failed,
+    }))
+}
+
 /// Bulk remove all audit-imported companies from the marketplace.
 #[tauri::command]
 async fn remove_all_from_marketplace(
@@ -643,6 +726,8 @@ pub fn run() {
             push_single_company,
             remove_from_marketplace,
             remove_all_from_marketplace,
+            get_companies_for_map,
+            geocode_companies,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
