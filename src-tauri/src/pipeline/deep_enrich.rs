@@ -6,15 +6,30 @@ use tauri::Manager;
 use crate::db::Database;
 use crate::services::{ollama, scraper};
 
-/// Run the deep enrichment trial on ~30 companies.
-/// Selects a diverse mix, re-scrapes with 16k char limit,
-/// extracts structured manufacturing process data via LLM,
-/// saves to DB, and prints a summary report.
+/// Run deep enrichment, optionally filtered by sector.
+/// If sector is provided (e.g., "sheet_metal"), only processes companies matching that sector.
+/// Otherwise falls back to the original 3-tier diverse sampling.
 pub async fn run_trial(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result<Value> {
-    let db: tauri::State<'_, Database> = app.state();
-    let _ = db.log_activity(job_id, "deep_enrich", "info", "Starting deep enrichment trial");
+    run_with_sector(app, job_id, config, None).await
+}
 
-    let candidates = db.get_deep_enrich_candidates(30)?;
+/// Run deep enrichment for a specific sector.
+pub async fn run_sector(app: &tauri::AppHandle, job_id: &str, config: &Value, sector: &str) -> Result<Value> {
+    run_with_sector(app, job_id, config, Some(sector)).await
+}
+
+async fn run_with_sector(app: &tauri::AppHandle, job_id: &str, config: &Value, sector: Option<&str>) -> Result<Value> {
+    let db: tauri::State<'_, Database> = app.state();
+    let label = match sector {
+        Some(s) => format!("deep enrichment (sector: {})", s),
+        None => "deep enrichment trial".to_string(),
+    };
+    let _ = db.log_activity(job_id, "deep_enrich", "info", &format!("Starting {}", label));
+
+    let candidates = match sector {
+        Some(s) => db.get_deep_enrich_candidates_by_sector(s, 50)?,
+        None => db.get_deep_enrich_candidates(30)?,
+    };
     let total = candidates.len();
 
     if total == 0 {

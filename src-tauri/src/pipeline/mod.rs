@@ -4,6 +4,7 @@ mod push;
 mod outreach;
 mod report;
 mod deep_enrich;
+mod technique_aggregate;
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -199,6 +200,12 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
                 "outreach" => outreach::run(app, job_id, &config).await,
                 "report" => report::run(app, job_id, &config).await,
                 "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, &config).await,
+                "aggregate_techniques" => technique_aggregate::run(app, job_id, &config).await,
+                "push_techniques" => technique_aggregate::push_techniques(app, job_id, &config).await,
+                s if s.starts_with("deep_enrich:") => {
+                    let sector = &s["deep_enrich:".len()..];
+                    deep_enrich::run_sector(app, job_id, &config, sector).await
+                }
                 unknown => {
                     let db: tauri::State<'_, Database> = app.state();
                     let _ = db.log_activity(job_id, unknown, "error", "Unknown stage");
@@ -247,6 +254,12 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
                 "outreach" => outreach::run(app, job_id, &config).await,
                 "report" => report::run(app, job_id, &config).await,
                 "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, &config).await,
+                "aggregate_techniques" => technique_aggregate::run(app, job_id, &config).await,
+                "push_techniques" => technique_aggregate::push_techniques(app, job_id, &config).await,
+                s if s.starts_with("deep_enrich:") => {
+                    let sector = &s["deep_enrich:".len()..];
+                    deep_enrich::run_sector(app, job_id, &config, sector).await
+                }
                 unknown => {
                     let db: tauri::State<'_, Database> = app.state();
                     let _ = db.log_activity(job_id, unknown, "error", "Unknown stage");

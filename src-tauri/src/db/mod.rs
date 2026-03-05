@@ -58,6 +58,7 @@ impl Database {
             include_str!("migrations/011_geocoding.sql"),
             include_str!("migrations/012_normalize_country.sql"),
             include_str!("migrations/013_deep_enrichment.sql"),
+            include_str!("migrations/014_technique_knowledge.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -981,6 +982,144 @@ impl Database {
             rusqlite::params![process_capabilities_json, deep_website_text, id],
         )?;
         Ok(())
+    }
+
+    /// Get deep enrich candidates filtered by sector (primary_category or capabilities).
+    pub fn get_deep_enrich_candidates_by_sector(&self, sector: &str, count: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let pattern = format!("%{}%", sector);
+        let mut stmt = conn.prepare(
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL AND (primary_category LIKE ?1 OR subcategory LIKE ?1 OR category LIKE ?1 OR specialties LIKE ?1) ORDER BY enrichment_quality DESC LIMIT ?2"
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let rows: Vec<Value> = stmt
+            .query_map(rusqlite::params![pattern, count], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Get all deep-enriched companies (optionally by sector) with their process capabilities.
+    pub fn get_deep_enriched_processes(&self, sector: Option<&str>) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match sector {
+            Some(s) => {
+                let pattern = format!("%{}%", s);
+                (
+                    "SELECT id, name, process_capabilities_json, primary_category, subcategory, category FROM companies WHERE deep_enriched_at IS NOT NULL AND process_capabilities_json IS NOT NULL AND process_capabilities_json != '[]' AND (primary_category LIKE ?1 OR subcategory LIKE ?1 OR category LIKE ?1 OR specialties LIKE ?1)",
+                    vec![Box::new(pattern) as Box<dyn rusqlite::types::ToSql>],
+                )
+            }
+            None => (
+                "SELECT id, name, process_capabilities_json, primary_category, subcategory, category FROM companies WHERE deep_enriched_at IS NOT NULL AND process_capabilities_json IS NOT NULL AND process_capabilities_json != '[]'",
+                vec![],
+            ),
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let rows: Vec<Value> = stmt
+            .query_map(rusqlite::params_from_iter(&params), |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Insert or replace a technique knowledge record.
+    pub fn upsert_technique_knowledge(&self, record: &Value) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO technique_knowledge (id, technique_slug, sector, article_markdown, real_world_tolerances, real_world_materials, real_world_equipment, real_world_surface_finishes, typical_batch_sizes, tips_and_insights, common_applications, supplier_count, source_company_ids, generated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'))",
+            rusqlite::params![
+                record.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                record.get("technique_slug").and_then(|v| v.as_str()).unwrap_or(""),
+                record.get("sector").and_then(|v| v.as_str()).unwrap_or(""),
+                record.get("article_markdown").and_then(|v| v.as_str()),
+                record.get("real_world_tolerances").map(|v| v.to_string()),
+                record.get("real_world_materials").map(|v| v.to_string()),
+                record.get("real_world_equipment").map(|v| v.to_string()),
+                record.get("real_world_surface_finishes").map(|v| v.to_string()),
+                record.get("typical_batch_sizes").map(|v| v.to_string()),
+                record.get("tips_and_insights").map(|v| v.to_string()),
+                record.get("common_applications").map(|v| v.to_string()),
+                record.get("supplier_count").and_then(|v| v.as_i64()).unwrap_or(0),
+                record.get("source_company_ids").map(|v| v.to_string()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get all technique knowledge records, optionally filtered by sector.
+    pub fn get_technique_knowledge(&self, sector: Option<&str>) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match sector {
+            Some(s) => (
+                "SELECT * FROM technique_knowledge WHERE sector = ?1 ORDER BY supplier_count DESC",
+                vec![Box::new(s.to_string()) as Box<dyn rusqlite::types::ToSql>],
+            ),
+            None => (
+                "SELECT * FROM technique_knowledge ORDER BY supplier_count DESC",
+                vec![],
+            ),
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let rows: Vec<Value> = stmt
+            .query_map(rusqlite::params_from_iter(&params), |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Mark a technique knowledge record as pushed to Supabase.
+    pub fn mark_technique_pushed(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE technique_knowledge SET pushed_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+        Ok(())
+    }
+
+    /// Get technique knowledge records that haven't been pushed yet.
+    pub fn get_unpushed_technique_knowledge(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT * FROM technique_knowledge WHERE pushed_at IS NULL ORDER BY supplier_count DESC"
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
     }
 
     /// Get companies that have an address or city but no lat/lng (for backfill geocoding).

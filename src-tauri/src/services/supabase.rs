@@ -448,3 +448,83 @@ fn parse_json_field_from_attrs(attrs: &Value, field: &str) -> Value {
         .cloned()
         .unwrap_or_else(|| json!([]))
 }
+
+/// Push a technique enrichment record to ForgeOS manufacturing_technique_enrichments table.
+/// Uses UPSERT (on technique_slug conflict, update).
+pub async fn push_technique_enrichment(
+    url: &str,
+    service_key: &str,
+    record: &Value,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+
+    let technique_slug = record.get("technique_slug").and_then(|v| v.as_str()).unwrap_or("");
+    if technique_slug.is_empty() {
+        anyhow::bail!("technique_slug is required");
+    }
+
+    // Parse JSON string fields back into objects for JSONB columns
+    let parse_json_field = |field: &str| -> Value {
+        record
+            .get(field)
+            .and_then(|v| {
+                if v.is_string() {
+                    serde_json::from_str(v.as_str().unwrap_or("{}")).ok()
+                } else if v.is_null() {
+                    None
+                } else {
+                    Some(v.clone())
+                }
+            })
+            .unwrap_or(json!({}))
+    };
+
+    let parse_json_array_field = |field: &str| -> Value {
+        record
+            .get(field)
+            .and_then(|v| {
+                if v.is_string() {
+                    serde_json::from_str(v.as_str().unwrap_or("[]")).ok()
+                } else if v.is_null() {
+                    None
+                } else {
+                    Some(v.clone())
+                }
+            })
+            .unwrap_or(json!([]))
+    };
+
+    let body = json!({
+        "technique_slug": technique_slug,
+        "article_markdown": record.get("article_markdown").and_then(|v| v.as_str()),
+        "real_world_tolerances": parse_json_field("real_world_tolerances"),
+        "real_world_materials": parse_json_array_field("real_world_materials"),
+        "real_world_equipment": parse_json_array_field("real_world_equipment"),
+        "real_world_surface_finishes": parse_json_field("real_world_surface_finishes"),
+        "typical_batch_sizes": parse_json_field("typical_batch_sizes"),
+        "tips_and_insights": parse_json_array_field("tips_and_insights"),
+        "common_applications": parse_json_array_field("common_applications"),
+        "supplier_count": record.get("supplier_count").and_then(|v| v.as_i64()).unwrap_or(0),
+        "source": "nightshift",
+        "updated_at": chrono::Utc::now().to_rfc3339(),
+    });
+
+    let resp = client
+        .post(format!("{}/rest/v1/manufacturing_technique_enrichments", url))
+        .header("apikey", service_key)
+        .header("Authorization", format!("Bearer {}", service_key))
+        .header("Content-Type", "application/json")
+        .header("Prefer", "resolution=merge-duplicates")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let resp_body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Supabase push technique enrichment error {}: {}", status, resp_body);
+    }
+
+    Ok(())
+}
