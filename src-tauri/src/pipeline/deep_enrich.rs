@@ -191,7 +191,7 @@ pub async fn run_trial(app: &tauri::AppHandle, job_id: &str, config: &Value) -> 
     }
 
     // Print summary report
-    let companies_with_processes = if total_processes > 0 { succeeded } else { 0 };
+    let _companies_with_processes = if total_processes > 0 { succeeded } else { 0 };
     let avg_processes = if succeeded > 0 {
         total_processes as f64 / succeeded as f64
     } else {

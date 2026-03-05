@@ -162,6 +162,7 @@ export default function Review() {
   const [pushing, setPushing] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [removingAll, setRemovingAll] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const [auditing, setAuditing] = useState(false);
   const [auditResult, setAuditResult] = useState<{
     fetched: number;
@@ -183,6 +184,14 @@ export default function Review() {
     loadCompanies(filter);
     loadCounts();
   }, [filter, drillSubcategory, drillCountry, drillSearch]);
+
+  // Debounced search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadCompanies(filter);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // Check if pipeline is already running on mount
   useEffect(() => {
@@ -269,12 +278,12 @@ export default function Review() {
 
   async function loadCompanies(status: StatusFilter) {
     try {
-      if (hasDrillDown) {
+      if (hasDrillDown || searchQuery.trim()) {
         const data = await getCompaniesFiltered({
           status: status === "all" ? undefined : status,
           subcategory: drillSubcategory || undefined,
           country: drillCountry || undefined,
-          search: drillSearch || undefined,
+          search: searchQuery.trim() || drillSearch || undefined,
           limit: 2000,
           offset: 0,
         });
@@ -823,8 +832,29 @@ export default function Review() {
 
       <div className="flex gap-4">
         {/* Company list */}
-        <div className="flex-1 bg-white rounded-xl border border-gray-200 shadow-sm">
-          <div className="divide-y divide-gray-100 max-h-[calc(100vh-260px)] overflow-y-auto">
+        <div className="flex-1 bg-white rounded-xl border border-gray-200 shadow-sm flex flex-col">
+          {/* Search bar */}
+          <div className="px-3 py-2 border-b border-gray-100">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search companies by name, description, materials..."
+                className="w-full pl-8 pr-8 py-1.5 text-sm border border-gray-200 rounded-lg bg-gray-50 focus:bg-white focus:border-forge-400 focus:outline-none focus:ring-1 focus:ring-forge-400 transition-colors"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="divide-y divide-gray-100 max-h-[calc(100vh-310px)] overflow-y-auto flex-1">
             {companies.length === 0 ? (
               <div className="p-8 text-center text-gray-400 text-sm">
                 No companies found with this status.
