@@ -984,12 +984,12 @@ impl Database {
         Ok(())
     }
 
-    /// Get deep enrich candidates filtered by sector (primary_category or capabilities).
+    /// Get deep enrich candidates filtered by sector (category, subcategory, or specialties).
     pub fn get_deep_enrich_candidates_by_sector(&self, sector: &str, count: i64) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
         let pattern = format!("%{}%", sector);
         let mut stmt = conn.prepare(
-            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL AND (primary_category LIKE ?1 OR subcategory LIKE ?1 OR category LIKE ?1 OR specialties LIKE ?1) ORDER BY enrichment_quality DESC LIMIT ?2"
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL AND (category LIKE ?1 OR subcategory LIKE ?1 OR specialties LIKE ?1) ORDER BY enrichment_quality DESC LIMIT ?2"
         )?;
         let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
         let rows: Vec<Value> = stmt
@@ -1013,12 +1013,12 @@ impl Database {
             Some(s) => {
                 let pattern = format!("%{}%", s);
                 (
-                    "SELECT id, name, process_capabilities_json, primary_category, subcategory, category FROM companies WHERE deep_enriched_at IS NOT NULL AND process_capabilities_json IS NOT NULL AND process_capabilities_json != '[]' AND (primary_category LIKE ?1 OR subcategory LIKE ?1 OR category LIKE ?1 OR specialties LIKE ?1)",
+                    "SELECT id, name, process_capabilities_json, subcategory, category FROM companies WHERE deep_enriched_at IS NOT NULL AND process_capabilities_json IS NOT NULL AND process_capabilities_json != '[]' AND (category LIKE ?1 OR subcategory LIKE ?1 OR specialties LIKE ?1)",
                     vec![Box::new(pattern) as Box<dyn rusqlite::types::ToSql>],
                 )
             }
             None => (
-                "SELECT id, name, process_capabilities_json, primary_category, subcategory, category FROM companies WHERE deep_enriched_at IS NOT NULL AND process_capabilities_json IS NOT NULL AND process_capabilities_json != '[]'",
+                "SELECT id, name, process_capabilities_json, subcategory, category FROM companies WHERE deep_enriched_at IS NOT NULL AND process_capabilities_json IS NOT NULL AND process_capabilities_json != '[]'",
                 vec![],
             ),
         };

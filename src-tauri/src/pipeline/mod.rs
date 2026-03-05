@@ -202,6 +202,7 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
                 "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, &config).await,
                 "aggregate_techniques" => technique_aggregate::run(app, job_id, &config).await,
                 "push_techniques" => technique_aggregate::push_techniques(app, job_id, &config).await,
+                "enrich_all" => run_enrich_all(app, job_id, &config).await,
                 s if s.starts_with("deep_enrich:") => {
                     let sector = &s["deep_enrich:".len()..];
                     deep_enrich::run_sector(app, job_id, &config, sector).await
@@ -256,6 +257,7 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
                 "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, &config).await,
                 "aggregate_techniques" => technique_aggregate::run(app, job_id, &config).await,
                 "push_techniques" => technique_aggregate::push_techniques(app, job_id, &config).await,
+                "enrich_all" => run_enrich_all(app, job_id, &config).await,
                 s if s.starts_with("deep_enrich:") => {
                     let sector = &s["deep_enrich:".len()..];
                     deep_enrich::run_sector(app, job_id, &config, sector).await
@@ -287,6 +289,47 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
         }
     }
 
+    Ok(summary)
+}
+
+/// Composite stage: deep_enrich_trial → aggregate_techniques → push_techniques
+async fn run_enrich_all(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result<Value> {
+    let db: tauri::State<'_, Database> = app.state();
+    let _ = db.log_activity(job_id, "enrich_all", "info", "Starting enrich_all: deep_enrich → aggregate → push");
+
+    // 1. Deep enrich (30-company trial sample)
+    log::info!("[enrich_all] Phase 1/3: deep_enrich_trial");
+    let _ = app.emit("pipeline:stage", json!({"stage": "deep_enrich_trial", "status": "running"}));
+    let deep_result = deep_enrich::run_trial(app, job_id, config).await?;
+    let _ = app.emit("pipeline:stage", json!({"stage": "deep_enrich_trial", "status": "completed"}));
+
+    if is_cancelled() {
+        return Ok(json!({"deep_enrich": deep_result, "cancelled": true}));
+    }
+
+    // 2. Aggregate techniques from all deep-enriched data
+    log::info!("[enrich_all] Phase 2/3: aggregate_techniques");
+    let _ = app.emit("pipeline:stage", json!({"stage": "aggregate_techniques", "status": "running"}));
+    let agg_result = technique_aggregate::run(app, job_id, config).await?;
+    let _ = app.emit("pipeline:stage", json!({"stage": "aggregate_techniques", "status": "completed"}));
+
+    if is_cancelled() {
+        return Ok(json!({"deep_enrich": deep_result, "aggregate": agg_result, "cancelled": true}));
+    }
+
+    // 3. Push to Supabase
+    log::info!("[enrich_all] Phase 3/3: push_techniques");
+    let _ = app.emit("pipeline:stage", json!({"stage": "push_techniques", "status": "running"}));
+    let push_result = technique_aggregate::push_techniques(app, job_id, config).await?;
+    let _ = app.emit("pipeline:stage", json!({"stage": "push_techniques", "status": "completed"}));
+
+    let summary = json!({
+        "deep_enrich": deep_result,
+        "aggregate": agg_result,
+        "push": push_result,
+    });
+
+    log::info!("[enrich_all] Complete");
     Ok(summary)
 }
 

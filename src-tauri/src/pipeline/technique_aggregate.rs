@@ -13,15 +13,15 @@ fn category_to_technique_slugs(category: &str, process_name: &str) -> Vec<String
     match category {
         "cnc_machining" => {
             if name_lower.contains("5-axis") || name_lower.contains("5 axis") || name_lower.contains("five axis") {
-                vec!["cnc-milling-5axis".into()]
+                vec!["cnc-milling-5-axis".into()]
             } else if name_lower.contains("turn") || name_lower.contains("lathe") {
                 vec!["cnc-turning".into()]
             } else if name_lower.contains("edm") || name_lower.contains("electrical discharge") {
                 vec!["wire-edm".into()]
             } else if name_lower.contains("grind") {
-                vec!["surface-grinding".into()]
+                vec!["precision-grinding".into()]
             } else {
-                vec!["cnc-milling-3axis".into()]
+                vec!["cnc-milling-3-axis".into()]
             }
         }
         "sheet_metal" => {
@@ -48,9 +48,9 @@ fn category_to_technique_slugs(category: &str, process_name: &str) -> Vec<String
             } else if name_lower.contains("slm") || name_lower.contains("dmls") || name_lower.contains("metal") {
                 vec!["slm".into()]
             } else if name_lower.contains("mjf") || name_lower.contains("multi jet") {
-                vec!["mjf".into()]
+                vec!["multi-jet-fusion".into()]
             } else if name_lower.contains("binder") {
-                vec!["binder-jetting".into()]
+                vec!["metal-binder-jetting".into()]
             } else if name_lower.contains("ebm") || name_lower.contains("electron beam") {
                 vec!["ebm".into()]
             } else {
@@ -66,7 +66,7 @@ fn category_to_technique_slugs(category: &str, process_name: &str) -> Vec<String
                 vec!["sand-casting".into()]
             }
         }
-        "forging" => vec!["forging".into()],
+        "forging" => vec!["metal-forging".into()],
         "welding" => {
             if name_lower.contains("tig") {
                 vec!["tig-welding".into()]
@@ -86,14 +86,14 @@ fn category_to_technique_slugs(category: &str, process_name: &str) -> Vec<String
             } else if name_lower.contains("plat") || name_lower.contains("electroplat") {
                 vec!["electroplating".into()]
             } else if name_lower.contains("polish") {
-                vec!["polishing".into()]
+                vec!["electropolishing".into()]
             } else {
                 vec!["powder-coating".into()]
             }
         }
-        "heat_treatment" => vec!["heat-treatment".into()],
-        "assembly" => vec!["mechanical-assembly".into()],
-        "metrology" => vec!["cmm-inspection".into()],
+        "heat_treatment" => vec![],
+        "assembly" => vec![],
+        "metrology" => vec![],
         _ => vec![],
     }
 }
