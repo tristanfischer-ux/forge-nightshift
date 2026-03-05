@@ -57,6 +57,7 @@ impl Database {
             include_str!("migrations/010_enrich_concurrency.sql"),
             include_str!("migrations/011_geocoding.sql"),
             include_str!("migrations/012_normalize_country.sql"),
+            include_str!("migrations/013_deep_enrichment.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -158,11 +159,21 @@ impl Database {
         Ok(conn.changes() as i64)
     }
 
+    /// Reset stuck 'enriching' companies back to 'discovered' (e.g. from a crashed previous run).
+    pub fn reset_stuck_enriching(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET status = 'discovered', updated_at = datetime('now') WHERE status = 'enriching'",
+            [],
+        )?;
+        Ok(conn.changes() as i64)
+    }
+
     /// Get discovered companies that have a website (enrichable).
     pub fn get_enrichable_companies(&self, limit: i64) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT * FROM companies WHERE status = 'discovered' AND website_url IS NOT NULL AND website_url != '' ORDER BY created_at DESC LIMIT ?1"
+            "SELECT * FROM companies WHERE status = 'discovered' AND website_url IS NOT NULL AND website_url != '' ORDER BY created_at ASC LIMIT ?1"
         )?;
         let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
 
@@ -875,6 +886,99 @@ impl Database {
         conn.execute(
             "UPDATE companies SET latitude = ?1, longitude = ?2, updated_at = datetime('now') WHERE id = ?3",
             rusqlite::params![lat, lng, id],
+        )?;
+        Ok(())
+    }
+
+    /// Get candidates for deep enrichment trial: mix of top/mid/lower quality enriched companies.
+    pub fn get_deep_enrich_candidates(&self, count: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let per_tier = count / 3;
+        let remainder = count - per_tier * 3;
+
+        // Top tier
+        let mut stmt = conn.prepare(
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL ORDER BY enrichment_quality DESC LIMIT ?1"
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let mut rows: Vec<Value> = stmt
+            .query_map([per_tier + remainder], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let top_ids: Vec<String> = rows.iter()
+            .filter_map(|r| r.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .collect();
+
+        // Mid tier
+        let mut stmt2 = conn.prepare(
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL ORDER BY enrichment_quality DESC LIMIT ?1 OFFSET 100"
+        )?;
+        let columns2: Vec<String> = stmt2.column_names().iter().map(|c| c.to_string()).collect();
+        let mid_rows: Vec<Value> = stmt2
+            .query_map([per_tier], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns2.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .filter(|r| {
+                let id = r.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                !top_ids.contains(&id.to_string())
+            })
+            .collect();
+        rows.extend(mid_rows);
+
+        let all_ids: Vec<String> = rows.iter()
+            .filter_map(|r| r.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .collect();
+
+        // Lower tier
+        let mut stmt3 = conn.prepare(
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL ORDER BY enrichment_quality DESC LIMIT ?1 OFFSET 500"
+        )?;
+        let columns3: Vec<String> = stmt3.column_names().iter().map(|c| c.to_string()).collect();
+        let lower_rows: Vec<Value> = stmt3
+            .query_map([per_tier], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns3.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .filter(|r| {
+                let id = r.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                !all_ids.contains(&id.to_string())
+            })
+            .collect();
+        rows.extend(lower_rows);
+
+        Ok(rows)
+    }
+
+    /// Save deep enrichment results for a company.
+    pub fn update_deep_enrichment(
+        &self,
+        id: &str,
+        process_capabilities_json: &str,
+        deep_website_text: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET process_capabilities_json = ?1, deep_website_text = ?2, deep_enriched_at = datetime('now'), updated_at = datetime('now') WHERE id = ?3",
+            rusqlite::params![process_capabilities_json, deep_website_text, id],
         )?;
         Ok(())
     }

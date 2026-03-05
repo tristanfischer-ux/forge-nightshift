@@ -96,6 +96,54 @@ pub async fn generate(
     Ok(clean_json_response(&chat_resp.message.content))
 }
 
+/// Generate with a custom context window size.
+/// Use this for deep enrichment where the input text is larger than 8k tokens.
+pub async fn generate_with_ctx(
+    base_url: &str,
+    model: &str,
+    prompt: &str,
+    json_mode: bool,
+    num_ctx: u32,
+) -> Result<String> {
+    let client = reqwest::Client::new();
+    let url = if base_url.is_empty() {
+        DEFAULT_URL.to_string()
+    } else {
+        base_url.to_string()
+    };
+
+    let mut req = json!({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": false,
+        "think": false,
+        "options": {
+            "temperature": 0.3,
+            "num_ctx": num_ctx
+        },
+    });
+
+    if json_mode {
+        req["format"] = json!("json");
+    }
+
+    let resp = client
+        .post(format!("{}/api/chat", url))
+        .json(&req)
+        .timeout(std::time::Duration::from_secs(600))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Ollama error {}: {}", status, body);
+    }
+
+    let chat_resp: ChatResponse = resp.json().await?;
+    Ok(clean_json_response(&chat_resp.message.content))
+}
+
 /// Strip `<think>...</think>` blocks and extract the JSON object from LLM
 /// responses. qwen3 models emit reasoning tags even with `format: "json"`.
 fn clean_json_response(raw: &str) -> String {

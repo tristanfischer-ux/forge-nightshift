@@ -3,6 +3,7 @@ mod enrich;
 mod push;
 mod outreach;
 mod report;
+mod deep_enrich;
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -13,6 +14,11 @@ use crate::db::Database;
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
+static RESEARCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn is_research_active() -> bool {
+    RESEARCH_ACTIVE.load(Ordering::SeqCst)
+}
 
 pub async fn start_pipeline(app: tauri::AppHandle, stages: Vec<String>) -> Result<String> {
     if RUNNING.load(Ordering::SeqCst) {
@@ -131,8 +137,13 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
             let _ = db.log_activity(job_id, "enrich", "info", "Starting enrich stage");
         }
 
+        RESEARCH_ACTIVE.store(true, Ordering::SeqCst);
         let (research_result, enrich_result) = tokio::join!(
-            research::run(app, job_id, &config),
+            async {
+                let r = research::run(app, job_id, &config).await;
+                RESEARCH_ACTIVE.store(false, Ordering::SeqCst);
+                r
+            },
             enrich::run(app, job_id, &config)
         );
 
@@ -187,6 +198,7 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
                 "push" => push::run(app, job_id, &config).await,
                 "outreach" => outreach::run(app, job_id, &config).await,
                 "report" => report::run(app, job_id, &config).await,
+                "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, &config).await,
                 unknown => {
                     let db: tauri::State<'_, Database> = app.state();
                     let _ = db.log_activity(job_id, unknown, "error", "Unknown stage");
@@ -234,6 +246,7 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
                 "push" => push::run(app, job_id, &config).await,
                 "outreach" => outreach::run(app, job_id, &config).await,
                 "report" => report::run(app, job_id, &config).await,
+                "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, &config).await,
                 unknown => {
                     let db: tauri::State<'_, Database> = app.state();
                     let _ = db.log_activity(job_id, unknown, "error", "Unknown stage");

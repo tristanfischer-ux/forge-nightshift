@@ -31,6 +31,8 @@ import {
   Undo2,
   StopCircle,
   Trash2,
+  Wrench,
+  ChevronDown,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -141,12 +143,12 @@ export default function Review() {
   });
   const [enriching, setEnriching] = useState(false);
   const [enrichProgress, setEnrichProgress] = useState<{
-    currentCompany: string;
-    currentIndex: number;
+    currentCompany?: string;
     enriched: number;
     errors: number;
-    total: number;
+    total?: number;
     model: string;
+    phase?: string;
   } | null>(null);
   const [pushProgress, setPushProgress] = useState<{
     currentCompany: string;
@@ -208,33 +210,33 @@ export default function Review() {
     const unlisten = listen<{
       stage: string;
       phase: string;
-      current_company: string;
-      current_index: number;
+      current_company?: string;
+      current_index?: number;
       enriched?: number;
       pushed?: number;
       skipped?: number;
       errors: number;
-      total: number;
+      total?: number;
       model?: string;
     }>("pipeline:progress", (event) => {
       const p = event.payload;
       if (p.stage === "enrich") {
         setEnrichProgress({
           currentCompany: p.current_company,
-          currentIndex: p.current_index,
           enriched: p.enriched || 0,
           errors: p.errors,
           total: p.total,
           model: p.model || "",
+          phase: p.phase,
         });
       } else if (p.stage === "push") {
         setPushProgress({
-          currentCompany: p.current_company,
-          currentIndex: p.current_index,
+          currentCompany: p.current_company || "",
+          currentIndex: p.current_index || 0,
           pushed: p.pushed || 0,
           skipped: p.skipped || 0,
           errors: p.errors,
-          total: p.total,
+          total: p.total || 0,
         });
       } else {
         return;
@@ -484,6 +486,35 @@ export default function Review() {
     : "";
   const companyAddress = selected ? String(selected.address || "") : "";
 
+  // Deep enrichment — process capabilities
+  const processCapabilities: {
+    process_category?: string;
+    process_name?: string;
+    materials_worked?: string[];
+    tolerance_claimed?: string;
+    tolerance_value_mm?: number;
+    surface_finish_claimed?: string;
+    surface_finish_ra_um?: number;
+    max_part_dimensions?: string;
+    batch_size_range?: string;
+    equipment_mentioned?: string[];
+    surface_treatments?: string[];
+    confidence?: number;
+    source_excerpt?: string;
+  }[] = selected?.process_capabilities_json
+    ? (() => {
+        try {
+          const parsed = JSON.parse(String(selected.process_capabilities_json));
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      })()
+    : [];
+
+  const [expandedExcerpts, setExpandedExcerpts] = useState<Set<number>>(new Set());
+  const [processCapOpen, setProcessCapOpen] = useState(true);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -686,7 +717,9 @@ export default function Review() {
             <div className="flex items-center gap-2 min-w-0">
               <Loader2 className="w-4 h-4 text-forge-600 animate-spin shrink-0" />
               <span className="text-sm font-medium text-gray-900 truncate">
-                Enriching: {enrichProgress.currentCompany}
+                {enrichProgress.phase === "waiting"
+                  ? "Waiting for new companies..."
+                  : <>Enriching: {enrichProgress.currentCompany}</>}
                 {enrichProgress.model && (
                   <span className="text-gray-400 font-normal ml-1">
                     ({enrichProgress.model})
@@ -696,16 +729,18 @@ export default function Review() {
             </div>
             <div className="flex items-center gap-3 shrink-0 text-xs text-gray-500">
               <span>
-                {enrichProgress.enriched + enrichProgress.errors} of {enrichProgress.total}
+                Enriched: {enrichProgress.enriched}
               </span>
               {enrichProgress.errors > 0 && (
                 <span className="text-red-600">
                   {enrichProgress.errors} error{enrichProgress.errors !== 1 ? "s" : ""}
                 </span>
               )}
-              <span className="font-medium text-gray-700">
-                {Math.round(((enrichProgress.enriched + enrichProgress.errors) / enrichProgress.total) * 100)}%
-              </span>
+              {enrichProgress.total != null && (
+                <span className="font-medium text-gray-700">
+                  {Math.round(((enrichProgress.enriched + enrichProgress.errors) / enrichProgress.total) * 100)}%
+                </span>
+              )}
               <button
                 onClick={handleStop}
                 disabled={cancelling}
@@ -721,12 +756,18 @@ export default function Review() {
             </div>
           </div>
           <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-            <div
-              className="bg-forge-500 h-2 rounded-full transition-all duration-500 ease-out"
-              style={{
-                width: `${((enrichProgress.enriched + enrichProgress.errors) / enrichProgress.total) * 100}%`,
-              }}
-            />
+            {enrichProgress.phase === "waiting" ? (
+              <div className="bg-forge-400 h-2 rounded-full w-full animate-pulse" />
+            ) : enrichProgress.total != null ? (
+              <div
+                className="bg-forge-500 h-2 rounded-full transition-all duration-500 ease-out"
+                style={{
+                  width: `${((enrichProgress.enriched + enrichProgress.errors) / enrichProgress.total) * 100}%`,
+                }}
+              />
+            ) : (
+              <div className="bg-forge-500 h-2 rounded-full animate-pulse" style={{ width: "100%" }} />
+            )}
           </div>
         </div>
       )}
@@ -1234,6 +1275,148 @@ export default function Review() {
                         items={certifications}
                         color="bg-green-50 text-green-700"
                       />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Process Capabilities (from deep enrichment) */}
+              {processCapabilities.length > 0 && (
+                <div>
+                  <button
+                    onClick={() => setProcessCapOpen(!processCapOpen)}
+                    className="flex items-center justify-between w-full mb-2"
+                  >
+                    <h4 className="text-xs text-gray-400 uppercase flex items-center gap-1">
+                      <Wrench className="w-3 h-3" /> Process Capabilities
+                      <span className="ml-1 px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 text-[10px] font-medium">
+                        {processCapabilities.length}
+                      </span>
+                    </h4>
+                    <ChevronDown
+                      className={`w-3.5 h-3.5 text-gray-400 transition-transform ${
+                        processCapOpen ? "rotate-180" : ""
+                      }`}
+                    />
+                  </button>
+                  {processCapOpen && (
+                    <div className="space-y-3">
+                      {processCapabilities.map((proc, idx) => (
+                        <div
+                          key={idx}
+                          className="rounded-lg border border-gray-100 bg-gray-50 p-3 space-y-2"
+                        >
+                          {/* Process heading + category badge + confidence */}
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-sm font-medium text-gray-900">
+                                {proc.process_name || "Unknown Process"}
+                              </span>
+                              {proc.process_category && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-600">
+                                  {proc.process_category.replace(/_/g, " ")}
+                                </span>
+                              )}
+                            </div>
+                            {proc.confidence != null && (
+                              <span
+                                className={`w-2 h-2 rounded-full shrink-0 mt-1.5 ${
+                                  proc.confidence >= 0.8
+                                    ? "bg-green-500"
+                                    : proc.confidence >= 0.5
+                                      ? "bg-amber-500"
+                                      : "bg-red-500"
+                                }`}
+                                title={`Confidence: ${(proc.confidence * 100).toFixed(0)}%`}
+                              />
+                            )}
+                          </div>
+
+                          {/* Materials */}
+                          {proc.materials_worked && proc.materials_worked.length > 0 && (
+                            <TagPills
+                              items={proc.materials_worked}
+                              color="bg-amber-50 text-amber-700"
+                            />
+                          )}
+
+                          {/* Tolerance + Surface finish */}
+                          {(proc.tolerance_claimed || proc.surface_finish_claimed) && (
+                            <div className="flex gap-3 text-xs">
+                              {proc.tolerance_claimed && (
+                                <span className="text-gray-600">
+                                  <span className="text-gray-400">Tol: </span>
+                                  {proc.tolerance_claimed}
+                                </span>
+                              )}
+                              {proc.surface_finish_claimed && (
+                                <span className="text-gray-600">
+                                  <span className="text-gray-400">Finish: </span>
+                                  {proc.surface_finish_claimed}
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Equipment */}
+                          {proc.equipment_mentioned && proc.equipment_mentioned.length > 0 && (
+                            <TagPills
+                              items={proc.equipment_mentioned}
+                              color="bg-teal-50 text-teal-700"
+                            />
+                          )}
+
+                          {/* Batch size + Max dimensions */}
+                          {(proc.batch_size_range || proc.max_part_dimensions) && (
+                            <div className="flex gap-3 text-xs">
+                              {proc.batch_size_range && (
+                                <span className="text-gray-600">
+                                  <span className="text-gray-400">Batch: </span>
+                                  {proc.batch_size_range}
+                                </span>
+                              )}
+                              {proc.max_part_dimensions && (
+                                <span className="text-gray-600">
+                                  <span className="text-gray-400">Max: </span>
+                                  {proc.max_part_dimensions}
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Surface treatments */}
+                          {proc.surface_treatments && proc.surface_treatments.length > 0 && (
+                            <TagPills
+                              items={proc.surface_treatments}
+                              color="bg-green-50 text-green-700"
+                            />
+                          )}
+
+                          {/* Source excerpt (collapsed by default) */}
+                          {proc.source_excerpt && (
+                            <div>
+                              <button
+                                onClick={() => {
+                                  setExpandedExcerpts((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(idx)) next.delete(idx);
+                                    else next.add(idx);
+                                    return next;
+                                  });
+                                }}
+                                className="text-[10px] text-gray-400 hover:text-gray-600"
+                              >
+                                {expandedExcerpts.has(idx) ? "Hide source" : "Show source"}
+                              </button>
+                              {expandedExcerpts.has(idx) && (
+                                <p className="text-[11px] text-gray-400 italic mt-1 leading-relaxed">
+                                  &ldquo;{proc.source_excerpt}&rdquo;
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>

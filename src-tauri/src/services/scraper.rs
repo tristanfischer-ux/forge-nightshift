@@ -263,6 +263,141 @@ fn discover_subpages(html: &str, base_url: &str, page_url: &str) -> Vec<String> 
     scored.into_iter().map(|(url, _)| url).collect()
 }
 
+/// Additional manufacturing-specific subpage keywords for deep enrichment.
+const DEEP_SUBPAGE_KEYWORDS: &[&str] = &[
+    "about", "services", "capabilities", "products", "what-we-do", "quality",
+    "certifications", "manufacturing", "facilities", "equipment", "processes",
+    "materials", "industries", "sectors", "tolerances", "specifications",
+    "machining", "finishing", "treatments", "machine-list", "technology",
+    "precision", "cnc", "additive", "casting", "sheet-metal", "injection",
+    "surface-finish", "iso", "nadcap", "capacity",
+];
+
+/// Deep-scrape a website for manufacturing technique extraction.
+/// Uses manufacturing-specific subpage keywords, fetches up to 8 subpages,
+/// and returns up to 16,000 chars of content.
+pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()?;
+
+    let root_html = fetch_html(&client, url).await?;
+    let root_text = html_to_text(&root_html);
+
+    let base_url = extract_base_url(url);
+    let subpage_urls = discover_subpages_deep(&root_html, &base_url, url);
+
+    if subpage_urls.is_empty() {
+        log::info!("Deep scrape: no scored subpages for {}, using root only", url);
+        let content = format!("--- PAGE: / ---\n{}", root_text);
+        return Ok(truncate_text(&content, 16000, url));
+    }
+
+    log::info!(
+        "Deep scrape: found {} scored subpages for {}, fetching top {}",
+        subpage_urls.len(), url, subpage_urls.len().min(8)
+    );
+
+    let top_urls: Vec<String> = subpage_urls.into_iter().take(8).collect();
+    let subpage_results: Vec<(String, Option<String>)> = stream::iter(top_urls)
+        .map(|sub_url| {
+            let client = client.clone();
+            async move {
+                match fetch_html(&client, &sub_url).await {
+                    Ok(html) => {
+                        let text = html_to_text(&html);
+                        (sub_url, Some(text))
+                    }
+                    Err(_) => (sub_url, None),
+                }
+            }
+        })
+        .buffer_unordered(4)
+        .collect()
+        .await;
+
+    let mut combined = format!("--- PAGE: / ---\n{}", root_text);
+    for (sub_url, text) in &subpage_results {
+        if let Some(t) = text {
+            if !t.is_empty() {
+                let path = sub_url.strip_prefix(&base_url).unwrap_or(sub_url);
+                combined.push_str(&format!("\n\n--- PAGE: {} ---\n{}", path, t));
+            }
+        }
+    }
+
+    Ok(truncate_text(&combined, 16000, url))
+}
+
+/// Discover subpages using manufacturing-specific deep keywords.
+fn discover_subpages_deep(html: &str, base_url: &str, page_url: &str) -> Vec<String> {
+    let href_re = Regex::new(r#"<a[^>]+href\s*=\s*["']([^"'#]+)["']"#).unwrap();
+    let mut seen = HashSet::new();
+    let mut scored: Vec<(String, usize)> = Vec::new();
+
+    let root_path = page_url
+        .strip_prefix(base_url)
+        .unwrap_or("/")
+        .trim_end_matches('/');
+    let root_path = if root_path.is_empty() { "/" } else { root_path };
+
+    for cap in href_re.captures_iter(html) {
+        let href = cap[1].trim();
+
+        let full_url = if href.starts_with("http://") || href.starts_with("https://") {
+            if !href.starts_with(base_url) {
+                continue;
+            }
+            href.to_string()
+        } else if href.starts_with('/') {
+            format!("{}{}", base_url, href)
+        } else {
+            if href.starts_with("mailto:") || href.starts_with("tel:") || href.starts_with("javascript:") {
+                continue;
+            }
+            format!("{}/{}", base_url, href)
+        };
+
+        let lower = full_url.to_lowercase();
+        if lower.ends_with(".pdf") || lower.ends_with(".jpg") || lower.ends_with(".png")
+            || lower.ends_with(".gif") || lower.ends_with(".svg") || lower.ends_with(".css")
+            || lower.ends_with(".js") || lower.ends_with(".zip") || lower.ends_with(".mp4")
+        {
+            continue;
+        }
+
+        let normalized = full_url.split('?').next().unwrap_or(&full_url);
+        let normalized = normalized.trim_end_matches('/').to_string();
+
+        let path = normalized
+            .strip_prefix(base_url)
+            .unwrap_or("/")
+            .trim_end_matches('/');
+        let path = if path.is_empty() { "/" } else { path };
+        if path == root_path || path == "/" {
+            continue;
+        }
+
+        if !seen.insert(normalized.clone()) {
+            continue;
+        }
+
+        let path_lower = path.to_lowercase();
+        let score: usize = DEEP_SUBPAGE_KEYWORDS
+            .iter()
+            .filter(|kw| path_lower.contains(*kw))
+            .count();
+
+        if score > 0 {
+            scored.push((normalized, score));
+        }
+    }
+
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.into_iter().map(|(url, _)| url).collect()
+}
+
 /// Truncate text to max_chars with a log message if needed.
 fn truncate_text(text: &str, max_chars: usize, url: &str) -> String {
     if text.len() > max_chars {
