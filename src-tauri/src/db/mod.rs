@@ -984,6 +984,27 @@ impl Database {
         Ok(())
     }
 
+    /// Get ALL unenriched candidates for deep enrichment (no sector filter, no limit).
+    pub fn get_all_deep_enrich_candidates(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL ORDER BY enrichment_quality DESC"
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
     /// Get deep enrich candidates filtered by sector (category, subcategory, or specialties).
     pub fn get_deep_enrich_candidates_by_sector(&self, sector: &str, count: i64) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
@@ -1116,6 +1137,39 @@ impl Database {
                     obj.insert(col.clone(), sqlite_to_json(val));
                 }
                 Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Store the Supabase listing ID back to the company after pushing.
+    pub fn set_supabase_listing_id(&self, company_id: &str, listing_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET supabase_listing_id = ?1, updated_at = datetime('now') WHERE id = ?2",
+            [listing_id, company_id],
+        )?;
+        Ok(())
+    }
+
+    /// Get pushed companies that have process_capabilities_json and a supabase_listing_id.
+    pub fn get_pushed_companies_with_capabilities(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, supabase_listing_id, process_capabilities_json FROM companies \
+             WHERE status = 'pushed' \
+             AND supabase_listing_id IS NOT NULL AND supabase_listing_id != '' \
+             AND process_capabilities_json IS NOT NULL AND process_capabilities_json != '' AND process_capabilities_json != '[]'"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, Option<String>>(1)?,
+                    "supabase_listing_id": row.get::<_, String>(2)?,
+                    "process_capabilities_json": row.get::<_, String>(3)?,
+                }))
             })?
             .filter_map(|r| r.ok())
             .collect();

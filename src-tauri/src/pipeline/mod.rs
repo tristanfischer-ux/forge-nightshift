@@ -8,7 +8,9 @@ mod technique_aggregate;
 
 use anyhow::Result;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
 use crate::db::Database;
@@ -16,6 +18,31 @@ use crate::db::Database;
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
 static RESEARCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+fn node_states() -> &'static Mutex<HashMap<String, Value>> {
+    static STATES: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn emit_node(app: &tauri::AppHandle, payload: Value) {
+    if let Some(node_id) = payload.get("node_id").and_then(|v| v.as_str()) {
+        // Store state without holding lock during emit (prevents IPC backpressure blocking pipeline)
+        if let Ok(mut states) = node_states().try_lock() {
+            states.insert(node_id.to_string(), payload.clone());
+        }
+    }
+    let _ = app.emit("pipeline:node", &payload);
+}
+
+pub fn get_all_node_states() -> HashMap<String, Value> {
+    node_states().lock().map(|s| s.clone()).unwrap_or_default()
+}
+
+pub fn reset_node_states() {
+    if let Ok(mut states) = node_states().lock() {
+        states.clear();
+    }
+}
 
 pub fn is_research_active() -> bool {
     RESEARCH_ACTIVE.load(Ordering::SeqCst)
@@ -28,6 +55,7 @@ pub async fn start_pipeline(app: tauri::AppHandle, stages: Vec<String>) -> Resul
 
     RUNNING.store(true, Ordering::SeqCst);
     CANCEL.store(false, Ordering::SeqCst);
+    reset_node_states();
 
     let db: tauri::State<'_, Database> = app.state();
     let job_id = db.insert_job(&stages)?;
@@ -197,9 +225,11 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
 
             let stage_result = match stage.as_str() {
                 "push" => push::run(app, job_id, &config).await,
+                "push_capabilities" => push::push_capabilities(app, job_id, &config).await,
                 "outreach" => outreach::run(app, job_id, &config).await,
                 "report" => report::run(app, job_id, &config).await,
                 "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, &config).await,
+                "deep_enrich_all" => deep_enrich::run_all(app, job_id, &config).await,
                 "aggregate_techniques" => technique_aggregate::run(app, job_id, &config).await,
                 "push_techniques" => technique_aggregate::push_techniques(app, job_id, &config).await,
                 "enrich_all" => run_enrich_all(app, job_id, &config).await,
@@ -252,9 +282,11 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
                 "research" => research::run(app, job_id, &config).await,
                 "enrich" => enrich::run(app, job_id, &config).await,
                 "push" => push::run(app, job_id, &config).await,
+                "push_capabilities" => push::push_capabilities(app, job_id, &config).await,
                 "outreach" => outreach::run(app, job_id, &config).await,
                 "report" => report::run(app, job_id, &config).await,
                 "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, &config).await,
+                "deep_enrich_all" => deep_enrich::run_all(app, job_id, &config).await,
                 "aggregate_techniques" => technique_aggregate::run(app, job_id, &config).await,
                 "push_techniques" => technique_aggregate::push_techniques(app, job_id, &config).await,
                 "enrich_all" => run_enrich_all(app, job_id, &config).await,
@@ -331,6 +363,10 @@ async fn run_enrich_all(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
 
     log::info!("[enrich_all] Complete");
     Ok(summary)
+}
+
+pub fn get_pipeline_nodes() -> Result<Value> {
+    Ok(json!(get_all_node_states()))
 }
 
 /// Automated scheduler — checks trigger file every 5s, schedule every 60s.

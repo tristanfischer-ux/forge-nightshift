@@ -189,6 +189,15 @@ pub async fn push_listing(
         listing["export_controls"] = json!(export_controls);
     }
 
+    // Process capabilities from deep enrichment
+    if let Some(caps_str) = company.get("process_capabilities_json").and_then(|v| v.as_str()) {
+        if !caps_str.is_empty() && caps_str != "[]" {
+            if let Ok(caps) = serde_json::from_str::<serde_json::Value>(caps_str) {
+                listing["process_capabilities"] = caps;
+            }
+        }
+    }
+
     // Only include contact fields if they have values
     let contact_name = company.get("contact_name").and_then(|v| v.as_str()).unwrap_or("");
     let contact_email = company.get("contact_email").and_then(|v| v.as_str()).unwrap_or("");
@@ -266,6 +275,41 @@ pub async fn push_listing(
 
         Ok(id)
     }
+}
+
+/// PATCH an existing marketplace_listing to add process_capabilities.
+pub async fn patch_listing_capabilities(
+    url: &str,
+    service_key: &str,
+    listing_id: &str,
+    capabilities: Value,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "process_capabilities": capabilities,
+    });
+
+    let resp = client
+        .patch(format!(
+            "{}/rest/v1/marketplace_listings?id=eq.{}",
+            url, listing_id
+        ))
+        .header("apikey", service_key)
+        .header("Authorization", format!("Bearer {}", service_key))
+        .header("Content-Type", "application/json")
+        .header("Prefer", "return=minimal")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let resp_body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Supabase PATCH capabilities error {}: {}", status, resp_body);
+    }
+
+    Ok(())
 }
 
 /// Fetch all known domains and company names from ForgeOS marketplace_listings.
@@ -505,6 +549,7 @@ pub async fn push_technique_enrichment(
         "tips_and_insights": parse_json_array_field("tips_and_insights"),
         "common_applications": parse_json_array_field("common_applications"),
         "supplier_count": record.get("supplier_count").and_then(|v| v.as_i64()).unwrap_or(0),
+        "source_company_ids": parse_json_array_field("source_company_ids"),
         "source": "nightshift",
         "updated_at": chrono::Utc::now().to_rfc3339(),
     });
