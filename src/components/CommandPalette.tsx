@@ -93,7 +93,15 @@ export default function CommandPalette({
       action: async () => {
         try {
           const status = await getPipelineStatus();
-          if (!status.running) await startPipeline(["push"]);
+          if (status.running) {
+            await stopPipeline();
+            for (let i = 0; i < 15; i++) {
+              const s = await getPipelineStatus();
+              if (!s.running) break;
+              await new Promise((r) => setTimeout(r, 1000));
+            }
+          }
+          await startPipeline(["push"]);
         } catch (e) { showError(`Failed to push: ${e}`); }
         onClose();
       },
