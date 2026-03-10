@@ -43,7 +43,8 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     }));
 
     let mut pushed_count = 0;
-    let mut skipped_count = 0;
+    let mut skipped_threshold = 0;
+    let mut skipped_domain = 0;
     let mut error_count = 0;
 
     let batch_size: i64 = 200;
@@ -83,7 +84,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 "info",
                 &format!("Skipping {} (score {} < threshold {})", name, score, threshold),
             );
-            skipped_count += 1;
+            skipped_threshold += 1;
             continue;
         }
 
@@ -103,7 +104,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                         "info",
                         &format!("Skipping {} — already in ForgeOS", name),
                     );
-                    skipped_count += 1;
+                    skipped_domain += 1;
                     continue;
                 }
                 Ok(false) => {}
@@ -143,7 +144,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                         "current_company": name,
                         "current_index": offset as usize + batch_idx,
                         "pushed": pushed_count,
-                        "skipped": skipped_count,
+                        "skipped": skipped_threshold + skipped_domain,
                         "errors": error_count,
                         "total": batch_total,
                     }),
@@ -156,7 +157,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                         "node_id": "push",
                         "status": "running",
                         "model": null,
-                        "progress": { "current": pushed_count + skipped_count + error_count, "total": null, "rate": rate, "current_item": name },
+                        "progress": { "current": pushed_count + skipped_threshold + skipped_domain + error_count, "total": null, "rate": rate, "current_item": name },
                         "concurrency": 1,
                         "started_at": started_at.to_rfc3339(),
                         "elapsed_secs": elapsed
@@ -193,7 +194,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         "node_id": "push",
         "status": "completed",
         "model": null,
-        "progress": { "current": pushed_count + skipped_count + error_count, "total": null, "rate": null, "current_item": null },
+        "progress": { "current": pushed_count + skipped_threshold + skipped_domain + error_count, "total": null, "rate": null, "current_item": null },
         "concurrency": 1,
         "started_at": started_at.to_rfc3339(),
         "elapsed_secs": elapsed
@@ -201,7 +202,8 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
 
     Ok(json!({
         "companies_pushed": pushed_count,
-        "skipped_below_threshold": skipped_count,
+        "skipped_below_threshold": skipped_threshold,
+        "skipped_duplicate_domain": skipped_domain,
         "errors": error_count,
     }))
 }

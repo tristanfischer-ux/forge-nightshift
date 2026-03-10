@@ -59,6 +59,7 @@ impl Database {
             include_str!("migrations/012_normalize_country.sql"),
             include_str!("migrations/013_deep_enrichment.sql"),
             include_str!("migrations/014_technique_knowledge.sql"),
+            include_str!("migrations/015_indexes.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -982,6 +983,28 @@ impl Database {
             rusqlite::params![process_capabilities_json, deep_website_text, id],
         )?;
         Ok(())
+    }
+
+    /// Get a batch of unenriched candidates for the deep enrichment drain-loop.
+    /// Simple query with LIMIT — no stratified sampling (that's only for trial mode).
+    pub fn get_deep_enrich_batch(&self, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL ORDER BY enrichment_quality DESC LIMIT ?1"
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let rows: Vec<Value> = stmt
+            .query_map([limit], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
     }
 
     /// Get ALL unenriched candidates for deep enrichment (no sector filter, no limit).

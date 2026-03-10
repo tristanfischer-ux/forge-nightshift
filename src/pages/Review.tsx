@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   CheckCircle,
@@ -50,6 +50,8 @@ import {
   removeFromMarketplace,
   removeAllFromMarketplace,
 } from "../lib/tauri";
+import { useError } from "../contexts/ErrorContext";
+import ConfirmDialog from "../components/ConfirmDialog";
 
 const COUNTRIES: Record<string, string> = {
   DE: "Germany",
@@ -169,6 +171,15 @@ export default function Review() {
     imported: number;
     skipped: number;
   } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+  } | null>(null);
+
+  const { showError, showInfo } = useError();
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Drill-down filters from URL params
   const drillSubcategory = searchParams.get("subcategory");
@@ -250,9 +261,14 @@ export default function Review() {
       } else {
         return;
       }
-      // Refresh list on each company event so badges update live
-      loadCompanies(filter);
-      loadCounts();
+      // Debounce DB refresh — at most once every 3s to avoid flooding IPC during parallel pipeline
+      if (!refreshTimer.current) {
+        refreshTimer.current = setTimeout(() => {
+          refreshTimer.current = null;
+          loadCompanies(filter);
+          loadCounts();
+        }, 3000);
+      }
     });
     return () => { unlisten.then((fn) => fn()); };
   }, [filter]);
@@ -271,8 +287,8 @@ export default function Review() {
         else if (row.status === "error") c.error += Number(row.count) || 0;
       }
       setCounts(c);
-    } catch {
-      // ignore
+    } catch (e) {
+      showError(`Failed to load counts: ${e}`);
     }
   }
 
@@ -293,8 +309,8 @@ export default function Review() {
         const data = await getCompanies(s, 2000, 0);
         setCompanies(data);
       }
-    } catch {
-      // DB may not be ready
+    } catch (e) {
+      showError(`Failed to load companies: ${e}`);
     }
   }
 
@@ -326,48 +342,62 @@ export default function Review() {
         setSelected({ ...selected, status: "pushed" });
       }
     } catch (e) {
-      alert(String(e));
+      showError(String(e));
     } finally {
       setPushing(null);
     }
   }
 
-  async function handleRemoveFromMarketplace(id: string) {
-    if (!confirm("Remove this company from the ForgeOS marketplace? This cannot be undone.")) return;
-    try {
-      setRemoving(id);
-      await removeFromMarketplace(id);
-      if (selected && String(selected.id) === id) setSelected(null);
-      loadCompanies(filter);
-      loadCounts();
-    } catch (e) {
-      alert(String(e));
-    } finally {
-      setRemoving(null);
-    }
+  function handleRemoveFromMarketplace(id: string) {
+    setConfirmDialog({
+      title: "Remove from Marketplace",
+      message: "Remove this company from the ForgeOS marketplace? This cannot be undone.",
+      confirmLabel: "Remove",
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        try {
+          setRemoving(id);
+          await removeFromMarketplace(id);
+          if (selected && String(selected.id) === id) setSelected(null);
+          loadCompanies(filter);
+          loadCounts();
+        } catch (e) {
+          showError(String(e));
+        } finally {
+          setRemoving(null);
+        }
+      },
+    });
   }
 
-  async function handleRemoveAllFromMarketplace() {
+  function handleRemoveAllFromMarketplace() {
     const ids = companies
       .filter((c) => Boolean(c.supabase_listing_id))
       .map((c) => String(c.id));
     if (ids.length === 0) {
-      alert("No companies with marketplace listings to remove.");
+      showInfo("No companies with marketplace listings to remove.");
       return;
     }
-    if (!confirm(`Remove ${ids.length} companies from the ForgeOS marketplace? This cannot be undone.`)) return;
-    try {
-      setRemovingAll(true);
-      const result = await removeAllFromMarketplace(ids);
-      alert(`Removed ${result.removed} listings from marketplace${result.errors > 0 ? ` (${result.errors} errors)` : ""}`);
-      setSelected(null);
-      loadCompanies(filter);
-      loadCounts();
-    } catch (e) {
-      alert(String(e));
-    } finally {
-      setRemovingAll(false);
-    }
+    setConfirmDialog({
+      title: "Remove All from Marketplace",
+      message: `Remove ${ids.length} companies from the ForgeOS marketplace? This cannot be undone.`,
+      confirmLabel: "Remove All",
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        try {
+          setRemovingAll(true);
+          const result = await removeAllFromMarketplace(ids);
+          showInfo(`Removed ${result.removed} listings from marketplace${result.errors > 0 ? ` (${result.errors} errors)` : ""}`);
+          setSelected(null);
+          loadCompanies(filter);
+          loadCounts();
+        } catch (e) {
+          showError(String(e));
+        } finally {
+          setRemovingAll(false);
+        }
+      },
+    });
   }
 
   async function handleReject(id: string) {
@@ -381,7 +411,8 @@ export default function Review() {
     try {
       setEnriching(true);
       await startPipeline(["enrich"]);
-    } catch {
+    } catch (e) {
+      showError(`Failed to start enrich: ${e}`);
       setEnriching(false);
     }
   }
@@ -390,7 +421,8 @@ export default function Review() {
     try {
       setCancelling(true);
       await stopPipeline();
-    } catch {
+    } catch (e) {
+      showError(`Failed to stop pipeline: ${e}`);
       setCancelling(false);
     }
   }
@@ -406,7 +438,8 @@ export default function Review() {
         await new Promise((r) => setTimeout(r, 1000));
       }
       await startPipeline(["push"]);
-    } catch {
+    } catch (e) {
+      showError(`Failed to start push: ${e}`);
       setEnriching(false);
     }
   }
@@ -417,8 +450,8 @@ export default function Review() {
       loadCompanies(filter);
       loadCounts();
       setSelected(null);
-    } catch {
-      // handled elsewhere
+    } catch (e) {
+      showError(`Failed to reset errors: ${e}`);
     }
   }
 
@@ -427,8 +460,8 @@ export default function Review() {
       await approveAllEnriched();
       loadCompanies(filter);
       loadCounts();
-    } catch {
-      // handled elsewhere
+    } catch (e) {
+      showError(`Failed to bulk approve: ${e}`);
     }
   }
 
@@ -440,8 +473,8 @@ export default function Review() {
       setAuditResult(result);
       loadCompanies(filter);
       loadCounts();
-    } catch {
-      // handled elsewhere
+    } catch (e) {
+      showError(`Marketplace audit failed: ${e}`);
     } finally {
       setAuditing(false);
     }
@@ -1682,6 +1715,15 @@ export default function Review() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={!!confirmDialog}
+        title={confirmDialog?.title ?? ""}
+        message={confirmDialog?.message ?? ""}
+        confirmLabel={confirmDialog?.confirmLabel ?? "Confirm"}
+        variant="danger"
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { getCompaniesForMap, geocodeCompanies, type MapCompany } from "../lib/tauri";
 import { MapPin, RefreshCw, Filter, X } from "lucide-react";
+import { useError } from "../contexts/ErrorContext";
 
 // Subcategory color map
 const SUBCATEGORY_COLORS: Record<string, string> = {
@@ -116,6 +117,7 @@ function FlyToCluster({ cluster }: { cluster: Cluster | null }) {
 }
 
 export default function MapPage() {
+  const { showError, showInfo } = useError();
   const [companies, setCompanies] = useState<MapCompany[]>([]);
   const [loading, setLoading] = useState(true);
   const [geocoding, setGeocoding] = useState(false);
@@ -145,11 +147,10 @@ export default function MapPage() {
     setGeocoding(true);
     try {
       const result = await geocodeCompanies();
-      alert(`Geocoded ${result.geocoded} of ${result.total} companies (${result.failed} failed)`);
+      showInfo(`Geocoded ${result.geocoded} of ${result.total} companies (${result.failed} failed)`);
       loadCompanies();
     } catch (e) {
-      console.error("Geocoding failed:", e);
-      alert(`Geocoding error: ${e}`);
+      showError(`Geocoding error: ${e}`);
     }
     setGeocoding(false);
   }

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Mail, Send, Eye, RefreshCw, Loader2 } from "lucide-react";
+import DOMPurify from "dompurify";
 import { getEmails, updateEmailStatus, refreshEmailStatuses } from "../lib/tauri";
+import { useError } from "../contexts/ErrorContext";
 
 const STATUS_COLORS: Record<string, string> = {
   draft: "bg-gray-100 text-gray-600",
@@ -14,6 +16,7 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export default function Outreach() {
+  const { showError } = useError();
   const [emails, setEmails] = useState<Record<string, unknown>[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<Record<
     string,
@@ -30,14 +33,18 @@ export default function Outreach() {
     try {
       const data = await getEmails(undefined, 100);
       setEmails(data);
-    } catch {
-      // DB may not be ready
+    } catch (e) {
+      showError(`Failed to load emails: ${e}`);
     }
   }
 
   async function handleApproveEmail(id: string) {
-    await updateEmailStatus(id, "approved");
-    loadEmails();
+    try {
+      await updateEmailStatus(id, "approved");
+      loadEmails();
+    } catch (e) {
+      showError(`Failed to approve email: ${e}`);
+    }
   }
 
   async function handleRefreshStatuses() {
@@ -47,7 +54,8 @@ export default function Outreach() {
       const count = await refreshEmailStatuses();
       setRefreshCount(count);
       loadEmails();
-    } catch {
+    } catch (e) {
+      showError(`Failed to refresh statuses: ${e}`);
       setRefreshCount(-1);
     }
     setRefreshing(false);
@@ -148,7 +156,9 @@ export default function Outreach() {
               <div
                 className="text-sm text-gray-700 prose prose-sm"
                 dangerouslySetInnerHTML={{
-                  __html: String(selectedEmail.body || ""),
+                  __html: DOMPurify.sanitize(
+                    String(selectedEmail.body || "")
+                  ),
                 }}
               />
             </div>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Search, Globe, RefreshCw } from "lucide-react";
 import { getCompanies, getConfig, setConfig, startPipeline } from "../lib/tauri";
+import { useError } from "../contexts/ErrorContext";
 
 const STATUS_BADGE: Record<string, string> = {
   discovered: "bg-blue-100 text-blue-700",
@@ -21,6 +22,7 @@ const COUNTRIES: Record<string, string> = {
 };
 
 export default function Research() {
+  const { showError } = useError();
   const [companies, setCompanies] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(false);
   const [enabledCountries, setEnabledCountries] = useState<Set<string>>(
@@ -39,8 +41,8 @@ export default function Research() {
         const parsed = JSON.parse(config.target_countries) as string[];
         setEnabledCountries(new Set(parsed));
       }
-    } catch {
-      // Use defaults
+    } catch (e) {
+      showError(`Failed to load country config: ${e}`);
     }
   }
 
@@ -61,8 +63,8 @@ export default function Research() {
     try {
       const data = await getCompanies(undefined, 2000, 0);
       setCompanies(data);
-    } catch {
-      // DB may not be ready yet
+    } catch (e) {
+      showError(`Failed to load companies: ${e}`);
     }
   }
 
@@ -70,8 +72,8 @@ export default function Research() {
     setLoading(true);
     try {
       await startPipeline(["research"]);
-    } catch {
-      // handled by dashboard
+    } catch (e) {
+      showError(`Failed to start research: ${e}`);
     }
     setLoading(false);
   }

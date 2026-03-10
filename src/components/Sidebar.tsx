@@ -9,12 +9,14 @@ import {
   CheckSquare,
   Mail,
   Settings,
-  Moon,
+  Hammer,
+  Workflow,
 } from "lucide-react";
 import { getPipelineStatus } from "../lib/tauri";
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
+  { path: "/pipeline", label: "Pipeline", icon: Workflow },
   { path: "/research", label: "Research", icon: Search },
   { path: "/map", label: "Map", icon: MapPin },
   { path: "/review", label: "Review", icon: CheckSquare },
@@ -75,7 +77,7 @@ export default function Sidebar() {
     <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">
       <div className="p-4 border-b border-gray-200">
         <div className="flex items-center gap-2">
-          <Moon className="w-5 h-5 text-forge-600" />
+          <Hammer className="w-5 h-5 text-forge-600" />
           <div>
             <h1 className="text-sm font-semibold text-gray-900">
               Forge Nightshift

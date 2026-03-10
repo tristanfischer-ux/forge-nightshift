@@ -18,6 +18,7 @@ import {
   backupDatabase,
   reenrichAll,
 } from "../lib/tauri";
+import { useError } from "../contexts/ErrorContext";
 
 type TestStatus = "idle" | "testing" | "success" | "error";
 
@@ -25,11 +26,16 @@ export default function Settings() {
   const [config, setConfigState] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const { showError } = useError();
   const [ollamaStatus, setOllamaStatus] = useState<TestStatus>("idle");
+  const [ollamaError, setOllamaError] = useState("");
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [braveStatus, setBraveStatus] = useState<TestStatus>("idle");
+  const [braveError, setBraveError] = useState("");
   const [supabaseStatus, setSupabaseStatus] = useState<TestStatus>("idle");
+  const [supabaseError, setSupabaseError] = useState("");
   const [resendStatus, setResendStatus] = useState<TestStatus>("idle");
+  const [resendError, setResendError] = useState("");
   const [backingUp, setBackingUp] = useState(false);
   const [backupPath, setBackupPath] = useState<string | null>(null);
   const [reenrichStage, setReenrichStage] = useState<"idle" | "confirm" | "running" | "done" | "error">("idle");
@@ -43,8 +49,8 @@ export default function Settings() {
     try {
       const data = await getConfig();
       setConfigState(data);
-    } catch {
-      // DB may not be ready
+    } catch (e) {
+      showError(`Failed to load config: ${e}`);
     }
   }
 
@@ -61,52 +67,63 @@ export default function Settings() {
       }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch {
-      // handle error
+    } catch (e) {
+      showError(`Failed to save settings: ${e}`);
     }
     setSaving(false);
   }
 
   async function handleTestOllama() {
     setOllamaStatus("testing");
+    setOllamaError("");
     try {
       const result = await testOllamaConnection();
       setOllamaModels(result.models);
       setOllamaStatus("success");
-    } catch {
+    } catch (e) {
+      setOllamaError(String(e));
       setOllamaStatus("error");
     }
   }
 
   async function handleTestBrave() {
     setBraveStatus("testing");
+    setBraveError("");
     try {
       const ok = await testBraveConnection(config.brave_api_key || "");
       setBraveStatus(ok ? "success" : "error");
-    } catch {
+      if (!ok) setBraveError("Connection test returned false");
+    } catch (e) {
+      setBraveError(String(e));
       setBraveStatus("error");
     }
   }
 
   async function handleTestSupabase() {
     setSupabaseStatus("testing");
+    setSupabaseError("");
     try {
       const ok = await testSupabaseConnection(
         config.supabase_url || "",
         config.supabase_service_key || ""
       );
       setSupabaseStatus(ok ? "success" : "error");
-    } catch {
+      if (!ok) setSupabaseError("Connection test returned false");
+    } catch (e) {
+      setSupabaseError(String(e));
       setSupabaseStatus("error");
     }
   }
 
   async function handleTestResend() {
     setResendStatus("testing");
+    setResendError("");
     try {
       const ok = await testResendConnection(config.resend_api_key || "");
       setResendStatus(ok ? "success" : "error");
-    } catch {
+      if (!ok) setResendError("Connection test returned false");
+    } catch (e) {
+      setResendError(String(e));
       setResendStatus("error");
     }
   }
@@ -117,7 +134,8 @@ export default function Settings() {
     try {
       const path = await backupDatabase();
       setBackupPath(path);
-    } catch {
+    } catch (e) {
+      showError(`Backup failed: ${e}`);
       setBackupPath("error");
     }
     setBackingUp(false);
@@ -134,7 +152,8 @@ export default function Settings() {
         const count = await reenrichAll();
         setReenrichCount(count);
         setReenrichStage("done");
-      } catch {
+      } catch (e) {
+        showError(`Re-enrich failed: ${e}`);
         setReenrichStage("error");
       }
     }
@@ -219,6 +238,9 @@ export default function Settings() {
             Available models: {ollamaModels.join(", ")}
           </div>
         )}
+        {ollamaStatus === "error" && ollamaError && (
+          <p className="text-xs text-red-600">{ollamaError}</p>
+        )}
       </section>
 
       {/* Brave Search */}
@@ -241,6 +263,9 @@ export default function Settings() {
           placeholder="BSA..."
           type="password"
         />
+        {braveStatus === "error" && braveError && (
+          <p className="text-xs text-red-600">{braveError}</p>
+        )}
       </section>
 
       {/* Supabase */}
@@ -275,6 +300,9 @@ export default function Settings() {
           onChange={(v) => updateField("foundry_id", v)}
           placeholder="UUID of your foundry"
         />
+        {supabaseStatus === "error" && supabaseError && (
+          <p className="text-xs text-red-600">{supabaseError}</p>
+        )}
       </section>
 
       {/* Resend */}
@@ -303,6 +331,9 @@ export default function Settings() {
           onChange={(v) => updateField("from_email", v)}
           placeholder="outreach@fractionalforge.com"
         />
+        {resendStatus === "error" && resendError && (
+          <p className="text-xs text-red-600">{resendError}</p>
+        )}
       </section>
 
       {/* Companies House */}
@@ -367,6 +398,15 @@ export default function Settings() {
           type="number"
           min={1}
           max={10}
+        />
+        <Input
+          label="Deep Enrich Concurrency (1-5)"
+          value={config.deep_enrich_concurrency || ""}
+          onChange={(v) => updateField("deep_enrich_concurrency", v)}
+          placeholder="2"
+          type="number"
+          min={1}
+          max={5}
         />
         <Input
           label="Target Countries (JSON)"

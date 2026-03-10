@@ -272,8 +272,8 @@ export default function Dashboard() {
               companies.
             </div>
           ) : (
-            logs.map((log, i) => (
-              <div key={i} className="flex items-start gap-3 px-4 py-3">
+            logs.map((log) => (
+              <div key={String(log.id || log.created_at)} className="flex items-start gap-3 px-4 py-3">
                 <div
                   className={`mt-1 w-2 h-2 rounded-full shrink-0 ${
                     log.level === "error"
