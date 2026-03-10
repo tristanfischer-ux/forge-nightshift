@@ -90,14 +90,19 @@ export default function Settings() {
 
   async function saveAll() {
     setSaving(true);
-    try {
-      for (const [key, value] of Object.entries(config)) {
+    const failed: string[] = [];
+    for (const [key, value] of Object.entries(config)) {
+      try {
         await setConfig(key, value);
+      } catch {
+        failed.push(key);
       }
+    }
+    if (failed.length > 0) {
+      showError(`Failed to save: ${failed.join(", ")}`);
+    } else {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch (e) {
-      showError(`Failed to save settings: ${e}`);
     }
     setSaving(false);
   }
@@ -201,7 +206,7 @@ export default function Settings() {
     a.href = url;
     a.download = `nightshift-config-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -211,14 +216,17 @@ export default function Settings() {
     reader.onload = () => {
       try {
         const data = JSON.parse(reader.result as string);
-        if (typeof data === "object" && data !== null) {
-          setImportPreview(data as Record<string, string>);
+        if (typeof data !== "object" || data === null || Array.isArray(data)) {
+          showError("Config must be a JSON object, not an array");
+          return;
         }
+        setImportPreview(data as Record<string, string>);
       } catch {
         showError("Invalid JSON file");
       }
     };
     reader.readAsText(file);
+    e.target.value = "";
   }
 
   async function handleApplyImport() {

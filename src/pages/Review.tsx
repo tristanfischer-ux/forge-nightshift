@@ -217,21 +217,25 @@ export default function Review() {
     loadCounts();
   }, [filter, drillSubcategory, drillCountry, drillSearch, page]);
 
-  // Reset page and selection when filters change (page change handled separately below)
+  // Reset page and selection when filters change
   useEffect(() => {
     setPage(0);
     setSelectedIds(new Set());
     setCompareList([]);
-  }, [filter, drillSubcategory, drillCountry, drillSearch, searchQuery]);
+  }, [filter, drillSubcategory, drillCountry, drillSearch]);
 
-  // Clear selection when page changes
+  // Clear selection and compare list when page changes
   useEffect(() => {
     setSelectedIds(new Set());
+    setCompareList([]);
   }, [page]);
 
-  // Debounced search
+  // Debounced search — resets page and fetches
   useEffect(() => {
     const timer = setTimeout(() => {
+      setPage(0);
+      setSelectedIds(new Set());
+      setCompareList([]);
       loadCompanies(filter);
     }, 300);
     return () => clearTimeout(timer);
@@ -303,7 +307,13 @@ export default function Review() {
         }, 3000);
       }
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+      if (refreshTimer.current) {
+        clearTimeout(refreshTimer.current);
+        refreshTimer.current = null;
+      }
+    };
   }, [filter]);
 
   // Enhancement 9: Keyboard shortcuts
@@ -383,7 +393,7 @@ export default function Review() {
   async function loadCompanies(status: StatusFilter) {
     try {
       const limit = 50;
-      const offset = page * 50;
+      const offset = pageRef.current * 50;
       if (hasDrillDown || searchQuery.trim()) {
         const data = await getCompaniesFiltered({
           status: status === "all" ? undefined : status,
@@ -412,20 +422,28 @@ export default function Review() {
   }
 
   async function handleApprove(id: string) {
-    await updateCompanyStatus(id, "approved");
-    loadCompanies(filter);
-    loadCounts();
-    if (selected && String(selected.id) === id) {
-      setSelected({ ...selected, status: "approved" });
+    try {
+      await updateCompanyStatus(id, "approved");
+      loadCompanies(filter);
+      loadCounts();
+      if (selected && String(selected.id) === id) {
+        setSelected({ ...selected, status: "approved" });
+      }
+    } catch (e) {
+      showError(`Failed to approve: ${e}`);
     }
   }
 
   async function handleUnapprove(id: string) {
-    await updateCompanyStatus(id, "enriched");
-    loadCompanies(filter);
-    loadCounts();
-    if (selected && String(selected.id) === id) {
-      setSelected({ ...selected, status: "enriched" });
+    try {
+      await updateCompanyStatus(id, "enriched");
+      loadCompanies(filter);
+      loadCounts();
+      if (selected && String(selected.id) === id) {
+        setSelected({ ...selected, status: "enriched" });
+      }
+    } catch (e) {
+      showError(`Failed to unapprove: ${e}`);
     }
   }
 
@@ -498,10 +516,14 @@ export default function Review() {
   }
 
   async function handleReject(id: string) {
-    await updateCompanyStatus(id, "rejected");
-    loadCompanies(filter);
-    loadCounts();
-    if (selected && String(selected.id) === id) setSelected(null);
+    try {
+      await updateCompanyStatus(id, "rejected");
+      loadCompanies(filter);
+      loadCounts();
+      if (selected && String(selected.id) === id) setSelected(null);
+    } catch (e) {
+      showError(`Failed to reject: ${e}`);
+    }
   }
 
   async function handleRunEnrich() {
@@ -676,6 +698,13 @@ export default function Review() {
 
   const [expandedExcerpts, setExpandedExcerpts] = useState<Set<number>>(new Set());
   const [processCapOpen, setProcessCapOpen] = useState(true);
+
+  // Clamp selectedIndex when companies list shrinks
+  useEffect(() => {
+    if (selectedIndex >= companies.length && companies.length > 0) {
+      setSelectedIndex(companies.length - 1);
+    }
+  }, [companies.length]);
 
   // Reset detail state when selected company changes
   const selectedId = selected ? String(selected.id) : null;

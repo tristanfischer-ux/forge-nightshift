@@ -137,9 +137,9 @@ INSERT OR IGNORE INTO config (key, value) VALUES
     ('outreach_model', 'qwen3.5:27b-q4_K_M'),
     ('ollama_url', 'http://localhost:11434'),
     ('from_email', 'ForgeOS <noreply@fractionalforge.app>'),
-    ('brave_api_key', 'BSAC1DY5tEl8lAUxaoWnFfQjANx3PjP'),
-    ('resend_api_key', 're_ZSUUvC58_E2ujtaAYwGXB5KRYVSCLaZhJ'),
-    ('supabase_url', 'https://jyarhvinengfyrwgtskq.supabase.co'),
-    ('supabase_service_key', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp5YXJodmluZW5nZnlyd2d0c2txIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2OTQzMzU2NCwiZXhwIjoyMDg1MDA5NTY0fQ.A4FN045WPv9yTe8EIe--lGyrFT-bF5W1y24gA4dyj1A'),
-    ('foundry_id', 'cd000000-0000-0000-0000-centaurdyna'),
-    ('companies_house_api_key', '44210503-b309-44ed-bc41-8153ade2dcf1');
+    ('brave_api_key', ''),
+    ('resend_api_key', ''),
+    ('supabase_url', ''),
+    ('supabase_service_key', ''),
+    ('foundry_id', ''),
+    ('companies_house_api_key', '');

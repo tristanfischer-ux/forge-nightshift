@@ -36,7 +36,7 @@ export default function Outreach() {
       const data = await getEmails(undefined, 100);
       setEmails(data);
     } catch (e) {
-      console.error("Failed to load emails:", e);
+      showError(`Failed to load emails: ${e}`);
     }
     setLoading(false);
   }
@@ -44,7 +44,7 @@ export default function Outreach() {
   async function handleApproveEmail(id: string) {
     try {
       await updateEmailStatus(id, "approved");
-      loadEmails();
+      await loadEmails();
     } catch (e) {
       showError(`Failed to approve email: ${e}`);
     }
@@ -56,7 +56,7 @@ export default function Outreach() {
     try {
       const count = await refreshEmailStatuses();
       setRefreshCount(count);
-      loadEmails();
+      await loadEmails();
     } catch (e) {
       showError(`Failed to refresh statuses: ${e}`);
       setRefreshCount(-1);

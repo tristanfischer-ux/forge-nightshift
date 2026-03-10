@@ -26,12 +26,19 @@ fn get_company(db: tauri::State<'_, Database>, id: String) -> Result<serde_json:
     db.get_company(&id).map_err(|e| e.to_string())
 }
 
+const VALID_STATUSES: &[&str] = &[
+    "discovered", "enriching", "enriched", "approved", "pushed", "rejected", "error",
+];
+
 #[tauri::command]
 fn update_company_status(
     db: tauri::State<'_, Database>,
     id: String,
     status: String,
 ) -> Result<(), String> {
+    if !VALID_STATUSES.contains(&status.as_str()) {
+        return Err(format!("Invalid status: {}", status));
+    }
     db.update_company_status(&id, &status).map_err(|e| e.to_string())
 }
 
@@ -721,6 +728,9 @@ fn batch_update_status(
     ids: Vec<String>,
     status: String,
 ) -> Result<i64, String> {
+    if !VALID_STATUSES.contains(&status.as_str()) {
+        return Err(format!("Invalid status: {}", status));
+    }
     db.batch_update_status(&ids, &status).map_err(|e| e.to_string())
 }
 

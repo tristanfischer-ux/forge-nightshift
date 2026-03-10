@@ -14,7 +14,7 @@ import {
 } from "../lib/tauri";
 import type { PipelineNodeEvent, RunHistoryEntry } from "../lib/tauri";
 
-let activityCounter = 0;
+// activityCounter moved to useRef inside component
 
 interface ActivityEntry {
   id: number;
@@ -54,7 +54,9 @@ const PRESETS: { label: string; stages: string[]; icon: React.ReactNode; descrip
 export default function Pipeline() {
   const [nodes, setNodes] = useState<Record<string, PipelineNodeEvent | null>>({});
   const [running, setRunning] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const activityCounterRef = useRef(0);
   const [stats, setStats] = useState<Record<string, unknown>>({});
   const activityRef = useRef<HTMLDivElement>(null);
   const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
@@ -79,7 +81,7 @@ export default function Pipeline() {
       setNodes((prev) => ({ ...prev, [payload.node_id]: payload }));
       setActivity((prev) => {
         const entry: ActivityEntry = {
-          id: ++activityCounter,
+          id: ++activityCounterRef.current,
           time: new Date().toLocaleTimeString(),
           nodeId: payload.node_id,
           status: payload.status,
@@ -109,6 +111,7 @@ export default function Pipeline() {
     if (!scheduleTime) return;
     function updateNextRun() {
       const [hh, mm] = scheduleTime!.split(":").map(Number);
+      if (isNaN(hh) || isNaN(mm)) return;
       const now = new Date();
       const next = new Date(now);
       next.setHours(hh, mm, 0, 0);
@@ -124,6 +127,8 @@ export default function Pipeline() {
   }, [scheduleTime]);
 
   const handleStart = async (stages: string[]) => {
+    if (starting) return;
+    setStarting(true);
     try {
       await startPipeline(stages);
       // Reset node states for a fresh view only after confirmed start
@@ -132,6 +137,8 @@ export default function Pipeline() {
       setRunning(true);
     } catch (e) {
       console.error("Failed to start pipeline:", e);
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -181,7 +188,8 @@ export default function Pipeline() {
               <button
                 key={preset.label}
                 onClick={() => handleStart(preset.stages)}
-                className="flex items-center gap-2 px-3 py-2 bg-forge-600 hover:bg-forge-700 rounded-lg text-xs font-medium text-white transition-colors"
+                disabled={starting}
+                className="flex items-center gap-2 px-3 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors"
                 title={preset.description}
               >
                 {preset.icon}

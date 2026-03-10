@@ -126,11 +126,17 @@ export default function Dashboard() {
     }
   }
 
+  const [starting, setStarting] = useState(false);
+
   async function handleStartPipeline() {
+    if (starting) return;
+    setStarting(true);
     try {
       await startPipeline(["research", "enrich", "push"]);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -185,7 +191,8 @@ export default function Dashboard() {
           ) : (
             <button
               onClick={handleStartPipeline}
-              className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 rounded-lg text-sm font-medium text-white transition-colors"
+              disabled={starting}
+              className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
             >
               <Play className="w-4 h-4" />
               Start Pipeline

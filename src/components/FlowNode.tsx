@@ -52,7 +52,7 @@ export default function FlowNode({ nodeId, label, state, x, y }: FlowNodeProps) 
 
   const progress = state?.progress;
   const pct = progress?.total && progress.total > 0
-    ? Math.round((progress.current / progress.total) * 100)
+    ? Math.min(100, Math.round((progress.current / progress.total) * 100))
     : null;
 
   return (

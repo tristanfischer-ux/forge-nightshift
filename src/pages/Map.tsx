@@ -183,7 +183,7 @@ export default function MapPage() {
       const data = await getCompaniesForMap();
       setCompanies(data);
     } catch (e) {
-      console.error("Failed to load map companies:", e);
+      showError(`Failed to load map companies: ${e}`);
     }
     setLoading(false);
   }
@@ -193,7 +193,7 @@ export default function MapPage() {
     try {
       const result = await geocodeCompanies();
       showInfo(`Geocoded ${result.geocoded} of ${result.total} companies (${result.failed} failed)`);
-      loadCompanies();
+      await loadCompanies();
     } catch (e) {
       showError(`Geocoding error: ${e}`);
     }
