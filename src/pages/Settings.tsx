@@ -234,6 +234,8 @@ export default function Settings() {
     setSaving(true);
     try {
       for (const [key, value] of Object.entries(importPreview)) {
+        // Skip null/undefined values — don't store literal "null" in config
+        if (value == null) continue;
         // Stringify non-string values (numbers, booleans, arrays) for the config store
         const strValue = typeof value === "string" ? value : JSON.stringify(value);
         await setConfig(key, strValue);

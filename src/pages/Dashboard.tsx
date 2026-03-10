@@ -141,10 +141,12 @@ export default function Dashboard() {
   }
 
   async function handleStopPipeline() {
+    setPipeline((prev) => ({ ...prev, cancelling: true }));
     try {
       await stopPipeline();
     } catch (e) {
       setError(String(e));
+      setPipeline((prev) => ({ ...prev, cancelling: false }));
     }
   }
 

@@ -31,7 +31,7 @@ pub async fn check_domain_exists(url: &str, service_key: &str, domain: &str) -> 
         .header("Authorization", format!("Bearer {}", service_key))
         .query(&[
             ("select", "id"),
-            ("website_url", &format!("ilike.*{}*", domain.replace('%', "").replace('*', ""))),
+            ("website_url", &format!("ilike.*{}*", domain.replace('\\', "\\\\").replace('%', "").replace('*', "").replace('_', "\\_"))),
             ("limit", "1"),
         ])
         .timeout(std::time::Duration::from_secs(10))

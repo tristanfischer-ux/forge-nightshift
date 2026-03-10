@@ -76,8 +76,21 @@ fn get_config(db: tauri::State<'_, Database>) -> Result<serde_json::Value, Strin
     db.get_all_config().map_err(|e| e.to_string())
 }
 
+const VALID_CONFIG_KEYS: &[&str] = &[
+    "relevance_threshold", "auto_approve_quality_threshold",
+    "enrich_concurrency", "deep_enrich_concurrency",
+    "categories_per_run", "daily_email_limit", "schedule_time",
+    "target_countries", "research_model", "enrich_model", "outreach_model",
+    "ollama_url", "from_email", "brave_api_key", "resend_api_key",
+    "supabase_url", "supabase_service_key", "foundry_id",
+    "companies_house_api_key", "sound_enabled",
+];
+
 #[tauri::command]
 fn set_config(db: tauri::State<'_, Database>, key: String, value: String) -> Result<(), String> {
+    if !VALID_CONFIG_KEYS.contains(&key.as_str()) {
+        return Err(format!("Unknown config key: {}", key));
+    }
     // Config validation
     match key.as_str() {
         "relevance_threshold" | "auto_approve_quality_threshold" => {
@@ -337,7 +350,7 @@ async fn import_for_audit(
         return Err("Supabase credentials not configured".to_string());
     }
 
-    let quality_threshold = threshold.unwrap_or(50);
+    let quality_threshold = threshold.unwrap_or(50).max(1).min(100);
 
     // Use target_countries config to filter audit imports to relevant regions
     // Settings stores as JSON array (e.g. '["DE","FR"]'), fall back to comma-separated
@@ -743,6 +756,9 @@ fn batch_update_status(
 ) -> Result<i64, String> {
     if !VALID_STATUSES.contains(&status.as_str()) {
         return Err(format!("Invalid status: {}", status));
+    }
+    if ids.len() > 500 {
+        return Err("Too many IDs (max 500)".to_string());
     }
     db.batch_update_status(&ids, &status).map_err(|e| e.to_string())
 }

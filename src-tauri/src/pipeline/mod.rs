@@ -15,6 +15,14 @@ use tauri::{Emitter, Manager};
 
 use crate::db::Database;
 
+/// Drop guard that resets an AtomicBool to false when dropped (even on panic).
+struct AtomicGuard(&'static AtomicBool);
+impl Drop for AtomicGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
 static RESEARCH_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -71,6 +79,7 @@ pub async fn start_pipeline(app: tauri::AppHandle, stages: Vec<String>) -> Resul
     }));
 
     tauri::async_runtime::spawn(async move {
+        let _running_guard = AtomicGuard(&RUNNING); // Ensures RUNNING=false even on panic
         let result = run_stages(&app, &job_id_clone, &stages).await;
 
         let db: tauri::State<'_, Database> = app.state();
@@ -86,8 +95,7 @@ pub async fn start_pipeline(app: tauri::AppHandle, stages: Vec<String>) -> Resul
             "job_id": &job_id_clone,
             "summary": &summary,
         }));
-
-        RUNNING.store(false, Ordering::SeqCst);
+        // _running_guard drops here, setting RUNNING=false
     });
 
     Ok(job_id)
@@ -199,14 +207,12 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
 
             let (research_result, enrich_result, deep_enrich_result) = tokio::join!(
                 async {
-                    let r = research::run(app, job_id, &config).await;
-                    RESEARCH_ACTIVE.store(false, Ordering::SeqCst);
-                    r
+                    let _guard = AtomicGuard(&RESEARCH_ACTIVE);
+                    research::run(app, job_id, &config).await
                 },
                 async {
-                    let r = enrich::run(app, job_id, &config).await;
-                    ENRICH_ACTIVE.store(false, Ordering::SeqCst);
-                    r
+                    let _guard = AtomicGuard(&ENRICH_ACTIVE);
+                    enrich::run(app, job_id, &config).await
                 },
                 deep_enrich::run_drain(app, job_id, &config)
             );
@@ -221,9 +227,8 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
 
             let (research_result, enrich_result) = tokio::join!(
                 async {
-                    let r = research::run(app, job_id, &config).await;
-                    RESEARCH_ACTIVE.store(false, Ordering::SeqCst);
-                    r
+                    let _guard = AtomicGuard(&RESEARCH_ACTIVE);
+                    research::run(app, job_id, &config).await
                 },
                 enrich::run(app, job_id, &config)
             );
@@ -237,9 +242,8 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
 
             let (enrich_result, deep_enrich_result) = tokio::join!(
                 async {
-                    let r = enrich::run(app, job_id, &config).await;
-                    ENRICH_ACTIVE.store(false, Ordering::SeqCst);
-                    r
+                    let _guard = AtomicGuard(&ENRICH_ACTIVE);
+                    enrich::run(app, job_id, &config).await
                 },
                 deep_enrich::run_drain(app, job_id, &config)
             );
@@ -408,7 +412,7 @@ pub fn get_pipeline_nodes() -> Result<Value> {
 /// Automated scheduler — checks trigger file every 5s, schedule every 60s.
 pub async fn start_scheduler(app: tauri::AppHandle) {
     let mut last_run_date = String::new();
-    let mut tick: u32 = 0;
+    let mut tick: u64 = 0;
 
     let trigger_path = std::path::PathBuf::from(
         std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),

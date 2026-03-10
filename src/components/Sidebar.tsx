@@ -72,8 +72,8 @@ export default function Sidebar() {
     );
 
     return () => {
-      unlistenOllama.then((fn) => fn());
-      unlistenPipeline.then((fn) => fn());
+      unlistenOllama.then((fn) => fn()).catch(() => {});
+      unlistenPipeline.then((fn) => fn()).catch(() => {});
     };
   }, []);
 

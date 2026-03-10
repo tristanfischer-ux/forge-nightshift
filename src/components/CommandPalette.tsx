@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useError } from "../contexts/ErrorContext";
 import {
@@ -120,23 +120,22 @@ export default function CommandPalette({
     setSelectedIndex(0);
   }, [query]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setSelectedIndex((i) => Math.min(i + 1, filtered.length - 1));
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setSelectedIndex((i) => Math.max(i - 1, 0));
-      } else if (e.key === "Enter" && filtered[selectedIndex]) {
-        e.preventDefault();
-        filtered[selectedIndex].action();
-      } else if (e.key === "Escape") {
-        onClose();
-      }
-    },
-    [filtered, selectedIndex, onClose]
-  );
+  const safeIndex = Math.max(0, Math.min(selectedIndex, filtered.length - 1));
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelectedIndex((i) => Math.min(i + 1, filtered.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelectedIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter" && filtered.length > 0 && filtered[safeIndex]) {
+      e.preventDefault();
+      filtered[safeIndex].action();
+    } else if (e.key === "Escape") {
+      onClose();
+    }
+  }
 
   if (!open) return null;
 
@@ -167,7 +166,7 @@ export default function CommandPalette({
                 onClick={action.action}
                 onMouseEnter={() => setSelectedIndex(i)}
                 className={`w-full flex items-center gap-3 px-4 py-2.5 text-left text-sm transition-colors ${
-                  i === selectedIndex
+                  i === safeIndex
                     ? "bg-forge-50 text-forge-700"
                     : "text-gray-700 hover:bg-gray-50"
                 }`}

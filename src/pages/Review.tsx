@@ -201,6 +201,8 @@ export default function Review() {
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pageRef = useRef(page);
   pageRef.current = page;
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
 
   // Drill-down filters from URL params
   const drillSubcategory = searchParams.get("subcategory");
@@ -231,13 +233,16 @@ export default function Review() {
     setCompareList([]);
   }, [page]);
 
-  // Debounced search — resets page and fetches
+  // Debounced search — resets page and fetches (uses filterRef to avoid stale closure)
+  const searchQueryPrev = useRef(searchQuery);
   useEffect(() => {
+    if (searchQueryPrev.current === searchQuery) return;
+    searchQueryPrev.current = searchQuery;
     const timer = setTimeout(() => {
       setPage(0);
       setSelectedIds(new Set());
       setCompareList([]);
-      loadCompanies(filter);
+      loadCompanies(filterRef.current);
     }, 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
@@ -702,6 +707,15 @@ export default function Review() {
       setSelectedIndex(companies.length - 1);
     }
   }, [companies.length]);
+
+  // Sync selected with fresh data when companies array updates
+  useEffect(() => {
+    if (!selected) return;
+    const fresh = companies.find((c) => String(c.id) === String(selected.id));
+    if (fresh) {
+      setSelected(fresh);
+    }
+  }, [companies]);
 
   // Reset detail state when selected company changes
   const selectedId = selected ? String(selected.id) : null;
@@ -1997,7 +2011,18 @@ export default function Review() {
                       <kbd className="ml-1 px-1 py-0.5 bg-green-700 rounded text-[10px] font-mono">a</kbd>
                     </button>
                     <button
-                      onClick={() => handleReject(String(selected.id))}
+                      onClick={() => {
+                        const rejectId = String(selected.id);
+                        setConfirmDialog({
+                          title: "Reject Company",
+                          message: `Reject "${String(selected.name || "")}"? This will set its status to rejected.`,
+                          confirmLabel: "Reject",
+                          onConfirm: () => {
+                            setConfirmDialog(null);
+                            handleReject(rejectId);
+                          },
+                        });
+                      }}
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium text-white transition-colors"
                     >
                       <XCircle className="w-4 h-4" />

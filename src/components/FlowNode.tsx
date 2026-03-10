@@ -113,7 +113,7 @@ export default function FlowNode({ nodeId, label, state, x, y }: FlowNodeProps) 
         <p className="text-[10px] text-green-600 mt-1">{formatElapsed(state.elapsed_secs)}</p>
       )}
 
-      {status === "running" && progress && progress.total && progress.total > 0 && progress.current < progress.total && progress.rate && progress.rate > 0.001 && (() => {
+      {status === "running" && progress && progress.total != null && progress.total > 0 && progress.current < progress.total && progress.rate != null && progress.rate > 0.001 && (() => {
         const eta = Math.round((progress.total - progress.current) / progress.rate * 3600);
         return !isNaN(eta) && isFinite(eta) && eta > 0 && eta < 864000 ? (
           <p className="text-[10px] text-gray-400 mt-0.5">

@@ -129,12 +129,12 @@ export default function Pipeline() {
   const handleStart = async (stages: string[]) => {
     if (starting) return;
     setStarting(true);
+    // Clear node states BEFORE starting so early events aren't wiped
+    setNodes({});
+    setActivity([]);
     try {
       await startPipeline(stages);
-      // Reset node states for a fresh view only after confirmed start
-      setNodes({});
-      setActivity([]);
-      setRunning(true);
+      // Don't set running=true here — let the event handler be the source of truth
     } catch (e) {
       console.error("Failed to start pipeline:", e);
     } finally {
