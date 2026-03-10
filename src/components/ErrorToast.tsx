@@ -19,13 +19,13 @@ export default function ErrorToast() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+    <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 max-w-sm">
       {toasts.map((toast) => {
         const Icon = ICONS[toast.level];
         return (
           <div
             key={toast.id}
-            className={`flex items-start gap-2 p-3 border rounded-lg shadow-lg text-sm animate-in slide-in-from-right ${STYLES[toast.level]}`}
+            className={`flex items-start gap-2 p-3 border rounded-lg shadow-lg text-sm animate-slide-in-right ${STYLES[toast.level]}`}
           >
             <Icon className="w-4 h-4 mt-0.5 shrink-0" />
             <span className="flex-1">{toast.message}</span>

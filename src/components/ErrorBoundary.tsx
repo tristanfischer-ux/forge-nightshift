@@ -18,7 +18,8 @@ export default class ErrorBoundary extends Component<Props, State> {
   }
 
   handleReset = () => {
-    this.setState({ hasError: false, error: null });
+    // Full reload at root to avoid re-rendering the same broken route
+    window.location.replace("/");
   };
 
   render() {
@@ -38,7 +39,7 @@ export default class ErrorBoundary extends Component<Props, State> {
               className="inline-flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 rounded-lg text-sm font-medium text-white transition-colors"
             >
               <RotateCcw className="w-4 h-4" />
-              Try Again
+              Restart App
             </button>
           </div>
         </div>
