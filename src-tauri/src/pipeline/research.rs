@@ -65,6 +65,16 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         );
     }
 
+    super::emit_node(app, json!({
+        "node_id": "research",
+        "status": "running",
+        "model": research_model,
+        "progress": { "current": 0, "total": null, "rate": null, "current_item": null },
+        "concurrency": 1,
+        "started_at": chrono::Utc::now().to_rfc3339(),
+        "elapsed_secs": null
+    }));
+
     // Step 1: Fetch known domains + names from Supabase (one-time)
     let (supabase_domains, supabase_names) = if !supabase_url.is_empty() && !supabase_key.is_empty() {
         {
@@ -325,6 +335,17 @@ Return ONLY valid JSON."#,
                                     "country": country,
                                 }),
                             );
+                            if total_discovered % 5 == 0 || total_discovered == 1 {
+                                super::emit_node(app, json!({
+                                    "node_id": "research",
+                                    "status": "running",
+                                    "model": research_model,
+                                    "progress": { "current": total_discovered, "total": null, "rate": null, "current_item": category.name },
+                                    "concurrency": 1,
+                                    "started_at": null,
+                                    "elapsed_secs": null
+                                }));
+                            }
                         }
                         Err(e) => {
                             let _ = db.log_activity(
@@ -432,6 +453,17 @@ Return ONLY valid JSON."#,
                                             "country": country,
                                         }),
                                     );
+                                    if total_discovered % 5 == 0 || total_discovered == 1 {
+                                        super::emit_node(app, json!({
+                                            "node_id": "research",
+                                            "status": "running",
+                                            "model": research_model,
+                                            "progress": { "current": total_discovered, "total": null, "rate": null, "current_item": category.name },
+                                            "concurrency": 1,
+                                            "started_at": null,
+                                            "elapsed_secs": null
+                                        }));
+                                    }
                                 }
                             }
 
@@ -461,6 +493,16 @@ Return ONLY valid JSON."#,
             }
         }
     }
+
+    super::emit_node(app, json!({
+        "node_id": "research",
+        "status": "completed",
+        "model": research_model,
+        "progress": { "current": total_discovered, "total": total_discovered, "rate": null, "current_item": null },
+        "concurrency": 1,
+        "started_at": null,
+        "elapsed_secs": null
+    }));
 
     Ok(json!({
         "queries_run": total_queries,

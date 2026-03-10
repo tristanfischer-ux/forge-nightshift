@@ -1,6 +1,8 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
+import "leaflet.heat";
 import { getCompaniesForMap, geocodeCompanies, type MapCompany } from "../lib/tauri";
 import { MapPin, RefreshCw, Filter, X } from "lucide-react";
 import { useError } from "../contexts/ErrorContext";
@@ -116,7 +118,48 @@ function FlyToCluster({ cluster }: { cluster: Cluster | null }) {
   return null;
 }
 
+const COUNTRY_BOUNDARIES = {
+  type: "FeatureCollection",
+  features: [
+    { type: "Feature", properties: { name: "Germany" }, geometry: { type: "Polygon", coordinates: [[[5.87, 47.27], [5.87, 55.06], [15.04, 55.06], [15.04, 47.27], [5.87, 47.27]]] } },
+    { type: "Feature", properties: { name: "France" }, geometry: { type: "Polygon", coordinates: [[[-5.14, 42.33], [-5.14, 51.09], [9.56, 51.09], [9.56, 42.33], [-5.14, 42.33]]] } },
+    { type: "Feature", properties: { name: "Netherlands" }, geometry: { type: "Polygon", coordinates: [[[3.36, 50.75], [3.36, 53.47], [7.21, 53.47], [7.21, 50.75], [3.36, 50.75]]] } },
+    { type: "Feature", properties: { name: "Belgium" }, geometry: { type: "Polygon", coordinates: [[[2.54, 49.50], [2.54, 51.50], [6.40, 51.50], [6.40, 49.50], [2.54, 49.50]]] } },
+    { type: "Feature", properties: { name: "Italy" }, geometry: { type: "Polygon", coordinates: [[[6.63, 36.65], [6.63, 47.09], [18.52, 47.09], [18.52, 36.65], [6.63, 36.65]]] } },
+    { type: "Feature", properties: { name: "United Kingdom" }, geometry: { type: "Polygon", coordinates: [[[-8.17, 49.96], [-8.17, 58.64], [1.75, 58.64], [1.75, 49.96], [-8.17, 49.96]]] } },
+  ],
+};
+
+function HeatmapLayer({ companies }: { companies: MapCompany[] }) {
+  const map = useMap();
+  useEffect(() => {
+    const points: [number, number, number][] = companies.map((c) => [
+      c.latitude,
+      c.longitude,
+      (c.relevance_score ?? 50) / 100,
+    ]);
+    const heat = L.heatLayer(points, { radius: 25, blur: 15, maxZoom: 10 });
+    heat.addTo(map);
+    return () => { map.removeLayer(heat); };
+  }, [map, companies]);
+  return null;
+}
+
+function BoundaryLayer({ visible }: { visible: boolean }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!visible) return;
+    const layer = L.geoJSON(COUNTRY_BOUNDARIES as any, {
+      style: { fillColor: "#93c5fd", fillOpacity: 0.1, color: "#93c5fd", weight: 1 },
+    });
+    layer.addTo(map);
+    return () => { map.removeLayer(layer); };
+  }, [map, visible]);
+  return null;
+}
+
 export default function MapPage() {
+  const navigate = useNavigate();
   const { showError, showInfo } = useError();
   const [companies, setCompanies] = useState<MapCompany[]>([]);
   const [loading, setLoading] = useState(true);
@@ -126,6 +169,8 @@ export default function MapPage() {
   const [filterOpen, setFilterOpen] = useState(false);
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [minRelevance, setMinRelevance] = useState(0);
+  const [mapMode, setMapMode] = useState<"markers" | "heatmap">("markers");
+  const [showBoundaries, setShowBoundaries] = useState(false);
   const prevFlyRef = useRef<Cluster | null>(null);
 
   useEffect(() => {
@@ -203,6 +248,20 @@ export default function MapPage() {
           </span>
         </div>
         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 border border-gray-300 rounded overflow-hidden">
+            <button
+              onClick={() => setMapMode("markers")}
+              className={`px-2 py-1 text-xs ${mapMode === "markers" ? "bg-forge-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}
+            >
+              Markers
+            </button>
+            <button
+              onClick={() => setMapMode("heatmap")}
+              className={`px-2 py-1 text-xs ${mapMode === "heatmap" ? "bg-forge-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}
+            >
+              Heatmap
+            </button>
+          </div>
           <button
             onClick={() => setFilterOpen(!filterOpen)}
             className={`flex items-center gap-1 px-2 py-1 text-xs rounded border transition-colors ${
@@ -287,6 +346,10 @@ export default function MapPage() {
               </button>
             )}
           </div>
+          <label className="flex items-center gap-2 text-xs text-gray-700">
+            <input type="checkbox" checked={showBoundaries} onChange={(e) => setShowBoundaries(e.target.checked)} className="accent-forge-600" />
+            Show country boundaries
+          </label>
         </div>
       )}
 
@@ -309,8 +372,11 @@ export default function MapPage() {
             />
             <ZoomTracker onZoomChange={handleZoomChange} />
             <FlyToCluster cluster={flyTarget !== prevFlyRef.current ? flyTarget : null} />
+            <BoundaryLayer visible={showBoundaries} />
 
-            {clusters.map((cluster, i) => {
+            {mapMode === "heatmap" ? (
+              <HeatmapLayer companies={filtered} />
+            ) : clusters.map((cluster, i) => {
               if (cluster.companies.length === 1) {
                 const c = cluster.companies[0];
                 const color = SUBCATEGORY_COLORS[c.subcategory ?? ""] || DEFAULT_COLOR;
@@ -350,6 +416,12 @@ export default function MapPage() {
                             {c.website_url}
                           </a>
                         )}
+                        <button
+                          onClick={() => navigate(`/review?search=${encodeURIComponent(c.name)}`)}
+                          className="text-forge-600 hover:underline text-[10px] mt-1 block"
+                        >
+                          View in Review →
+                        </button>
                       </div>
                     </Popup>
                   </Marker>

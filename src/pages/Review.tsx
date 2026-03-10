@@ -49,6 +49,8 @@ import {
   pushSingleCompany,
   removeFromMarketplace,
   removeAllFromMarketplace,
+  getCompaniesCount,
+  batchUpdateStatus,
 } from "../lib/tauri";
 import { useError } from "../contexts/ErrorContext";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -178,6 +180,23 @@ export default function Review() {
     onConfirm: () => void;
   } | null>(null);
 
+  // Enhancement 8: Pagination
+  const [page, setPage] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+
+  // Enhancement 9: Keyboard shortcuts
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+
+  // Enhancement 10: Bulk selection
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Enhancement 11: Detail tabs
+  const [detailTab, setDetailTab] = useState<"overview" | "capabilities" | "contact" | "raw">("overview");
+
+  // Enhancement 12: Side-by-side comparison
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareList, setCompareList] = useState<string[]>([]);
+
   const { showError, showInfo } = useError();
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -194,7 +213,13 @@ export default function Review() {
   useEffect(() => {
     loadCompanies(filter);
     loadCounts();
-  }, [filter, drillSubcategory, drillCountry, drillSearch]);
+  }, [filter, drillSubcategory, drillCountry, drillSearch, page]);
+
+  // Reset page and selection when filters change
+  useEffect(() => {
+    setPage(0);
+    setSelectedIds(new Set());
+  }, [filter, drillSubcategory, drillCountry, drillSearch, searchQuery]);
 
   // Debounced search
   useEffect(() => {
@@ -218,8 +243,8 @@ export default function Review() {
         setEnrichProgress(null);
         setPushProgress(null);
         setCancelling(false);
-        loadCompanies(filter);
-        loadCounts();
+        loadCompanies(filter).catch(() => {});
+        loadCounts().catch(() => {});
       }
     });
     return () => { unlisten.then((fn) => fn()); };
@@ -265,13 +290,57 @@ export default function Review() {
       if (!refreshTimer.current) {
         refreshTimer.current = setTimeout(() => {
           refreshTimer.current = null;
-          loadCompanies(filter);
-          loadCounts();
+          loadCompanies(filter).catch(() => {});
+          loadCounts().catch(() => {});
         }, 3000);
       }
     });
     return () => { unlisten.then((fn) => fn()); };
   }, [filter]);
+
+  // Enhancement 9: Keyboard shortcuts
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      // Don't intercept when typing in input fields
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        const newIndex = Math.min(selectedIndex + 1, companies.length - 1);
+        setSelectedIndex(newIndex);
+        if (companies[newIndex]) setSelected(companies[newIndex]);
+      } else if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        const newIndex = Math.max(selectedIndex - 1, 0);
+        setSelectedIndex(newIndex);
+        if (companies[newIndex]) setSelected(companies[newIndex]);
+      } else if (e.key === "Enter" || e.key === "a") {
+        if (selected) {
+          e.preventDefault();
+          handleApprove(String(selected.id));
+        }
+      } else if (e.key === "Backspace" || e.key === "x") {
+        if (selected) {
+          e.preventDefault();
+          const rejectId = String(selected.id);
+          setConfirmDialog({
+            title: "Reject Company",
+            message: `Reject "${String(selected.name || "")}"? This will set its status to rejected.`,
+            confirmLabel: "Reject",
+            onConfirm: () => {
+              setConfirmDialog(null);
+              handleReject(rejectId);
+            },
+          });
+        }
+      } else if (e.key === "Escape") {
+        setSelected(null);
+        setSelectedIndex(-1);
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [selectedIndex, companies, selected]);
 
   async function loadCounts() {
     try {
@@ -287,6 +356,12 @@ export default function Review() {
         else if (row.status === "error") c.error += Number(row.count) || 0;
       }
       setCounts(c);
+      // Update totalCount based on current filter
+      if (filter === "all") {
+        setTotalCount(c.all);
+      } else {
+        setTotalCount(c[filter] || 0);
+      }
     } catch (e) {
       showError(`Failed to load counts: ${e}`);
     }
@@ -294,20 +369,29 @@ export default function Review() {
 
   async function loadCompanies(status: StatusFilter) {
     try {
+      const limit = 50;
+      const offset = page * 50;
       if (hasDrillDown || searchQuery.trim()) {
         const data = await getCompaniesFiltered({
           status: status === "all" ? undefined : status,
           subcategory: drillSubcategory || undefined,
           country: drillCountry || undefined,
           search: searchQuery.trim() || drillSearch || undefined,
-          limit: 2000,
-          offset: 0,
+          limit,
+          offset,
         });
         setCompanies(data);
       } else {
         const s = status === "all" ? undefined : status;
-        const data = await getCompanies(s, 2000, 0);
+        const data = await getCompanies(s, limit, offset);
         setCompanies(data);
+      }
+      // Fetch total count for pagination
+      try {
+        const count = await getCompaniesCount(status === "all" ? undefined : status);
+        setTotalCount(count);
+      } catch {
+        // getCompaniesCount may not be available yet
       }
     } catch (e) {
       showError(`Failed to load companies: ${e}`);
@@ -465,6 +549,29 @@ export default function Review() {
     }
   }
 
+  // Enhancement 10: Bulk selection handlers
+  async function handleBulkApproveSelected() {
+    try {
+      await batchUpdateStatus(Array.from(selectedIds), "approved");
+      setSelectedIds(new Set());
+      loadCompanies(filter);
+      loadCounts();
+    } catch (e) {
+      showError(`Bulk approve failed: ${e}`);
+    }
+  }
+
+  async function handleBulkRejectSelected() {
+    try {
+      await batchUpdateStatus(Array.from(selectedIds), "rejected");
+      setSelectedIds(new Set());
+      loadCompanies(filter);
+      loadCounts();
+    } catch (e) {
+      showError(`Bulk reject failed: ${e}`);
+    }
+  }
+
   async function handleAuditMarketplace() {
     try {
       setAuditing(true);
@@ -556,6 +663,12 @@ export default function Review() {
 
   const [expandedExcerpts, setExpandedExcerpts] = useState<Set<number>>(new Set());
   const [processCapOpen, setProcessCapOpen] = useState(true);
+
+  // Reset detail state when selected company changes
+  useEffect(() => {
+    setExpandedExcerpts(new Set());
+    setDetailTab("overview");
+  }, [selected ? String(selected.id) : null]);
 
   return (
     <div className="space-y-6">
@@ -863,28 +976,91 @@ export default function Review() {
         </div>
       )}
 
+      {/* Enhancement 10: Bulk selection action bar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 p-3 bg-forge-50 border border-forge-200 rounded-lg">
+          <span className="text-sm font-medium text-forge-700">{selectedIds.size} selected</span>
+          <button onClick={handleBulkApproveSelected} className="px-3 py-1 bg-green-600 text-white text-xs rounded-lg hover:bg-green-700">Approve Selected</button>
+          <button onClick={handleBulkRejectSelected} className="px-3 py-1 bg-red-600 text-white text-xs rounded-lg hover:bg-red-700">Reject Selected</button>
+          <button onClick={() => setSelectedIds(new Set())} className="px-3 py-1 bg-gray-200 text-gray-700 text-xs rounded-lg hover:bg-gray-300">Clear</button>
+        </div>
+      )}
+
+      {/* Enhancement 12: Side-by-side comparison */}
+      {compareMode && compareList.length >= 2 && (
+        <div className="flex gap-3">
+          {compareList.map((id) => {
+            const c = companies.find((co) => String(co.id) === id);
+            if (!c) return null;
+            return (
+              <div key={id} className="flex-1 bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
+                <h4 className="text-sm font-semibold text-gray-900 truncate">{String(c.name)}</h4>
+                <div className="mt-2 space-y-1 text-xs text-gray-600">
+                  <p>Relevance: {String(c.relevance_score || "\u2014")}</p>
+                  <p>Quality: {String(c.enrichment_quality || "\u2014")}</p>
+                  <p>Category: {String(c.subcategory || "\u2014")}</p>
+                  <p>Country: {String(c.country || "\u2014")}</p>
+                  <p>Status: {String(c.status || "\u2014")}</p>
+                </div>
+                <button onClick={() => setCompareList((prev) => prev.filter((x) => x !== id))} className="mt-2 text-[10px] text-red-500 hover:underline">Remove</button>
+              </div>
+            );
+          })}
+          <button onClick={() => { setCompareMode(false); setCompareList([]); }} className="self-start px-2 py-1 text-xs text-gray-500 hover:text-gray-700">Exit Compare</button>
+        </div>
+      )}
+
       <div className="flex gap-4">
         {/* Company list */}
         <div className="flex-1 bg-white rounded-xl border border-gray-200 shadow-sm flex flex-col">
           {/* Search bar */}
           <div className="px-3 py-2 border-b border-gray-100">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+            <div className="flex items-center gap-2">
+              {/* Enhancement 10: Select All checkbox */}
               <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search companies by name, description, materials..."
-                className="w-full pl-8 pr-8 py-1.5 text-sm border border-gray-200 rounded-lg bg-gray-50 focus:bg-white focus:border-forge-400 focus:outline-none focus:ring-1 focus:ring-forge-400 transition-colors"
+                type="checkbox"
+                checked={companies.length > 0 && companies.every((c) => selectedIds.has(String(c.id)))}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setSelectedIds(new Set(companies.map((c) => String(c.id))));
+                  } else {
+                    setSelectedIds(new Set());
+                  }
+                }}
+                className="w-3.5 h-3.5 rounded border-gray-300 text-forge-600 focus:ring-forge-500 shrink-0"
               />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery("")}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
+              <div className="relative flex-1">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search companies by name, description, materials..."
+                  className="w-full pl-8 pr-8 py-1.5 text-sm border border-gray-200 rounded-lg bg-gray-50 focus:bg-white focus:border-forge-400 focus:outline-none focus:ring-1 focus:ring-forge-400 transition-colors"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery("")}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              {/* Enhancement 12: Compare toggle */}
+              <button
+                onClick={() => {
+                  setCompareMode(!compareMode);
+                  if (compareMode) setCompareList([]);
+                }}
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors shrink-0 ${
+                  compareMode
+                    ? "bg-forge-100 text-forge-700 border-forge-300"
+                    : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+                }`}
+              >
+                Compare
+              </button>
             </div>
           </div>
           <div className="divide-y divide-gray-100 max-h-[calc(100vh-310px)] overflow-y-auto flex-1">
@@ -893,18 +1069,49 @@ export default function Review() {
                 No companies found with this status.
               </div>
             ) : (
-              companies.map((company) => {
+              companies.map((company, companyIndex) => {
                 const cStatus = String(company.status || "");
+                const companyId = String(company.id);
+                const isKeyboardSelected = companyIndex === selectedIndex;
                 return (
                   <div
-                    key={String(company.id)}
+                    key={companyId}
                     className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${
-                      selected && String(selected.id) === String(company.id)
+                      selected && String(selected.id) === companyId
                         ? "bg-blue-50"
                         : "hover:bg-gray-50"
-                    }`}
-                    onClick={() => setSelected(company)}
+                    } ${isKeyboardSelected ? "ring-2 ring-forge-400 ring-inset" : ""}`}
+                    onClick={() => {
+                      if (compareMode) {
+                        setCompareList((prev) =>
+                          prev.includes(companyId)
+                            ? prev.filter((x) => x !== companyId)
+                            : prev.length < 3
+                              ? [...prev, companyId]
+                              : prev
+                        );
+                      } else {
+                        setSelected(company);
+                        setSelectedIndex(companyIndex);
+                      }
+                    }}
                   >
+                    {/* Enhancement 10: Checkbox */}
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(companyId)}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(companyId)) next.delete(companyId);
+                          else next.add(companyId);
+                          return next;
+                        });
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="w-3.5 h-3.5 rounded border-gray-300 text-forge-600 focus:ring-forge-500 shrink-0"
+                    />
                     <Building2 className="w-4 h-4 text-gray-400 shrink-0" />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-gray-900 truncate">
@@ -974,6 +1181,31 @@ export default function Review() {
               })
             )}
           </div>
+          {/* Enhancement 8: Pagination */}
+          <div className="flex items-center justify-between px-4 py-2 border-t border-gray-100">
+            <span className="text-xs text-gray-500">
+              {companies.length > 0 ? `${page * 50 + 1}\u2013${Math.min((page + 1) * 50, totalCount)} of ${totalCount}` : "0 results"}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage(Math.max(0, page - 1))}
+                disabled={page === 0}
+                className="px-2 py-1 text-xs text-gray-600 border border-gray-200 rounded disabled:opacity-30 hover:bg-gray-50"
+              >
+                Prev
+              </button>
+              <span className="text-xs text-gray-500">
+                Page {page + 1} of {Math.max(1, Math.ceil(totalCount / 50))}
+              </span>
+              <button
+                onClick={() => setPage(page + 1)}
+                disabled={(page + 1) * 50 >= totalCount}
+                className="px-2 py-1 text-xs text-gray-600 border border-gray-200 rounded disabled:opacity-30 hover:bg-gray-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Detail panel */}
@@ -1007,543 +1239,183 @@ export default function Review() {
                 )}
               </div>
 
-              {/* Scores */}
-              {(Number(selected.relevance_score) > 0 ||
-                Number(selected.enrichment_quality) > 0) && (
-                <div className="flex gap-4">
-                  <div className="text-center">
-                    <div className="text-2xl font-bold text-yellow-600">
-                      {String(selected.relevance_score || 0)}
-                    </div>
-                    <div className="text-xs text-gray-400">Relevance</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-2xl font-bold text-purple-600">
-                      {String(selected.enrichment_quality || 0)}
-                    </div>
-                    <div className="text-xs text-gray-400">Quality</div>
-                  </div>
-                </div>
-              )}
-
-              {/* Error detail */}
-              {status === "error" && !!selected.last_error && (
-                <div className="rounded-lg bg-red-50 border border-red-200 p-3">
-                  <h4 className="text-xs font-medium text-red-700 uppercase mb-1 flex items-center gap-1">
-                    <AlertTriangle className="w-3 h-3" /> Last Error
-                  </h4>
-                  <p className="text-xs text-red-600 font-mono whitespace-pre-wrap break-all">
-                    {String(selected.last_error)}
-                  </p>
-                </div>
-              )}
-
-              {/* Description */}
-              {!!selected.description && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-1">
-                    Description
-                  </h4>
-                  <p className="text-sm text-gray-700">
-                    {String(selected.description)}
-                  </p>
-                </div>
-              )}
-
-              {/* Original-language description */}
-              {!!selected.description_original &&
-                String(selected.description_original) !== "" && (
-                  <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
-                    <h4 className="text-xs text-blue-600 uppercase mb-1 flex items-center gap-1">
-                      <Languages className="w-3 h-3" /> Original (source
-                      language)
-                    </h4>
-                    <p className="text-sm text-blue-700 italic">
-                      {String(selected.description_original)}
-                    </p>
-                  </div>
-                )}
-
-              {/* Address */}
-              {companyAddress && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-1 flex items-center gap-1">
-                    <MapPin className="w-3 h-3" /> Address
-                  </h4>
-                  <p className="text-sm text-gray-700">{companyAddress}</p>
-                </div>
-              )}
-
-              {/* Financial Health */}
-              {financialHealth && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                    <HeartPulse className="w-3 h-3" /> Financial Health
-                  </h4>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span
-                      className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
-                        financialHealth === "good"
-                          ? "bg-green-100 text-green-700"
-                          : financialHealth === "caution"
-                            ? "bg-yellow-100 text-yellow-700"
-                            : financialHealth === "risk"
-                              ? "bg-red-100 text-red-700"
-                              : "bg-gray-100 text-gray-500"
-                      }`}
-                    >
-                      {financialHealth.charAt(0).toUpperCase() +
-                        financialHealth.slice(1)}
-                    </span>
-                  </div>
-                  {attrFinancialSignals && (
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <DetailField
-                        label="Status"
-                        value={attrFinancialSignals.company_status as string}
-                      />
-                      <DetailField
-                        label="Years Trading"
-                        value={attrFinancialSignals.years_trading as number}
-                      />
-                      <DetailField
-                        label="Accounts Type"
-                        value={attrFinancialSignals.accounts_type as string}
-                      />
-                      <DetailField
-                        label="Last Accounts"
-                        value={
-                          attrFinancialSignals.last_accounts_date as string
-                        }
-                      />
-                      {attrFinancialSignals.has_insolvency_history === true && (
-                        <div className="col-span-2 flex items-center gap-1 text-red-600">
-                          <AlertTriangle className="w-3 h-3" />
-                          <span>Insolvency history</span>
-                        </div>
-                      )}
-                      {attrFinancialSignals.has_charges === true && (
-                        <div className="col-span-2 flex items-center gap-1 text-amber-600">
-                          <AlertTriangle className="w-3 h-3" />
-                          <span>Has secured charges</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Products */}
-              {attrProducts.length > 0 && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                    <Package className="w-3 h-3" /> Products
-                  </h4>
-                  <TagPills
-                    items={attrProducts}
-                    color="bg-rose-50 text-rose-700"
-                  />
-                </div>
-              )}
-
-              {/* Lead Time & MOQ */}
-              {!!(attrs.lead_time || attrs.minimum_order) && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                    <Clock className="w-3 h-3" /> Lead Time &amp; MOQ
-                  </h4>
-                  <div className="grid grid-cols-2 gap-3">
-                    <DetailField
-                      label="Lead Time"
-                      value={attrs.lead_time as string}
-                    />
-                    <DetailField
-                      label="Minimum Order"
-                      value={attrs.minimum_order as string}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Quality & Compliance */}
-              {!!(attrs.quality_systems ||
-                attrs.export_controls ||
-                attrSecurityClearances.length > 0) && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                    <ShieldCheck className="w-3 h-3" /> Quality &amp; Compliance
-                  </h4>
-                  {!!attrs.quality_systems && (
-                    <div className="mb-2">
-                      <p className="text-xs text-gray-400 mb-0.5">
-                        Quality Systems
-                      </p>
-                      <p className="text-sm text-gray-700">
-                        {String(attrs.quality_systems)}
-                      </p>
-                    </div>
-                  )}
-                  {!!attrs.export_controls && (
-                    <div className="mb-2">
-                      <p className="text-xs text-gray-400 mb-0.5">
-                        Export Controls
-                      </p>
-                      <p className="text-sm text-gray-700">
-                        {String(attrs.export_controls)}
-                      </p>
-                    </div>
-                  )}
-                  {attrSecurityClearances.length > 0 && (
-                    <div>
-                      <p className="text-xs text-gray-400 mb-1">
-                        Security Clearances
-                      </p>
-                      <TagPills
-                        items={attrSecurityClearances}
-                        color="bg-red-50 text-red-700"
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Basic Info */}
-              <div>
-                <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                  <Building2 className="w-3 h-3" /> Basic Info
-                </h4>
-                <div className="grid grid-cols-2 gap-3">
-                  <DetailField
-                    label="Country"
-                    value={
-                      COUNTRIES[String(selected.country || "")] ||
-                      (selected.country as string)
-                    }
-                  />
-                  <DetailField label="City" value={selected.city as string} />
-                  <DetailField
-                    label="Source"
-                    value={selected.source as string}
-                  />
-                  <DetailField
-                    label="Source Query"
-                    value={selected.source_query as string}
-                  />
-                </div>
-                {!!selected.source_url && (
-                  <a
-                    href={String(selected.source_url)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-xs text-forge-600 hover:text-forge-700 mt-2"
+              {/* Enhancement 11: Detail tabs */}
+              <div className="flex gap-1 border-b border-gray-100 pb-2">
+                {(["overview", "capabilities", "contact", "raw"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setDetailTab(tab)}
+                    className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                      detailTab === tab ? "bg-forge-100 text-forge-700 font-medium" : "text-gray-500 hover:text-gray-700"
+                    }`}
                   >
-                    <ExternalLink className="w-3 h-3" />
-                    Source URL
-                  </a>
-                )}
-                {!!selected.raw_snippet && (
-                  <div className="mt-2">
-                    <h4 className="text-xs text-gray-400 uppercase mb-0.5">
-                      Raw Snippet
-                    </h4>
-                    <p className="text-xs text-gray-500 italic">
-                      {String(selected.raw_snippet)}
-                    </p>
-                  </div>
-                )}
-                {!!selected.snippet_english &&
-                  String(selected.snippet_english) !== "" && (
-                    <div className="mt-2">
-                      <h4 className="text-xs text-blue-500 uppercase mb-0.5 flex items-center gap-1">
-                        <Languages className="w-3 h-3" /> Snippet (English)
-                      </h4>
-                      <p className="text-xs text-gray-600 italic">
-                        {String(selected.snippet_english)}
-                      </p>
-                    </div>
-                  )}
+                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  </button>
+                ))}
               </div>
 
-              {/* Category */}
-              {!!(selected.category || selected.subcategory) && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                    <Tag className="w-3 h-3" /> Classification
-                  </h4>
-                  <div className="grid grid-cols-2 gap-3">
-                    <DetailField
-                      label="Category"
-                      value={selected.category as string}
-                    />
-                    <DetailField
-                      label="Subcategory"
-                      value={selected.subcategory as string}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Contact */}
-              {!!(selected.contact_name ||
-                selected.contact_email ||
-                selected.contact_title) && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                    <User className="w-3 h-3" /> Contact
-                  </h4>
-                  <div className="grid grid-cols-2 gap-3">
-                    <DetailField
-                      label="Name"
-                      value={selected.contact_name as string}
-                    />
-                    <DetailField
-                      label="Title"
-                      value={selected.contact_title as string}
-                    />
-                  </div>
-                  {!!selected.contact_email && (
-                    <a
-                      href={`mailto:${String(selected.contact_email)}`}
-                      className="inline-flex items-center gap-1 text-xs text-forge-600 hover:text-forge-700 mt-2"
-                    >
-                      <Mail className="w-3 h-3" />
-                      {String(selected.contact_email)}
-                    </a>
-                  )}
-                </div>
-              )}
-
-              {/* Capabilities & Certifications */}
-              {(specialties.length > 0 || certifications.length > 0) && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                    <Award className="w-3 h-3" /> Capabilities &amp;
-                    Certifications
-                  </h4>
-                  {specialties.length > 0 && (
-                    <div className="mb-2">
-                      <p className="text-xs text-gray-400 mb-1">Specialties</p>
-                      <TagPills
-                        items={specialties}
-                        color="bg-blue-50 text-blue-700"
-                      />
+              {/* === OVERVIEW TAB === */}
+              {detailTab === "overview" && (
+                <div className="space-y-5">
+                  {/* Scores */}
+                  {(Number(selected.relevance_score) > 0 ||
+                    Number(selected.enrichment_quality) > 0) && (
+                    <div className="flex gap-4">
+                      <div className="text-center">
+                        <div className="text-2xl font-bold text-yellow-600">
+                          {String(selected.relevance_score || 0)}
+                        </div>
+                        <div className="text-xs text-gray-400">Relevance</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-2xl font-bold text-purple-600">
+                          {String(selected.enrichment_quality || 0)}
+                        </div>
+                        <div className="text-xs text-gray-400">Quality</div>
+                      </div>
                     </div>
                   )}
-                  {certifications.length > 0 && (
-                    <div>
-                      <p className="text-xs text-gray-400 mb-1">
-                        Certifications
+
+                  {/* Error detail */}
+                  {status === "error" && !!selected.last_error && (
+                    <div className="rounded-lg bg-red-50 border border-red-200 p-3">
+                      <h4 className="text-xs font-medium text-red-700 uppercase mb-1 flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3" /> Last Error
+                      </h4>
+                      <p className="text-xs text-red-600 font-mono whitespace-pre-wrap break-all">
+                        {String(selected.last_error)}
                       </p>
-                      <TagPills
-                        items={certifications}
-                        color="bg-green-50 text-green-700"
-                      />
                     </div>
                   )}
-                </div>
-              )}
 
-              {/* Process Capabilities (from deep enrichment) */}
-              {processCapabilities.length > 0 && (
-                <div>
-                  <button
-                    onClick={() => setProcessCapOpen(!processCapOpen)}
-                    className="flex items-center justify-between w-full mb-2"
-                  >
-                    <h4 className="text-xs text-gray-400 uppercase flex items-center gap-1">
-                      <Wrench className="w-3 h-3" /> Process Capabilities
-                      <span className="ml-1 px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 text-[10px] font-medium">
-                        {processCapabilities.length}
-                      </span>
-                    </h4>
-                    <ChevronDown
-                      className={`w-3.5 h-3.5 text-gray-400 transition-transform ${
-                        processCapOpen ? "rotate-180" : ""
-                      }`}
-                    />
-                  </button>
-                  {processCapOpen && (
-                    <div className="space-y-3">
-                      {processCapabilities.map((proc, idx) => (
-                        <div
-                          key={idx}
-                          className="rounded-lg border border-gray-100 bg-gray-50 p-3 space-y-2"
+                  {/* Description */}
+                  {!!selected.description && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-1">
+                        Description
+                      </h4>
+                      <p className="text-sm text-gray-700">
+                        {String(selected.description)}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Original-language description */}
+                  {!!selected.description_original &&
+                    String(selected.description_original) !== "" && (
+                      <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
+                        <h4 className="text-xs text-blue-600 uppercase mb-1 flex items-center gap-1">
+                          <Languages className="w-3 h-3" /> Original (source
+                          language)
+                        </h4>
+                        <p className="text-sm text-blue-700 italic">
+                          {String(selected.description_original)}
+                        </p>
+                      </div>
+                    )}
+
+                  {/* Address */}
+                  {companyAddress && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-1 flex items-center gap-1">
+                        <MapPin className="w-3 h-3" /> Address
+                      </h4>
+                      <p className="text-sm text-gray-700">{companyAddress}</p>
+                    </div>
+                  )}
+
+                  {/* Financial Health */}
+                  {financialHealth && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                        <HeartPulse className="w-3 h-3" /> Financial Health
+                      </h4>
+                      <div className="flex items-center gap-2 mb-2">
+                        <span
+                          className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
+                            financialHealth === "good"
+                              ? "bg-green-100 text-green-700"
+                              : financialHealth === "caution"
+                                ? "bg-yellow-100 text-yellow-700"
+                                : financialHealth === "risk"
+                                  ? "bg-red-100 text-red-700"
+                                  : "bg-gray-100 text-gray-500"
+                          }`}
                         >
-                          {/* Process heading + category badge + confidence */}
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm font-medium text-gray-900">
-                                {proc.process_name || "Unknown Process"}
-                              </span>
-                              {proc.process_category && (
-                                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-600">
-                                  {proc.process_category.replace(/_/g, " ")}
-                                </span>
-                              )}
-                            </div>
-                            {proc.confidence != null && (
-                              <span
-                                className={`w-2 h-2 rounded-full shrink-0 mt-1.5 ${
-                                  proc.confidence >= 0.8
-                                    ? "bg-green-500"
-                                    : proc.confidence >= 0.5
-                                      ? "bg-amber-500"
-                                      : "bg-red-500"
-                                }`}
-                                title={`Confidence: ${(proc.confidence * 100).toFixed(0)}%`}
-                              />
-                            )}
-                          </div>
-
-                          {/* Materials */}
-                          {proc.materials_worked && proc.materials_worked.length > 0 && (
-                            <TagPills
-                              items={proc.materials_worked}
-                              color="bg-amber-50 text-amber-700"
-                            />
-                          )}
-
-                          {/* Tolerance + Surface finish */}
-                          {(proc.tolerance_claimed || proc.surface_finish_claimed) && (
-                            <div className="flex gap-3 text-xs">
-                              {proc.tolerance_claimed && (
-                                <span className="text-gray-600">
-                                  <span className="text-gray-400">Tol: </span>
-                                  {proc.tolerance_claimed}
-                                </span>
-                              )}
-                              {proc.surface_finish_claimed && (
-                                <span className="text-gray-600">
-                                  <span className="text-gray-400">Finish: </span>
-                                  {proc.surface_finish_claimed}
-                                </span>
-                              )}
+                          {financialHealth.charAt(0).toUpperCase() +
+                            financialHealth.slice(1)}
+                        </span>
+                      </div>
+                      {attrFinancialSignals && (
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <DetailField
+                            label="Status"
+                            value={attrFinancialSignals.company_status as string}
+                          />
+                          <DetailField
+                            label="Years Trading"
+                            value={attrFinancialSignals.years_trading as number}
+                          />
+                          <DetailField
+                            label="Accounts Type"
+                            value={attrFinancialSignals.accounts_type as string}
+                          />
+                          <DetailField
+                            label="Last Accounts"
+                            value={
+                              attrFinancialSignals.last_accounts_date as string
+                            }
+                          />
+                          {attrFinancialSignals.has_insolvency_history === true && (
+                            <div className="col-span-2 flex items-center gap-1 text-red-600">
+                              <AlertTriangle className="w-3 h-3" />
+                              <span>Insolvency history</span>
                             </div>
                           )}
-
-                          {/* Equipment */}
-                          {proc.equipment_mentioned && proc.equipment_mentioned.length > 0 && (
-                            <TagPills
-                              items={proc.equipment_mentioned}
-                              color="bg-teal-50 text-teal-700"
-                            />
-                          )}
-
-                          {/* Batch size + Max dimensions */}
-                          {(proc.batch_size_range || proc.max_part_dimensions) && (
-                            <div className="flex gap-3 text-xs">
-                              {proc.batch_size_range && (
-                                <span className="text-gray-600">
-                                  <span className="text-gray-400">Batch: </span>
-                                  {proc.batch_size_range}
-                                </span>
-                              )}
-                              {proc.max_part_dimensions && (
-                                <span className="text-gray-600">
-                                  <span className="text-gray-400">Max: </span>
-                                  {proc.max_part_dimensions}
-                                </span>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Surface treatments */}
-                          {proc.surface_treatments && proc.surface_treatments.length > 0 && (
-                            <TagPills
-                              items={proc.surface_treatments}
-                              color="bg-green-50 text-green-700"
-                            />
-                          )}
-
-                          {/* Source excerpt (collapsed by default) */}
-                          {proc.source_excerpt && (
-                            <div>
-                              <button
-                                onClick={() => {
-                                  setExpandedExcerpts((prev) => {
-                                    const next = new Set(prev);
-                                    if (next.has(idx)) next.delete(idx);
-                                    else next.add(idx);
-                                    return next;
-                                  });
-                                }}
-                                className="text-[10px] text-gray-400 hover:text-gray-600"
-                              >
-                                {expandedExcerpts.has(idx) ? "Hide source" : "Show source"}
-                              </button>
-                              {expandedExcerpts.has(idx) && (
-                                <p className="text-[11px] text-gray-400 italic mt-1 leading-relaxed">
-                                  &ldquo;{proc.source_excerpt}&rdquo;
-                                </p>
-                              )}
+                          {attrFinancialSignals.has_charges === true && (
+                            <div className="col-span-2 flex items-center gap-1 text-amber-600">
+                              <AlertTriangle className="w-3 h-3" />
+                              <span>Has secured charges</span>
                             </div>
                           )}
                         </div>
-                      ))}
+                      )}
                     </div>
                   )}
-                </div>
-              )}
 
-              {/* Attributes from attributes_json */}
-              {(attrIndustries.length > 0 ||
-                industries.length > 0 ||
-                attrMaterials.length > 0 ||
-                attrEquipment.length > 0 ||
-                attrs.founded_year ||
-                attrs.company_size ||
-                attrs.employees ||
-                attrs.employee_count_exact ||
-                attrs.production_capacity ||
-                selected.company_size ||
-                selected.year_founded ||
-                attrs.company_number ||
-                attrKeyPeople.length > 0 ||
-                attrChDirectors.length > 0 ||
-                attrSicCodes.length > 0) && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                    <Factory className="w-3 h-3" /> Attributes
-                  </h4>
-
-                  <div className="space-y-2">
-                    {(attrIndustries.length > 0 || industries.length > 0) && (
-                      <div>
-                        <p className="text-xs text-gray-400 mb-1">
-                          Industries
-                        </p>
-                        <TagPills
-                          items={[
-                            ...new Set([...industries, ...attrIndustries]),
-                          ]}
-                          color="bg-indigo-50 text-indigo-700"
+                  {/* Category */}
+                  {!!(selected.category || selected.subcategory) && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                        <Tag className="w-3 h-3" /> Classification
+                      </h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        <DetailField
+                          label="Category"
+                          value={selected.category as string}
+                        />
+                        <DetailField
+                          label="Subcategory"
+                          value={selected.subcategory as string}
                         />
                       </div>
-                    )}
+                    </div>
+                  )}
 
-                    {attrMaterials.length > 0 && (
-                      <div>
-                        <p className="text-xs text-gray-400 mb-1">Materials</p>
-                        <TagPills
-                          items={attrMaterials}
-                          color="bg-amber-50 text-amber-700"
-                        />
-                      </div>
-                    )}
-
-                    {attrEquipment.length > 0 && (
-                      <div>
-                        <p className="text-xs text-gray-400 mb-1">
-                          Key Equipment
-                        </p>
-                        <TagPills
-                          items={attrEquipment}
-                          color="bg-teal-50 text-teal-700"
-                        />
-                      </div>
-                    )}
-
+                  {/* Basic Info (country/city/domain) */}
+                  <div>
+                    <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                      <Building2 className="w-3 h-3" /> Basic Info
+                    </h4>
                     <div className="grid grid-cols-2 gap-3">
+                      <DetailField
+                        label="Country"
+                        value={
+                          COUNTRIES[String(selected.country || "")] ||
+                          (selected.country as string)
+                        }
+                      />
+                      <DetailField label="City" value={selected.city as string} />
                       <DetailField
                         label="Founded"
                         value={
@@ -1559,71 +1431,497 @@ export default function Review() {
                           (selected.company_size as string)
                         }
                       />
-                      <DetailField
-                        label="Employees (exact)"
-                        value={attrs.employee_count_exact as string}
-                      />
-                      <DetailField
-                        label="Production Capacity"
-                        value={attrs.production_capacity as string}
-                      />
-                      <DetailField
-                        label="Company Number"
-                        value={attrs.company_number as string}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* === CAPABILITIES TAB === */}
+              {detailTab === "capabilities" && (
+                <div className="space-y-5">
+                  {/* Process Capabilities (from deep enrichment) */}
+                  {processCapabilities.length > 0 && (
+                    <div>
+                      <button
+                        onClick={() => setProcessCapOpen(!processCapOpen)}
+                        className="flex items-center justify-between w-full mb-2"
+                      >
+                        <h4 className="text-xs text-gray-400 uppercase flex items-center gap-1">
+                          <Wrench className="w-3 h-3" /> Process Capabilities
+                          <span className="ml-1 px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 text-[10px] font-medium">
+                            {processCapabilities.length}
+                          </span>
+                        </h4>
+                        <ChevronDown
+                          className={`w-3.5 h-3.5 text-gray-400 transition-transform ${
+                            processCapOpen ? "rotate-180" : ""
+                          }`}
+                        />
+                      </button>
+                      {processCapOpen && (
+                        <div className="space-y-3">
+                          {processCapabilities.map((proc, idx) => (
+                            <div
+                              key={idx}
+                              className="rounded-lg border border-gray-100 bg-gray-50 p-3 space-y-2"
+                            >
+                              {/* Process heading + category badge + confidence */}
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-sm font-medium text-gray-900">
+                                    {proc.process_name || "Unknown Process"}
+                                  </span>
+                                  {proc.process_category && (
+                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-600">
+                                      {proc.process_category.replace(/_/g, " ")}
+                                    </span>
+                                  )}
+                                </div>
+                                {proc.confidence != null && (
+                                  <span
+                                    className={`w-2 h-2 rounded-full shrink-0 mt-1.5 ${
+                                      proc.confidence >= 0.8
+                                        ? "bg-green-500"
+                                        : proc.confidence >= 0.5
+                                          ? "bg-amber-500"
+                                          : "bg-red-500"
+                                    }`}
+                                    title={`Confidence: ${(proc.confidence * 100).toFixed(0)}%`}
+                                  />
+                                )}
+                              </div>
+
+                              {/* Materials */}
+                              {proc.materials_worked && proc.materials_worked.length > 0 && (
+                                <TagPills
+                                  items={proc.materials_worked}
+                                  color="bg-amber-50 text-amber-700"
+                                />
+                              )}
+
+                              {/* Tolerance + Surface finish */}
+                              {(proc.tolerance_claimed || proc.surface_finish_claimed) && (
+                                <div className="flex gap-3 text-xs">
+                                  {proc.tolerance_claimed && (
+                                    <span className="text-gray-600">
+                                      <span className="text-gray-400">Tol: </span>
+                                      {proc.tolerance_claimed}
+                                    </span>
+                                  )}
+                                  {proc.surface_finish_claimed && (
+                                    <span className="text-gray-600">
+                                      <span className="text-gray-400">Finish: </span>
+                                      {proc.surface_finish_claimed}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Equipment */}
+                              {proc.equipment_mentioned && proc.equipment_mentioned.length > 0 && (
+                                <TagPills
+                                  items={proc.equipment_mentioned}
+                                  color="bg-teal-50 text-teal-700"
+                                />
+                              )}
+
+                              {/* Batch size + Max dimensions */}
+                              {(proc.batch_size_range || proc.max_part_dimensions) && (
+                                <div className="flex gap-3 text-xs">
+                                  {proc.batch_size_range && (
+                                    <span className="text-gray-600">
+                                      <span className="text-gray-400">Batch: </span>
+                                      {proc.batch_size_range}
+                                    </span>
+                                  )}
+                                  {proc.max_part_dimensions && (
+                                    <span className="text-gray-600">
+                                      <span className="text-gray-400">Max: </span>
+                                      {proc.max_part_dimensions}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Surface treatments */}
+                              {proc.surface_treatments && proc.surface_treatments.length > 0 && (
+                                <TagPills
+                                  items={proc.surface_treatments}
+                                  color="bg-green-50 text-green-700"
+                                />
+                              )}
+
+                              {/* Source excerpt (collapsed by default) */}
+                              {proc.source_excerpt && (
+                                <div>
+                                  <button
+                                    onClick={() => {
+                                      setExpandedExcerpts((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(idx)) next.delete(idx);
+                                        else next.add(idx);
+                                        return next;
+                                      });
+                                    }}
+                                    className="text-[10px] text-gray-400 hover:text-gray-600"
+                                  >
+                                    {expandedExcerpts.has(idx) ? "Hide source" : "Show source"}
+                                  </button>
+                                  {expandedExcerpts.has(idx) && (
+                                    <p className="text-[11px] text-gray-400 italic mt-1 leading-relaxed">
+                                      &ldquo;{proc.source_excerpt}&rdquo;
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Specialties & Certifications */}
+                  {(specialties.length > 0 || certifications.length > 0) && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                        <Award className="w-3 h-3" /> Capabilities &amp;
+                        Certifications
+                      </h4>
+                      {specialties.length > 0 && (
+                        <div className="mb-2">
+                          <p className="text-xs text-gray-400 mb-1">Specialties</p>
+                          <TagPills
+                            items={specialties}
+                            color="bg-blue-50 text-blue-700"
+                          />
+                        </div>
+                      )}
+                      {certifications.length > 0 && (
+                        <div>
+                          <p className="text-xs text-gray-400 mb-1">
+                            Certifications
+                          </p>
+                          <TagPills
+                            items={certifications}
+                            color="bg-green-50 text-green-700"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Materials */}
+                  {attrMaterials.length > 0 && (
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">Materials</p>
+                      <TagPills
+                        items={attrMaterials}
+                        color="bg-amber-50 text-amber-700"
                       />
                     </div>
+                  )}
 
-                    {attrSicCodes.length > 0 && (
-                      <div>
-                        <p className="text-xs text-gray-400 mb-1">SIC Codes</p>
-                        <TagPills
-                          items={attrSicCodes}
-                          color="bg-gray-100 text-gray-600"
+                  {/* Key Equipment */}
+                  {attrEquipment.length > 0 && (
+                    <div>
+                      <p className="text-xs text-gray-400 mb-1">
+                        Key Equipment
+                      </p>
+                      <TagPills
+                        items={attrEquipment}
+                        color="bg-teal-50 text-teal-700"
+                      />
+                    </div>
+                  )}
+
+                  {/* Lead Time & MOQ */}
+                  {!!(attrs.lead_time || attrs.minimum_order) && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                        <Clock className="w-3 h-3" /> Lead Time &amp; MOQ
+                      </h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        <DetailField
+                          label="Lead Time"
+                          value={attrs.lead_time as string}
+                        />
+                        <DetailField
+                          label="Minimum Order"
+                          value={attrs.minimum_order as string}
                         />
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
+
+                  {/* Quality & Compliance */}
+                  {!!(attrs.quality_systems ||
+                    attrs.export_controls ||
+                    attrSecurityClearances.length > 0) && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                        <ShieldCheck className="w-3 h-3" /> Quality &amp; Compliance
+                      </h4>
+                      {!!attrs.quality_systems && (
+                        <div className="mb-2">
+                          <p className="text-xs text-gray-400 mb-0.5">
+                            Quality Systems
+                          </p>
+                          <p className="text-sm text-gray-700">
+                            {String(attrs.quality_systems)}
+                          </p>
+                        </div>
+                      )}
+                      {!!attrs.export_controls && (
+                        <div className="mb-2">
+                          <p className="text-xs text-gray-400 mb-0.5">
+                            Export Controls
+                          </p>
+                          <p className="text-sm text-gray-700">
+                            {String(attrs.export_controls)}
+                          </p>
+                        </div>
+                      )}
+                      {attrSecurityClearances.length > 0 && (
+                        <div>
+                          <p className="text-xs text-gray-400 mb-1">
+                            Security Clearances
+                          </p>
+                          <TagPills
+                            items={attrSecurityClearances}
+                            color="bg-red-50 text-red-700"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* Key People (from LLM enrichment) */}
-              {attrKeyPeople.length > 0 && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                    <User className="w-3 h-3" /> Key People
-                  </h4>
-                  <div className="space-y-1.5">
-                    {attrKeyPeople.map((person, i) => (
-                      <div key={i} className="flex items-center gap-2">
-                        <User className="w-3 h-3 text-gray-300 shrink-0" />
-                        <span className="text-sm text-gray-900 font-medium">
-                          {person.name}
-                        </span>
-                        {person.title && (
-                          <span className="text-xs text-gray-500">
-                            — {person.title}
-                          </span>
+              {/* === CONTACT TAB === */}
+              {detailTab === "contact" && (
+                <div className="space-y-5">
+                  {/* Contact */}
+                  {!!(selected.contact_name ||
+                    selected.contact_email ||
+                    selected.contact_title) && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                        <User className="w-3 h-3" /> Contact
+                      </h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        <DetailField
+                          label="Name"
+                          value={selected.contact_name as string}
+                        />
+                        <DetailField
+                          label="Title"
+                          value={selected.contact_title as string}
+                        />
+                      </div>
+                      {!!selected.contact_email && (
+                        <a
+                          href={`mailto:${String(selected.contact_email)}`}
+                          className="inline-flex items-center gap-1 text-xs text-forge-600 hover:text-forge-700 mt-2"
+                        >
+                          <Mail className="w-3 h-3" />
+                          {String(selected.contact_email)}
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Key People (from LLM enrichment) */}
+                  {attrKeyPeople.length > 0 && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                        <User className="w-3 h-3" /> Key People
+                      </h4>
+                      <div className="space-y-1.5">
+                        {attrKeyPeople.map((person, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <User className="w-3 h-3 text-gray-300 shrink-0" />
+                            <span className="text-sm text-gray-900 font-medium">
+                              {person.name}
+                            </span>
+                            {person.title && (
+                              <span className="text-xs text-gray-500">
+                                — {person.title}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Directors from Companies House */}
+                  {attrChDirectors.length > 0 && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                        <Building2 className="w-3 h-3" /> Directors (Companies House)
+                      </h4>
+                      <div className="space-y-1">
+                        {attrChDirectors.map((director, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <User className="w-3 h-3 text-gray-300 shrink-0" />
+                            <span className="text-sm text-gray-700">{director}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* No contact info message */}
+                  {!(selected.contact_name || selected.contact_email || selected.contact_title) &&
+                    attrKeyPeople.length === 0 &&
+                    attrChDirectors.length === 0 && (
+                    <div className="p-4 text-center text-gray-400 text-sm">
+                      No contact information available.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* === RAW TAB === */}
+              {detailTab === "raw" && (
+                <div className="space-y-5">
+                  {/* Attributes from attributes_json */}
+                  {(attrIndustries.length > 0 ||
+                    industries.length > 0 ||
+                    attrs.founded_year ||
+                    attrs.company_size ||
+                    attrs.employees ||
+                    attrs.employee_count_exact ||
+                    attrs.production_capacity ||
+                    selected.company_size ||
+                    selected.year_founded ||
+                    attrs.company_number ||
+                    attrSicCodes.length > 0) && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                        <Factory className="w-3 h-3" /> Attributes
+                      </h4>
+
+                      <div className="space-y-2">
+                        {(attrIndustries.length > 0 || industries.length > 0) && (
+                          <div>
+                            <p className="text-xs text-gray-400 mb-1">
+                              Industries
+                            </p>
+                            <TagPills
+                              items={[
+                                ...new Set([...industries, ...attrIndustries]),
+                              ]}
+                              color="bg-indigo-50 text-indigo-700"
+                            />
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <DetailField
+                            label="Founded"
+                            value={
+                              (attrs.founded_year as string) ||
+                              (selected.year_founded as string)
+                            }
+                          />
+                          <DetailField
+                            label="Company Size"
+                            value={
+                              (attrs.company_size as string) ||
+                              (attrs.employees as string) ||
+                              (selected.company_size as string)
+                            }
+                          />
+                          <DetailField
+                            label="Employees (exact)"
+                            value={attrs.employee_count_exact as string}
+                          />
+                          <DetailField
+                            label="Production Capacity"
+                            value={attrs.production_capacity as string}
+                          />
+                          <DetailField
+                            label="Company Number"
+                            value={attrs.company_number as string}
+                          />
+                        </div>
+
+                        {attrSicCodes.length > 0 && (
+                          <div>
+                            <p className="text-xs text-gray-400 mb-1">SIC Codes</p>
+                            <TagPills
+                              items={attrSicCodes}
+                              color="bg-gray-100 text-gray-600"
+                            />
+                          </div>
                         )}
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                    </div>
+                  )}
 
-              {/* Directors from Companies House */}
-              {attrChDirectors.length > 0 && (
-                <div>
-                  <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                    <Building2 className="w-3 h-3" /> Directors (Companies House)
-                  </h4>
-                  <div className="space-y-1">
-                    {attrChDirectors.map((director, i) => (
-                      <div key={i} className="flex items-center gap-2">
-                        <User className="w-3 h-3 text-gray-300 shrink-0" />
-                        <span className="text-sm text-gray-700">{director}</span>
+                  {/* Source Info */}
+                  <div>
+                    <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                      <Building2 className="w-3 h-3" /> Source Info
+                    </h4>
+                    <div className="grid grid-cols-2 gap-3">
+                      <DetailField
+                        label="Source"
+                        value={selected.source as string}
+                      />
+                      <DetailField
+                        label="Source Query"
+                        value={selected.source_query as string}
+                      />
+                    </div>
+                    {!!selected.source_url && (
+                      <a
+                        href={String(selected.source_url)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-forge-600 hover:text-forge-700 mt-2"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        Source URL
+                      </a>
+                    )}
+                    {!!selected.raw_snippet && (
+                      <div className="mt-2">
+                        <h4 className="text-xs text-gray-400 uppercase mb-0.5">
+                          Raw Snippet
+                        </h4>
+                        <p className="text-xs text-gray-500 italic">
+                          {String(selected.raw_snippet)}
+                        </p>
                       </div>
-                    ))}
+                    )}
+                    {!!selected.snippet_english &&
+                      String(selected.snippet_english) !== "" && (
+                        <div className="mt-2">
+                          <h4 className="text-xs text-blue-500 uppercase mb-0.5 flex items-center gap-1">
+                            <Languages className="w-3 h-3" /> Snippet (English)
+                          </h4>
+                          <p className="text-xs text-gray-600 italic">
+                            {String(selected.snippet_english)}
+                          </p>
+                        </div>
+                      )}
                   </div>
+
+                  {/* Products */}
+                  {attrProducts.length > 0 && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                        <Package className="w-3 h-3" /> Products
+                      </h4>
+                      <TagPills
+                        items={attrProducts}
+                        color="bg-rose-50 text-rose-700"
+                      />
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1655,6 +1953,7 @@ export default function Review() {
                     >
                       <CheckCircle className="w-4 h-4" />
                       Approve
+                      <kbd className="ml-1 px-1 py-0.5 bg-green-700 rounded text-[10px] font-mono">a</kbd>
                     </button>
                     <button
                       onClick={() => handleReject(String(selected.id))}
@@ -1662,6 +1961,7 @@ export default function Review() {
                     >
                       <XCircle className="w-4 h-4" />
                       Reject
+                      <kbd className="ml-1 px-1 py-0.5 bg-red-700 rounded text-[10px] font-mono">x</kbd>
                     </button>
                   </>
                 )}

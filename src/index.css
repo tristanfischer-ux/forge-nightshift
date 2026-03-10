@@ -46,3 +46,18 @@ body {
 .animate-slide-in-right {
   animation: slide-in-right 0.2s ease-out;
 }
+
+/* Dense / compact mode */
+.dense .text-2xl {
+  font-size: 1.125rem;
+}
+.dense table td,
+.dense table th {
+  padding: 0.375rem 0.75rem;
+}
+.dense .p-4 {
+  padding: 0.625rem;
+}
+.dense .space-y-6 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0.75rem !important;
+}

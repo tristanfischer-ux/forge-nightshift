@@ -816,6 +816,88 @@ impl Database {
         Ok(conn.changes() as i64)
     }
 
+    pub fn get_companies_count(&self, status: Option<&str>) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = if let Some(s) = status {
+            conn.query_row(
+                "SELECT COUNT(*) FROM companies WHERE status = ?1",
+                [s],
+                |row| row.get(0),
+            )?
+        } else {
+            conn.query_row("SELECT COUNT(*) FROM companies", [], |row| row.get(0))?
+        };
+        Ok(count)
+    }
+
+    pub fn batch_update_status(&self, ids: &[String], status: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{}", i + 1)).collect();
+        let query = format!(
+            "UPDATE companies SET status = ?1, updated_at = datetime('now') WHERE id IN ({})",
+            placeholders.join(",")
+        );
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        params.push(Box::new(status.to_string()));
+        for id in ids {
+            params.push(Box::new(id.clone()));
+        }
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        conn.execute(&query, params_refs.as_slice())?;
+        Ok(conn.changes() as i64)
+    }
+
+    pub fn get_stats_history(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT date(created_at) as day, \
+             COUNT(*) as total, \
+             SUM(CASE WHEN status IN ('enriched','approved','pushed') THEN 1 ELSE 0 END) as enriched, \
+             SUM(CASE WHEN status = 'pushed' THEN 1 ELSE 0 END) as pushed \
+             FROM companies \
+             WHERE created_at >= date('now', '-7 days') \
+             GROUP BY date(created_at) \
+             ORDER BY day ASC"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "date": row.get::<_, String>(0)?,
+                    "companies": row.get::<_, i64>(1)?,
+                    "enriched": row.get::<_, i64>(2)?,
+                    "pushed": row.get::<_, i64>(3)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    pub fn get_run_history(&self, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, stages, status, summary, started_at, completed_at, created_at FROM jobs ORDER BY created_at DESC LIMIT ?1"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "stages": row.get::<_, String>(1)?,
+                    "status": row.get::<_, String>(2)?,
+                    "summary": row.get::<_, Option<String>>(3)?,
+                    "started_at": row.get::<_, Option<String>>(4)?,
+                    "completed_at": row.get::<_, Option<String>>(5)?,
+                    "created_at": row.get::<_, Option<String>>(6)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
     /// Get companies by list of IDs
     #[allow(dead_code)]
     pub fn get_companies_by_ids(&self, ids: &[String]) -> Result<Vec<Value>> {

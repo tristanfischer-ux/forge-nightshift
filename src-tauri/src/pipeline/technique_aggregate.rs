@@ -150,6 +150,17 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     let techniques_to_process: Vec<_> = technique_data.keys().cloned().collect();
     let total = techniques_to_process.len();
 
+    let started_at = chrono::Utc::now();
+    super::emit_node(app, json!({
+        "node_id": "aggregate_techniques",
+        "status": "running",
+        "model": model,
+        "progress": { "current": 0, "total": total, "rate": null, "current_item": null },
+        "concurrency": 1,
+        "started_at": started_at.to_rfc3339(),
+        "elapsed_secs": 0
+    }));
+
     for (i, slug) in techniques_to_process.iter().enumerate() {
         if super::is_cancelled() {
             let _ = db.log_activity(job_id, "aggregate_techniques", "warn", "Cancelled by user");
@@ -223,6 +234,18 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             Ok(()) => {
                 generated += 1;
                 log::info!("  {} — article generated ({} suppliers)", slug, company_ids.len());
+
+                let processed = (generated + skipped + failed) as usize;
+                let elapsed = (chrono::Utc::now() - started_at).num_seconds();
+                super::emit_node(app, json!({
+                    "node_id": "aggregate_techniques",
+                    "status": "running",
+                    "model": model,
+                    "progress": { "current": processed, "total": total, "rate": null, "current_item": slug },
+                    "concurrency": 1,
+                    "started_at": started_at.to_rfc3339(),
+                    "elapsed_secs": elapsed
+                }));
             }
             Err(e) => {
                 log::warn!("DB save failed for {}: {}", slug, e);
@@ -247,6 +270,17 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         "info",
         &format!("Complete: {} generated, {} skipped, {} failed from {} companies", generated, skipped, failed, companies.len()),
     );
+
+    let elapsed = (chrono::Utc::now() - started_at).num_seconds();
+    super::emit_node(app, json!({
+        "node_id": "aggregate_techniques",
+        "status": "completed",
+        "model": model,
+        "progress": { "current": total, "total": total, "rate": null, "current_item": null },
+        "concurrency": 1,
+        "started_at": started_at.to_rfc3339(),
+        "elapsed_secs": elapsed
+    }));
 
     Ok(summary)
 }
@@ -416,6 +450,17 @@ pub async fn push_techniques(app: &tauri::AppHandle, job_id: &str, config: &Valu
 
     log::info!("Pushing {} technique knowledge records to Supabase", records.len());
 
+    let started_at = chrono::Utc::now();
+    super::emit_node(app, json!({
+        "node_id": "push_techniques",
+        "status": "running",
+        "model": null,
+        "progress": { "current": 0, "total": records.len(), "rate": null, "current_item": null },
+        "concurrency": 1,
+        "started_at": started_at.to_rfc3339(),
+        "elapsed_secs": 0
+    }));
+
     let mut pushed = 0u32;
     let mut errors = 0u32;
 
@@ -433,6 +478,16 @@ pub async fn push_techniques(app: &tauri::AppHandle, job_id: &str, config: &Valu
                 let _ = db.mark_technique_pushed(id);
                 pushed += 1;
                 log::info!("  Pushed technique: {}", slug);
+
+                super::emit_node(app, json!({
+                    "node_id": "push_techniques",
+                    "status": "running",
+                    "model": null,
+                    "progress": { "current": pushed + errors, "total": records.len(), "rate": null, "current_item": slug },
+                    "concurrency": 1,
+                    "started_at": started_at.to_rfc3339(),
+                    "elapsed_secs": (chrono::Utc::now() - started_at).num_seconds()
+                }));
             }
             Err(e) => {
                 log::warn!("Failed to push {}: {}", slug, e);
@@ -463,6 +518,16 @@ pub async fn push_techniques(app: &tauri::AppHandle, job_id: &str, config: &Valu
         "info",
         &format!("Complete: {}/{} pushed, {} errors", pushed, records.len(), errors),
     );
+
+    super::emit_node(app, json!({
+        "node_id": "push_techniques",
+        "status": "completed",
+        "model": null,
+        "progress": { "current": records.len(), "total": records.len(), "rate": null, "current_item": null },
+        "concurrency": 1,
+        "started_at": started_at.to_rfc3339(),
+        "elapsed_secs": (chrono::Utc::now() - started_at).num_seconds()
+    }));
 
     Ok(summary)
 }

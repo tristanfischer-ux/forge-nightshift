@@ -18,6 +18,7 @@ use crate::db::Database;
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
 static RESEARCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+static ENRICH_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 fn node_states() -> &'static Mutex<HashMap<String, Value>> {
     static STATES: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
@@ -46,6 +47,10 @@ pub fn reset_node_states() {
 
 pub fn is_research_active() -> bool {
     RESEARCH_ACTIVE.load(Ordering::SeqCst)
+}
+
+pub fn is_enrich_active() -> bool {
+    ENRICH_ACTIVE.load(Ordering::SeqCst)
 }
 
 pub async fn start_pipeline(app: tauri::AppHandle, stages: Vec<String>) -> Result<String> {
@@ -145,70 +150,109 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
     let db: tauri::State<'_, Database> = app.state();
     let config = db.get_all_config()?;
 
-    // Check if both research and enrich are in the stage list for parallel execution
+    // Auto-inject deep_enrich_drain if enrich is requested but no deep enrich variant is present.
+    // This ensures deep enrichment always runs concurrently with enrich for new companies.
+    let stages: Vec<String> = {
+        let mut s = stages.to_vec();
+        let has_enrich = s.iter().any(|st| st == "enrich");
+        let has_any_deep = s.iter().any(|st| st == "deep_enrich_drain" || st == "deep_enrich_all" || st.starts_with("deep_enrich:"));
+        if has_enrich && !has_any_deep {
+            if let Some(pos) = s.iter().position(|st| st == "enrich") {
+                s.insert(pos + 1, "deep_enrich_drain".to_string());
+            }
+            log::info!("[pipeline] Auto-injected deep_enrich_drain alongside enrich");
+        }
+        s
+    };
+
+    // Determine which stages can run concurrently
     let has_research = stages.iter().any(|s| s == "research");
     let has_enrich = stages.iter().any(|s| s == "enrich");
-    let run_parallel = has_research && has_enrich;
+    let has_deep_enrich_drain = stages.iter().any(|s| s == "deep_enrich_drain");
+
+    // Stages that are handled in the parallel block (skip in sequential remainder)
+    let parallel_stages: Vec<&str> = {
+        let mut ps = Vec::new();
+        if has_research && has_enrich { ps.push("research"); ps.push("enrich"); }
+        if has_deep_enrich_drain && has_enrich { ps.push("deep_enrich_drain"); }
+        ps
+    };
+    let run_parallel = !parallel_stages.is_empty();
 
     if run_parallel {
-        // Run research + enrich concurrently, then remaining stages sequentially
+        // Log what's running in parallel
+        let parallel_label = parallel_stages.join(" + ");
         {
             let db: tauri::State<'_, Database> = app.state();
-            let _ = db.log_activity(job_id, "pipeline", "info", "Running research + enrich in parallel");
+            let _ = db.log_activity(job_id, "pipeline", "info", &format!("Running {} in parallel", parallel_label));
         }
 
-        let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "running"}));
-        let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "running"}));
-
-        {
+        for &s in &parallel_stages {
+            let _ = app.emit("pipeline:stage", json!({"stage": s, "status": "running"}));
             let db: tauri::State<'_, Database> = app.state();
-            let _ = db.log_activity(job_id, "research", "info", "Starting research stage");
-            let _ = db.log_activity(job_id, "enrich", "info", "Starting enrich stage");
+            let _ = db.log_activity(job_id, s, "info", &format!("Starting {} stage", s));
         }
 
-        RESEARCH_ACTIVE.store(true, Ordering::SeqCst);
-        let (research_result, enrich_result) = tokio::join!(
-            async {
-                let r = research::run(app, job_id, &config).await;
-                RESEARCH_ACTIVE.store(false, Ordering::SeqCst);
-                r
-            },
-            enrich::run(app, job_id, &config)
-        );
+        // 4 cases based on which stages are present
+        if has_research && has_enrich && has_deep_enrich_drain {
+            // Case 1: research + enrich + deep_enrich_drain — all 3 concurrent
+            RESEARCH_ACTIVE.store(true, Ordering::SeqCst);
+            ENRICH_ACTIVE.store(true, Ordering::SeqCst);
 
-        // Process research result
-        match research_result {
-            Ok(result) => {
-                summary["research"] = result;
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, "research", "info", "research stage completed");
-            }
-            Err(e) => {
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, "research", "error", &format!("research stage failed: {}", e));
-                summary["research"] = json!({"error": e.to_string()});
-            }
+            let (research_result, enrich_result, deep_enrich_result) = tokio::join!(
+                async {
+                    let r = research::run(app, job_id, &config).await;
+                    RESEARCH_ACTIVE.store(false, Ordering::SeqCst);
+                    r
+                },
+                async {
+                    let r = enrich::run(app, job_id, &config).await;
+                    ENRICH_ACTIVE.store(false, Ordering::SeqCst);
+                    r
+                },
+                deep_enrich::run_drain(app, job_id, &config)
+            );
+
+            process_parallel_result(&mut summary, app, job_id, "research", research_result);
+            process_parallel_result(&mut summary, app, job_id, "enrich", enrich_result);
+            process_parallel_result(&mut summary, app, job_id, "deep_enrich_drain", deep_enrich_result);
+
+        } else if has_research && has_enrich {
+            // Case 2: research + enrich — existing behavior
+            RESEARCH_ACTIVE.store(true, Ordering::SeqCst);
+
+            let (research_result, enrich_result) = tokio::join!(
+                async {
+                    let r = research::run(app, job_id, &config).await;
+                    RESEARCH_ACTIVE.store(false, Ordering::SeqCst);
+                    r
+                },
+                enrich::run(app, job_id, &config)
+            );
+
+            process_parallel_result(&mut summary, app, job_id, "research", research_result);
+            process_parallel_result(&mut summary, app, job_id, "enrich", enrich_result);
+
+        } else if has_enrich && has_deep_enrich_drain {
+            // Case 3: enrich + deep_enrich_drain — no research
+            ENRICH_ACTIVE.store(true, Ordering::SeqCst);
+
+            let (enrich_result, deep_enrich_result) = tokio::join!(
+                async {
+                    let r = enrich::run(app, job_id, &config).await;
+                    ENRICH_ACTIVE.store(false, Ordering::SeqCst);
+                    r
+                },
+                deep_enrich::run_drain(app, job_id, &config)
+            );
+
+            process_parallel_result(&mut summary, app, job_id, "enrich", enrich_result);
+            process_parallel_result(&mut summary, app, job_id, "deep_enrich_drain", deep_enrich_result);
         }
-        let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "completed"}));
 
-        // Process enrich result
-        match enrich_result {
-            Ok(result) => {
-                summary["enrich"] = result;
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, "enrich", "info", "enrich stage completed");
-            }
-            Err(e) => {
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, "enrich", "error", &format!("enrich stage failed: {}", e));
-                summary["enrich"] = json!({"error": e.to_string()});
-            }
-        }
-        let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "completed"}));
-
-        // Run remaining stages sequentially (skip research and enrich)
-        for stage in stages {
-            if stage == "research" || stage == "enrich" {
+        // Run remaining stages sequentially (skip those handled in parallel)
+        for stage in &stages {
+            if parallel_stages.contains(&stage.as_str()) {
                 continue;
             }
             if is_cancelled() {
@@ -217,111 +261,105 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
                 break;
             }
 
-            let _ = app.emit("pipeline:stage", json!({"stage": stage, "status": "running"}));
-            {
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, stage, "info", &format!("Starting {} stage", stage));
+            let result = run_single_stage(app, job_id, &config, stage).await;
+            match result {
+                Ok(r) => summary[stage.as_str()] = r,
+                Err(e) => summary[stage.as_str()] = json!({"error": e.to_string()}),
             }
-
-            let stage_result = match stage.as_str() {
-                "push" => push::run(app, job_id, &config).await,
-                "push_capabilities" => push::push_capabilities(app, job_id, &config).await,
-                "outreach" => outreach::run(app, job_id, &config).await,
-                "report" => report::run(app, job_id, &config).await,
-                "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, &config).await,
-                "deep_enrich_all" => deep_enrich::run_all(app, job_id, &config).await,
-                "aggregate_techniques" => technique_aggregate::run(app, job_id, &config).await,
-                "push_techniques" => technique_aggregate::push_techniques(app, job_id, &config).await,
-                "enrich_all" => run_enrich_all(app, job_id, &config).await,
-                s if s.starts_with("deep_enrich:") => {
-                    let sector = &s["deep_enrich:".len()..];
-                    deep_enrich::run_sector(app, job_id, &config, sector).await
-                }
-                unknown => {
-                    let db: tauri::State<'_, Database> = app.state();
-                    let _ = db.log_activity(job_id, unknown, "error", "Unknown stage");
-                    Err(anyhow::anyhow!("Unknown stage: {}", unknown))
-                }
-            };
-
-            match stage_result {
-                Ok(result) => {
-                    summary[stage] = result;
-                    let db: tauri::State<'_, Database> = app.state();
-                    let _ = db.log_activity(job_id, stage, "info", &format!("{} stage completed", stage));
-                }
-                Err(e) => {
-                    let db: tauri::State<'_, Database> = app.state();
-                    let _ = db.log_activity(job_id, stage, "error", &format!("{} stage failed: {}", stage, e));
-                    summary[stage] = json!({"error": e.to_string()});
-                }
-            }
-
-            let _ = app.emit("pipeline:stage", json!({"stage": stage, "status": "completed"}));
         }
     } else {
         // Sequential execution (original behavior)
-        for stage in stages {
+        for stage in &stages {
             if is_cancelled() {
                 let db: tauri::State<'_, Database> = app.state();
                 let _ = db.log_activity(job_id, stage, "warn", "Pipeline cancelled by user");
                 break;
             }
 
-            let _ = app.emit("pipeline:stage", json!({
-                "stage": stage,
-                "status": "running",
-            }));
-
-            {
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, stage, "info", &format!("Starting {} stage", stage));
+            let result = run_single_stage(app, job_id, &config, stage).await;
+            match result {
+                Ok(r) => summary[stage.as_str()] = r,
+                Err(e) => summary[stage.as_str()] = json!({"error": e.to_string()}),
             }
-
-            let stage_result = match stage.as_str() {
-                "research" => research::run(app, job_id, &config).await,
-                "enrich" => enrich::run(app, job_id, &config).await,
-                "push" => push::run(app, job_id, &config).await,
-                "push_capabilities" => push::push_capabilities(app, job_id, &config).await,
-                "outreach" => outreach::run(app, job_id, &config).await,
-                "report" => report::run(app, job_id, &config).await,
-                "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, &config).await,
-                "deep_enrich_all" => deep_enrich::run_all(app, job_id, &config).await,
-                "aggregate_techniques" => technique_aggregate::run(app, job_id, &config).await,
-                "push_techniques" => technique_aggregate::push_techniques(app, job_id, &config).await,
-                "enrich_all" => run_enrich_all(app, job_id, &config).await,
-                s if s.starts_with("deep_enrich:") => {
-                    let sector = &s["deep_enrich:".len()..];
-                    deep_enrich::run_sector(app, job_id, &config, sector).await
-                }
-                unknown => {
-                    let db: tauri::State<'_, Database> = app.state();
-                    let _ = db.log_activity(job_id, unknown, "error", "Unknown stage");
-                    Err(anyhow::anyhow!("Unknown stage: {}", unknown))
-                }
-            };
-
-            match stage_result {
-                Ok(result) => {
-                    summary[stage] = result;
-                    let db: tauri::State<'_, Database> = app.state();
-                    let _ = db.log_activity(job_id, stage, "info", &format!("{} stage completed", stage));
-                }
-                Err(e) => {
-                    let db: tauri::State<'_, Database> = app.state();
-                    let _ = db.log_activity(job_id, stage, "error", &format!("{} stage failed: {}", stage, e));
-                    summary[stage] = json!({"error": e.to_string()});
-                }
-            }
-
-            let _ = app.emit("pipeline:stage", json!({
-                "stage": stage,
-                "status": "completed",
-            }));
         }
     }
 
     Ok(summary)
+}
+
+/// Process the result of a parallel stage and update summary.
+fn process_parallel_result(
+    summary: &mut Value,
+    app: &tauri::AppHandle,
+    job_id: &str,
+    stage: &str,
+    result: Result<Value>,
+) {
+    match result {
+        Ok(r) => {
+            summary[stage] = r;
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(job_id, stage, "info", &format!("{} stage completed", stage));
+        }
+        Err(e) => {
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(job_id, stage, "error", &format!("{} stage failed: {}", stage, e));
+            summary[stage] = json!({"error": e.to_string()});
+        }
+    }
+    let _ = app.emit("pipeline:stage", json!({"stage": stage, "status": "completed"}));
+}
+
+/// Run a single stage with logging and event emission.
+async fn run_single_stage(
+    app: &tauri::AppHandle,
+    job_id: &str,
+    config: &Value,
+    stage: &str,
+) -> Result<Value> {
+    let _ = app.emit("pipeline:stage", json!({"stage": stage, "status": "running"}));
+    {
+        let db: tauri::State<'_, Database> = app.state();
+        let _ = db.log_activity(job_id, stage, "info", &format!("Starting {} stage", stage));
+    }
+
+    let stage_result = match stage {
+        "research" => research::run(app, job_id, config).await,
+        "enrich" => enrich::run(app, job_id, config).await,
+        "push" => push::run(app, job_id, config).await,
+        "push_capabilities" => push::push_capabilities(app, job_id, config).await,
+        "outreach" => outreach::run(app, job_id, config).await,
+        "report" => report::run(app, job_id, config).await,
+        "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, config).await,
+        "deep_enrich_all" => deep_enrich::run_all(app, job_id, config).await,
+        "deep_enrich_drain" => deep_enrich::run_drain(app, job_id, config).await,
+        "aggregate_techniques" => technique_aggregate::run(app, job_id, config).await,
+        "push_techniques" => technique_aggregate::push_techniques(app, job_id, config).await,
+        "enrich_all" => run_enrich_all(app, job_id, config).await,
+        s if s.starts_with("deep_enrich:") => {
+            let sector = &s["deep_enrich:".len()..];
+            deep_enrich::run_sector(app, job_id, config, sector).await
+        }
+        unknown => {
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(job_id, unknown, "error", "Unknown stage");
+            Err(anyhow::anyhow!("Unknown stage: {}", unknown))
+        }
+    };
+
+    match &stage_result {
+        Ok(_) => {
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(job_id, stage, "info", &format!("{} stage completed", stage));
+        }
+        Err(e) => {
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(job_id, stage, "error", &format!("{} stage failed: {}", stage, e));
+        }
+    }
+
+    let _ = app.emit("pipeline:stage", json!({"stage": stage, "status": "completed"}));
+    stage_result
 }
 
 /// Composite stage: deep_enrich_trial → aggregate_techniques → push_techniques

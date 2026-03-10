@@ -11,8 +11,9 @@ import {
   Settings,
   Hammer,
   Workflow,
+  Rows3,
 } from "lucide-react";
-import { getPipelineStatus } from "../lib/tauri";
+import { getPipelineStatus, getStats } from "../lib/tauri";
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -28,6 +29,8 @@ export default function Sidebar() {
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [version, setVersion] = useState("");
+  const [badges, setBadges] = useState<Record<string, number>>({});
+  const [dense, setDense] = useState(() => localStorage.getItem("nightshift-density") === "dense");
 
   useEffect(() => {
     getVersion().then(setVersion);
@@ -40,18 +43,33 @@ export default function Sidebar() {
       }
     );
 
-    // Listen for pipeline status changes
-    const unlistenPipeline = listen<{ status: string }>(
-      "pipeline:status",
-      (event) => {
-        setPipelineRunning(event.payload.status === "running");
-      }
-    );
-
     // Check initial pipeline state
     getPipelineStatus()
       .then((s) => setPipelineRunning(s.running))
       .catch(() => {});
+
+    // Load badge counts
+    function loadBadges() {
+      getStats()
+        .then((s) => {
+          const rows = (s.companies as { status: string; count: number }[]) || [];
+          const enriched = rows.find((r) => r.status === "enriched")?.count || 0;
+          const emails = (s.emails as { status: string; count: number }[]) || [];
+          const drafts = emails.find((r) => r.status === "draft")?.count || 0;
+          setBadges({ "/review": enriched, "/outreach": drafts });
+        })
+        .catch(() => {});
+    }
+    loadBadges();
+
+    // Single pipeline:status listener for both running state and badge refresh
+    const unlistenPipeline = listen<{ status: string }>(
+      "pipeline:status",
+      (event) => {
+        setPipelineRunning(event.payload.status === "running");
+        loadBadges();
+      }
+    );
 
     return () => {
       unlistenOllama.then((fn) => fn());
@@ -102,12 +120,29 @@ export default function Sidebar() {
             }
           >
             <item.icon className="w-4 h-4" />
-            {item.label}
+            <span className="flex-1">{item.label}</span>
+            {badges[item.path] != null && badges[item.path] > 0 && (
+              <span className="bg-forge-100 text-forge-700 text-xs px-1.5 rounded-full">
+                {badges[item.path]}
+              </span>
+            )}
           </NavLink>
         ))}
       </nav>
 
-      <div className="p-3 border-t border-gray-200">
+      <div className="p-3 border-t border-gray-200 space-y-2">
+        <button
+          onClick={() => {
+            const next = !dense;
+            setDense(next);
+            localStorage.setItem("nightshift-density", next ? "dense" : "normal");
+            window.dispatchEvent(new CustomEvent("nightshift-density", { detail: next }));
+          }}
+          className="flex items-center gap-2 w-full px-2 py-1 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded transition-colors"
+        >
+          <Rows3 className="w-3.5 h-3.5" />
+          {dense ? "Comfortable" : "Compact"}
+        </button>
         <div className="flex items-center gap-2">
           <div className={`w-2 h-2 rounded-full ${statusColor}`} />
           <span className="text-xs text-gray-500">{statusText}</span>

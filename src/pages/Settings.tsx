@@ -7,6 +7,7 @@ import {
   Loader2,
   HardDrive,
   RefreshCw,
+  Download,
 } from "lucide-react";
 import {
   getConfig,
@@ -40,6 +41,9 @@ export default function Settings() {
   const [backupPath, setBackupPath] = useState<string | null>(null);
   const [reenrichStage, setReenrichStage] = useState<"idle" | "confirm" | "running" | "done" | "error">("idle");
   const [reenrichCount, setReenrichCount] = useState(0);
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  const [importPreview, setImportPreview] = useState<Record<string, string> | null>(null);
+  const [excludeSecrets, setExcludeSecrets] = useState(true);
 
   useEffect(() => {
     loadConfig();
@@ -54,9 +58,31 @@ export default function Settings() {
     }
   }
 
+  function validateField(key: string, value: string): string {
+    if (key === "ollama_url" && value) {
+      try { new URL(value); } catch { return "Invalid URL format"; }
+    }
+    if (key === "supabase_url" && value) {
+      try { new URL(value); } catch { return "Invalid URL format"; }
+    }
+    if ((key === "brave_api_key" || key === "resend_api_key" || key === "supabase_service_key") && value && value.length < 8) {
+      return "Key seems too short";
+    }
+    if (key === "schedule_time" && value && !/^\d{2}:\d{2}$/.test(value)) {
+      return "Must be HH:MM format";
+    }
+    return "";
+  }
+
   function updateField(key: string, value: string) {
     setConfigState((prev) => ({ ...prev, [key]: value }));
     setSaved(false);
+    const error = validateField(key, value);
+    setValidationErrors((prev) => {
+      const next = { ...prev };
+      if (error) next[key] = error; else delete next[key];
+      return next;
+    });
   }
 
   async function saveAll() {
@@ -159,6 +185,56 @@ export default function Settings() {
     }
   }
 
+  const SENSITIVE_KEYS = ["brave_api_key", "supabase_service_key", "resend_api_key", "companies_house_api_key"];
+
+  function handleExportConfig() {
+    const exportData = { ...config };
+    if (excludeSecrets) {
+      for (const key of SENSITIVE_KEYS) delete exportData[key];
+    }
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `nightshift-config-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result as string);
+        if (typeof data === "object" && data !== null) {
+          setImportPreview(data as Record<string, string>);
+        }
+      } catch {
+        showError("Invalid JSON file");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  async function handleApplyImport() {
+    if (!importPreview) return;
+    setSaving(true);
+    try {
+      for (const [key, value] of Object.entries(importPreview)) {
+        if (typeof value === "string") await setConfig(key, value);
+      }
+      setConfigState((prev) => ({ ...prev, ...importPreview }));
+      setImportPreview(null);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      showError(`Import failed: ${e}`);
+    }
+    setSaving(false);
+  }
+
   function StatusIcon({ status }: { status: TestStatus }) {
     switch (status) {
       case "testing":
@@ -184,7 +260,7 @@ export default function Settings() {
 
         <button
           onClick={saveAll}
-          disabled={saving}
+          disabled={saving || Object.keys(validationErrors).length > 0}
           className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
         >
           {saved ? (
@@ -214,30 +290,11 @@ export default function Settings() {
           value={config.ollama_url || ""}
           onChange={(v) => updateField("ollama_url", v)}
           placeholder="http://localhost:11434"
+          error={validationErrors["ollama_url"]}
         />
-        <Input
-          label="Research Model"
-          value={config.research_model || ""}
-          onChange={(v) => updateField("research_model", v)}
-          placeholder="qwen3:8b"
-        />
-        <Input
-          label="Enrichment Model"
-          value={config.enrich_model || ""}
-          onChange={(v) => updateField("enrich_model", v)}
-          placeholder="qwen3:30b-a3b-instruct-2507-q4_K_M"
-        />
-        <Input
-          label="Outreach Model"
-          value={config.outreach_model || ""}
-          onChange={(v) => updateField("outreach_model", v)}
-          placeholder="qwen3:32b"
-        />
-        {ollamaModels.length > 0 && (
-          <div className="text-xs text-gray-500">
-            Available models: {ollamaModels.join(", ")}
-          </div>
-        )}
+        <ModelSelect label="Research Model" value={config.research_model || ""} onChange={(v) => updateField("research_model", v)} models={ollamaModels} placeholder="qwen3:8b" />
+        <ModelSelect label="Enrichment Model" value={config.enrich_model || ""} onChange={(v) => updateField("enrich_model", v)} models={ollamaModels} placeholder="qwen3:30b-a3b-instruct-2507-q4_K_M" />
+        <ModelSelect label="Outreach Model" value={config.outreach_model || ""} onChange={(v) => updateField("outreach_model", v)} models={ollamaModels} placeholder="qwen3:32b" />
         {ollamaStatus === "error" && ollamaError && (
           <p className="text-xs text-red-600">{ollamaError}</p>
         )}
@@ -262,6 +319,7 @@ export default function Settings() {
           onChange={(v) => updateField("brave_api_key", v)}
           placeholder="BSA..."
           type="password"
+          error={validationErrors["brave_api_key"]}
         />
         {braveStatus === "error" && braveError && (
           <p className="text-xs text-red-600">{braveError}</p>
@@ -286,6 +344,7 @@ export default function Settings() {
           value={config.supabase_url || ""}
           onChange={(v) => updateField("supabase_url", v)}
           placeholder="https://xxx.supabase.co"
+          error={validationErrors["supabase_url"]}
         />
         <Input
           label="Service Role Key"
@@ -293,6 +352,7 @@ export default function Settings() {
           onChange={(v) => updateField("supabase_service_key", v)}
           placeholder="eyJ..."
           type="password"
+          error={validationErrors["supabase_service_key"]}
         />
         <Input
           label="Foundry ID"
@@ -324,6 +384,7 @@ export default function Settings() {
           onChange={(v) => updateField("resend_api_key", v)}
           placeholder="re_..."
           type="password"
+          error={validationErrors["resend_api_key"]}
         />
         <Input
           label="From Email"
@@ -362,6 +423,7 @@ export default function Settings() {
           value={config.schedule_time || ""}
           onChange={(v) => updateField("schedule_time", v)}
           placeholder="23:00"
+          error={validationErrors["schedule_time"]}
         />
         <Input
           label="Daily Email Limit"
@@ -500,6 +562,37 @@ export default function Settings() {
           Creates a copy of the database. Backups also run automatically before each pipeline run.
         </p>
       </section>
+
+      {/* Import / Export */}
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+        <h2 className="text-sm font-semibold text-gray-900">Import / Export</h2>
+        <div className="flex items-center gap-3">
+          <button onClick={handleExportConfig} className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium text-gray-700 transition-colors">
+            <Download className="w-4 h-4" />
+            Export Config
+          </button>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={excludeSecrets} onChange={(e) => setExcludeSecrets(e.target.checked)} className="accent-forge-600" />
+            <span className="text-xs text-gray-500">Exclude API keys</span>
+          </label>
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Import Config</label>
+          <input type="file" accept=".json" onChange={handleImportFile} className="text-sm text-gray-500 file:mr-2 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200" />
+        </div>
+        {importPreview && (
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
+            <p className="text-xs font-medium text-gray-700">Preview: {Object.keys(importPreview).length} keys</p>
+            <div className="max-h-32 overflow-y-auto text-xs text-gray-500 font-mono">
+              {Object.keys(importPreview).map((k) => <div key={k}>{k}</div>)}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={handleApplyImport} className="px-3 py-1.5 bg-forge-600 hover:bg-forge-700 rounded-lg text-xs font-medium text-white">Apply</button>
+              <button onClick={() => setImportPreview(null)} className="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 rounded-lg text-xs font-medium text-gray-700">Cancel</button>
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -512,6 +605,7 @@ function Input({
   type = "text",
   min,
   max,
+  error,
 }: {
   label: string;
   value: string;
@@ -520,6 +614,7 @@ function Input({
   type?: string;
   min?: number;
   max?: number;
+  error?: string;
 }) {
   return (
     <div>
@@ -531,8 +626,32 @@ function Input({
         placeholder={placeholder}
         min={min}
         max={max}
-        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-forge-500 focus:border-forge-500 transition-colors"
+        className={`w-full px-3 py-2 bg-white border rounded-lg text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-forge-500 focus:border-forge-500 transition-colors ${
+          error ? "border-red-300" : "border-gray-300"
+        }`}
       />
+      {error && <p className="text-xs text-red-500 mt-0.5">{error}</p>}
     </div>
   );
+}
+
+function ModelSelect({ label, value, onChange, models, placeholder }: {
+  label: string; value: string; onChange: (v: string) => void; models: string[]; placeholder: string;
+}) {
+  if (models.length > 0) {
+    return (
+      <div>
+        <label className="block text-xs text-gray-500 mb-1">{label}</label>
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500 focus:border-forge-500 transition-colors"
+        >
+          <option value="">Select a model...</option>
+          {models.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+      </div>
+    );
+  }
+  return <Input label={label} value={value} onChange={onChange} placeholder={placeholder} />;
 }

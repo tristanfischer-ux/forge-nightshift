@@ -75,6 +75,12 @@ fn set_config(db: tauri::State<'_, Database>, key: String, value: String) -> Res
                 return Err("Must be between 1 and 10".to_string());
             }
         }
+        "deep_enrich_concurrency" => {
+            let v: i64 = value.parse().map_err(|_| "Must be a number".to_string())?;
+            if !(1..=5).contains(&v) {
+                return Err("Must be between 1 and 5".to_string());
+            }
+        }
         "categories_per_run" => {
             let v: i64 = value.parse().map_err(|_| "Must be a number".to_string())?;
             if !(1..=37).contains(&v) {
@@ -149,6 +155,11 @@ async fn stop_pipeline(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn get_pipeline_status() -> Result<serde_json::Value, String> {
     pipeline::get_status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_pipeline_nodes() -> Result<serde_json::Value, String> {
+    pipeline::get_pipeline_nodes().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -690,6 +701,36 @@ async fn remove_all_from_marketplace(
     }))
 }
 
+#[tauri::command]
+fn get_companies_count(
+    db: tauri::State<'_, Database>,
+    status: Option<String>,
+) -> Result<i64, String> {
+    db.get_companies_count(status.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn batch_update_status(
+    db: tauri::State<'_, Database>,
+    ids: Vec<String>,
+    status: String,
+) -> Result<i64, String> {
+    db.batch_update_status(&ids, &status).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_stats_history(db: tauri::State<'_, Database>) -> Result<Vec<serde_json::Value>, String> {
+    db.get_stats_history().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_run_history(
+    db: tauri::State<'_, Database>,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    db.get_run_history(limit.unwrap_or(20)).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -769,6 +810,11 @@ pub fn run() {
             remove_all_from_marketplace,
             get_companies_for_map,
             geocode_companies,
+            get_companies_count,
+            batch_update_status,
+            get_stats_history,
+            get_run_history,
+            get_pipeline_nodes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

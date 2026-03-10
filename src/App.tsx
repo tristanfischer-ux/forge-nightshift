@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { Routes, Route } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import UpdateBanner from "./components/UpdateBanner";
@@ -11,6 +12,7 @@ import Review from "./pages/Review";
 import Outreach from "./pages/Outreach";
 import Settings from "./pages/Settings";
 import Pipeline from "./pages/Pipeline";
+import CommandPalette from "./components/CommandPalette";
 
 function NotFound() {
   return (
@@ -22,12 +24,33 @@ function NotFound() {
 }
 
 function App() {
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [isDense, setIsDense] = useState(() => localStorage.getItem("nightshift-density") === "dense");
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setCmdOpen((o) => !o);
+      }
+    }
+    function handleDensity(e: Event) {
+      setIsDense((e as CustomEvent).detail);
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("nightshift-density", handleDensity);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("nightshift-density", handleDensity);
+    };
+  }, []);
+
   return (
     <ErrorBoundary>
       <ErrorProvider>
         <div className="flex h-screen bg-gray-50 text-gray-900">
           <Sidebar />
-          <main className="flex-1 overflow-y-auto p-6">
+          <main className={`flex-1 overflow-y-auto p-6${isDense ? " dense" : ""}`}>
             <UpdateBanner />
             <Routes>
               <Route path="/" element={<Dashboard />} />
@@ -41,6 +64,7 @@ function App() {
             </Routes>
           </main>
         </div>
+        <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} />
         <ErrorToast />
       </ErrorProvider>
     </ErrorBoundary>

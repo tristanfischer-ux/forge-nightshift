@@ -22,6 +22,7 @@ export default function Outreach() {
     string,
     unknown
   > | null>(null);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshCount, setRefreshCount] = useState<number | null>(null);
 
@@ -30,12 +31,14 @@ export default function Outreach() {
   }, []);
 
   async function loadEmails() {
+    setLoading(true);
     try {
       const data = await getEmails(undefined, 100);
       setEmails(data);
     } catch (e) {
       console.error("Failed to load emails:", e);
     }
+    setLoading(false);
   }
 
   async function handleApproveEmail(id: string) {
@@ -104,7 +107,11 @@ export default function Outreach() {
           </div>
 
           <div className="divide-y divide-gray-100 max-h-[calc(100vh-220px)] overflow-y-auto">
-            {emails.length === 0 ? (
+            {loading ? (
+              <div className="flex items-center justify-center p-8">
+                <Loader2 className="w-5 h-5 text-gray-400 animate-spin" />
+              </div>
+            ) : emails.length === 0 ? (
               <div className="p-8 text-center text-gray-400 text-sm">
                 No emails yet. Run the outreach pipeline stage to generate
                 emails.

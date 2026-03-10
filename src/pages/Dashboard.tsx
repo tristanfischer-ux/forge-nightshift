@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Building2,
@@ -22,8 +22,10 @@ import {
   getAnalytics,
   onPipelineStatus,
   onPipelineProgress,
+  getStatsHistory,
 } from "../lib/tauri";
-import type { AnalyticsData } from "../lib/tauri";
+import type { AnalyticsData, StatsHistoryEntry } from "../lib/tauri";
+import { playSound } from "../lib/sounds";
 
 interface PipelineState {
   running: boolean;
@@ -40,20 +42,31 @@ export default function Dashboard() {
   });
   const [logs, setLogs] = useState<Record<string, unknown>[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [statsHistory, setStatsHistory] = useState<StatsHistoryEntry[]>([]);
+  const [logStageFilter, setLogStageFilter] = useState("all");
+  const [logLevelFilter, setLogLevelFilter] = useState("all");
+  const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prevRunningRef = useRef(false);
 
   useEffect(() => {
     loadData();
 
     const unlistenStatus = onPipelineStatus((payload) => {
+      const isRunning = payload.status === "running";
       setPipeline({
-        running: payload.status === "running",
+        running: isRunning,
         cancelling: payload.status === "cancelling",
       });
-      loadData();
+      // Play sound on pipeline completion/failure only
+      if (payload.status === "completed" || payload.status === "failed") {
+        playSound(payload.status === "completed" ? "complete" : "error");
+      }
+      prevRunningRef.current = isRunning;
+      refreshStats();
     });
 
     const unlistenProgress = onPipelineProgress(() => {
-      loadData();
+      // Handled by 30s auto-refresh interval; no-op here to avoid unbounded concurrent calls
     });
 
     return () => {
@@ -62,22 +75,53 @@ export default function Dashboard() {
     };
   }, []);
 
+  // 30s auto-refresh when pipeline is running
+  useEffect(() => {
+    if (pipeline.running) {
+      autoRefreshRef.current = setInterval(loadData, 30000);
+    } else if (autoRefreshRef.current) {
+      clearInterval(autoRefreshRef.current);
+      autoRefreshRef.current = null;
+    }
+    return () => {
+      if (autoRefreshRef.current) clearInterval(autoRefreshRef.current);
+    };
+  }, [pipeline.running]);
+
   async function loadData() {
     try {
-      const [s, p, l, a] = await Promise.all([
+      const [s, p, l, a, h] = await Promise.all([
         getStats(),
         getPipelineStatus(),
         getRunLog(undefined, 20),
         getAnalytics(),
+        getStatsHistory(),
       ]);
       setStats(s);
       setPipeline(p);
+      prevRunningRef.current = p.running;
       setLogs(l);
       setAnalytics(a);
+      setStatsHistory(h);
       setError(null);
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  async function refreshStats() {
+    try {
+      const [s, l, a, h] = await Promise.all([
+        getStats(),
+        getRunLog(undefined, 20),
+        getAnalytics(),
+        getStatsHistory(),
+      ]);
+      setStats(s);
+      setLogs(l);
+      setAnalytics(a);
+      setStatsHistory(h);
+    } catch {}
   }
 
   async function handleStartPipeline() {
@@ -171,6 +215,7 @@ export default function Dashboard() {
           value={getStatCount(companiesData)}
           icon={Building2}
           color="text-blue-600"
+          trend={statsHistory.map((h) => h.companies)}
         />
         <StatCard
           label="Enriched"
@@ -181,6 +226,7 @@ export default function Dashboard() {
           }
           icon={Search}
           color="text-purple-600"
+          trend={statsHistory.map((h) => h.enriched)}
         />
         <StatCard
           label="Approved"
@@ -196,6 +242,7 @@ export default function Dashboard() {
           value={getStatCount(companiesData, "pushed")}
           icon={Upload}
           color="text-green-600"
+          trend={statsHistory.map((h) => h.pushed)}
         />
         <StatCard
           label="Emails Sent"
@@ -264,15 +311,45 @@ export default function Dashboard() {
           <h2 className="text-sm font-semibold text-gray-900">
             Recent Activity
           </h2>
+          <div className="flex items-center gap-2 ml-auto">
+            <select
+              value={logStageFilter}
+              onChange={(e) => setLogStageFilter(e.target.value)}
+              className="text-xs border border-gray-200 rounded px-2 py-1 bg-white text-gray-600"
+            >
+              <option value="all">All stages</option>
+              <option value="research">Research</option>
+              <option value="enrich">Enrich</option>
+              <option value="deep_enrich">Deep Enrich</option>
+              <option value="push">Push</option>
+              <option value="outreach">Outreach</option>
+            </select>
+            <select
+              value={logLevelFilter}
+              onChange={(e) => setLogLevelFilter(e.target.value)}
+              className="text-xs border border-gray-200 rounded px-2 py-1 bg-white text-gray-600"
+            >
+              <option value="all">All levels</option>
+              <option value="info">Info</option>
+              <option value="warn">Warn</option>
+              <option value="error">Error</option>
+            </select>
+          </div>
         </div>
         <div className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
-          {logs.length === 0 ? (
+          {(() => {
+            const filteredLogs = logs.filter((log) => {
+              if (logStageFilter !== "all" && String(log.stage || "") !== logStageFilter) return false;
+              if (logLevelFilter !== "all" && String(log.level || "") !== logLevelFilter) return false;
+              return true;
+            });
+            return filteredLogs.length === 0 ? (
             <div className="p-8 text-center text-gray-400 text-sm">
               No activity yet. Start a pipeline run to begin discovering
               companies.
             </div>
           ) : (
-            logs.map((log) => (
+            filteredLogs.map((log) => (
               <div key={String(log.id || log.created_at)} className="flex items-start gap-3 px-4 py-3">
                 <div
                   className={`mt-1 w-2 h-2 rounded-full shrink-0 ${
@@ -294,7 +371,8 @@ export default function Dashboard() {
                 </div>
               </div>
             ))
-          )}
+          );
+          })()}
         </div>
       </div>
     </div>

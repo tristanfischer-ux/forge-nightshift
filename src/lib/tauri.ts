@@ -219,3 +219,65 @@ export function onPipelineProgress(
     callback(event.payload)
   );
 }
+
+// Pipeline node events (flow chart monitor)
+export interface PipelineNodeEvent {
+  node_id: string;
+  status: "idle" | "running" | "completed" | "failed" | "waiting";
+  model: string | null;
+  progress: {
+    current: number;
+    total: number | null;
+    rate: number | null;
+    current_item: string | null;
+  };
+  concurrency: number;
+  started_at: string | null;
+  elapsed_secs: number | null;
+}
+
+export function onPipelineNode(
+  callback: (payload: PipelineNodeEvent) => void
+) {
+  return listen<PipelineNodeEvent>("pipeline:node", (event) =>
+    callback(event.payload)
+  );
+}
+
+export async function getPipelineNodes(): Promise<Record<string, PipelineNodeEvent>> {
+  return invoke<Record<string, PipelineNodeEvent>>("get_pipeline_nodes");
+}
+
+// New v0.17.0 commands
+export async function getCompaniesCount(status?: string) {
+  return invoke<number>("get_companies_count", { status });
+}
+
+export async function batchUpdateStatus(ids: string[], status: string) {
+  return invoke<number>("batch_update_status", { ids, status });
+}
+
+export interface StatsHistoryEntry {
+  date: string;
+  companies: number;
+  enriched: number;
+  pushed: number;
+}
+
+export async function getStatsHistory() {
+  return invoke<StatsHistoryEntry[]>("get_stats_history");
+}
+
+export interface RunHistoryEntry {
+  id: string;
+  stages: string;
+  status: string;
+  summary: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string | null;
+}
+
+export async function getRunHistory(limit?: number) {
+  return invoke<RunHistoryEntry[]>("get_run_history", { limit });
+}
