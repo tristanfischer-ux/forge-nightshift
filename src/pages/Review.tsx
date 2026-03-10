@@ -220,6 +220,7 @@ export default function Review() {
   // Reset page and selection when filters change
   useEffect(() => {
     setPage(0);
+    setSelectedIndex(-1);
     setSelectedIds(new Set());
     setCompareList([]);
   }, [filter, drillSubcategory, drillCountry, drillSearch]);
@@ -323,6 +324,8 @@ export default function Review() {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       // Don't intercept when CommandPalette or other overlays are open
       if (document.querySelector("[data-command-palette]")) return;
+      // Don't intercept when confirm dialog is open
+      if (confirmDialog) return;
 
       if (e.key === "ArrowDown" || e.key === "j") {
         e.preventDefault();
@@ -335,12 +338,12 @@ export default function Review() {
         setSelectedIndex(newIndex);
         if (companies[newIndex]) setSelected(companies[newIndex]);
       } else if (e.key === "Enter" || e.key === "a") {
-        if (selected) {
+        if (selected && String(selected.status) === "enriched") {
           e.preventDefault();
           handleApprove(String(selected.id));
         }
       } else if (e.key === "Backspace" || e.key === "x") {
-        if (selected) {
+        if (selected && String(selected.status) === "enriched") {
           e.preventDefault();
           const rejectId = String(selected.id);
           setConfirmDialog({
@@ -360,7 +363,7 @@ export default function Review() {
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [selectedIndex, companies, selected]);
+  }, [selectedIndex, companies, selected, filter, confirmDialog]);
 
   async function loadCounts() {
     try {
@@ -426,9 +429,7 @@ export default function Review() {
       await updateCompanyStatus(id, "approved");
       loadCompanies(filter);
       loadCounts();
-      if (selected && String(selected.id) === id) {
-        setSelected({ ...selected, status: "approved" });
-      }
+      setSelected((prev) => prev && String(prev.id) === id ? { ...prev, status: "approved" } : prev);
     } catch (e) {
       showError(`Failed to approve: ${e}`);
     }
@@ -439,9 +440,7 @@ export default function Review() {
       await updateCompanyStatus(id, "enriched");
       loadCompanies(filter);
       loadCounts();
-      if (selected && String(selected.id) === id) {
-        setSelected({ ...selected, status: "enriched" });
-      }
+      setSelected((prev) => prev && String(prev.id) === id ? { ...prev, status: "enriched" } : prev);
     } catch (e) {
       showError(`Failed to unapprove: ${e}`);
     }
@@ -453,9 +452,7 @@ export default function Review() {
       await pushSingleCompany(id);
       loadCompanies(filter);
       loadCounts();
-      if (selected && String(selected.id) === id) {
-        setSelected({ ...selected, status: "pushed" });
-      }
+      setSelected((prev) => prev && String(prev.id) === id ? { ...prev, status: "pushed" } : prev);
     } catch (e) {
       showError(String(e));
     } finally {
@@ -711,6 +708,7 @@ export default function Review() {
   useEffect(() => {
     setExpandedExcerpts(new Set());
     setDetailTab("overview");
+    setProcessCapOpen(true);
   }, [selectedId]);
 
   return (
@@ -934,7 +932,7 @@ export default function Review() {
                   {enrichProgress.errors} error{enrichProgress.errors !== 1 ? "s" : ""}
                 </span>
               )}
-              {enrichProgress.total != null && (
+              {enrichProgress.total != null && enrichProgress.total > 0 && (
                 <span className="font-medium text-gray-700">
                   {Math.round(((enrichProgress.enriched + enrichProgress.errors) / enrichProgress.total) * 100)}%
                 </span>
@@ -956,11 +954,11 @@ export default function Review() {
           <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
             {enrichProgress.phase === "waiting" ? (
               <div className="bg-forge-400 h-2 rounded-full w-full animate-pulse" />
-            ) : enrichProgress.total != null ? (
+            ) : enrichProgress.total != null && enrichProgress.total > 0 ? (
               <div
                 className="bg-forge-500 h-2 rounded-full transition-all duration-500 ease-out"
                 style={{
-                  width: `${((enrichProgress.enriched + enrichProgress.errors) / enrichProgress.total) * 100}%`,
+                  width: `${Math.min(100, ((enrichProgress.enriched + enrichProgress.errors) / enrichProgress.total) * 100)}%`,
                 }}
               />
             ) : (

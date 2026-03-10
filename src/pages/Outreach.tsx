@@ -35,19 +35,29 @@ export default function Outreach() {
     try {
       const data = await getEmails(undefined, 100);
       setEmails(data);
+      // Sync selected email with fresh data to avoid stale preview
+      setSelectedEmail((prev) => {
+        if (!prev) return null;
+        return data.find((e) => e.id === prev.id) ?? null;
+      });
     } catch (e) {
       showError(`Failed to load emails: ${e}`);
     }
     setLoading(false);
   }
 
+  const [approving, setApproving] = useState(false);
+
   async function handleApproveEmail(id: string) {
+    if (approving) return;
+    setApproving(true);
     try {
       await updateEmailStatus(id, "approved");
       await loadEmails();
     } catch (e) {
       showError(`Failed to approve email: ${e}`);
     }
+    setApproving(false);
   }
 
   async function handleRefreshStatuses() {
@@ -176,7 +186,8 @@ export default function Outreach() {
                   onClick={() =>
                     handleApproveEmail(String(selectedEmail.id))
                   }
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm font-medium text-white transition-colors"
+                  disabled={approving}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
                 >
                   <Send className="w-4 h-4" />
                   Approve & Send

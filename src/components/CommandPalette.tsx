@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import { useError } from "../contexts/ErrorContext";
 import {
   LayoutDashboard,
   Workflow,
@@ -39,6 +40,7 @@ export default function CommandPalette({
   onClose: () => void;
 }) {
   const navigate = useNavigate();
+  const { showError } = useError();
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -57,25 +59,34 @@ export default function CommandPalette({
         try {
           const status = await getPipelineStatus();
           if (!status.running) await startPipeline(["research", "enrich", "deep_enrich_all", "aggregate_techniques", "push_techniques"]);
-        } catch {}
+        } catch (e) { showError(`Failed to start pipeline: ${e}`); }
         onClose();
       },
     },
     {
       id: "pipeline-stop", label: "Stop Pipeline", category: "Pipeline", icon: <Square className="w-4 h-4" />,
-      action: async () => { await stopPipeline().catch(() => {}); onClose(); },
+      action: async () => {
+        try { await stopPipeline(); } catch (e) { showError(`Failed to stop pipeline: ${e}`); }
+        onClose();
+      },
     },
     {
       id: "data-backup", label: "Backup Database", category: "Data", icon: <HardDrive className="w-4 h-4" />,
-      action: async () => { await backupDatabase().catch(() => {}); onClose(); },
+      action: async () => {
+        try { await backupDatabase(); } catch (e) { showError(`Backup failed: ${e}`); }
+        onClose();
+      },
     },
     {
       id: "data-refresh", label: "Refresh Stats", category: "Data", icon: <RefreshCw className="w-4 h-4" />,
-      action: () => { window.location.reload(); onClose(); },
+      action: () => { window.location.reload(); },
     },
     {
       id: "quick-approve", label: "Approve All Enriched", category: "Quick", icon: <CheckCircle className="w-4 h-4" />,
-      action: async () => { await approveAllEnriched().catch(() => {}); onClose(); },
+      action: async () => {
+        try { await approveAllEnriched(); } catch (e) { showError(`Failed to approve all: ${e}`); }
+        onClose();
+      },
     },
     {
       id: "quick-push", label: "Push All Approved", category: "Quick", icon: <Upload className="w-4 h-4" />,
@@ -83,7 +94,7 @@ export default function CommandPalette({
         try {
           const status = await getPipelineStatus();
           if (!status.running) await startPipeline(["push"]);
-        } catch {}
+        } catch (e) { showError(`Failed to push: ${e}`); }
         onClose();
       },
     },

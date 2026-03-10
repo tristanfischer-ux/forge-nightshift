@@ -17,7 +17,9 @@ fn get_companies(
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    db.get_companies(status.as_deref(), limit.unwrap_or(50), offset.unwrap_or(0))
+    let limit = limit.unwrap_or(50).max(0).min(1000);
+    let offset = offset.unwrap_or(0).max(0);
+    db.get_companies(status.as_deref(), limit, offset)
         .map_err(|e| e.to_string())
 }
 
@@ -48,9 +50,14 @@ fn get_emails(
     status: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    db.get_emails(status.as_deref(), limit.unwrap_or(50))
+    let limit = limit.unwrap_or(50).max(0).min(1000);
+    db.get_emails(status.as_deref(), limit)
         .map_err(|e| e.to_string())
 }
+
+const VALID_EMAIL_STATUSES: &[&str] = &[
+    "draft", "approved", "sending", "sent", "opened", "replied", "bounced", "failed",
+];
 
 #[tauri::command]
 fn update_email_status(
@@ -58,6 +65,9 @@ fn update_email_status(
     id: String,
     status: String,
 ) -> Result<(), String> {
+    if !VALID_EMAIL_STATUSES.contains(&status.as_str()) {
+        return Err(format!("Invalid email status: {}", status));
+    }
     db.update_email_status(&id, &status).map_err(|e| e.to_string())
 }
 
@@ -199,13 +209,15 @@ fn get_companies_filtered(
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    let limit = limit.unwrap_or(50).max(0).min(1000);
+    let offset = offset.unwrap_or(0).max(0);
     db.get_companies_filtered(
         status.as_deref(),
         subcategory.as_deref(),
         country.as_deref(),
         search.as_deref(),
-        limit.unwrap_or(50),
-        offset.unwrap_or(0),
+        limit,
+        offset,
     )
     .map_err(|e| e.to_string())
 }
@@ -216,7 +228,8 @@ fn get_run_log(
     job_id: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    db.get_run_log(job_id.as_deref(), limit.unwrap_or(100))
+    let limit = limit.unwrap_or(100).max(0).min(1000);
+    db.get_run_log(job_id.as_deref(), limit)
         .map_err(|e| e.to_string())
 }
 
@@ -744,7 +757,8 @@ fn get_run_history(
     db: tauri::State<'_, Database>,
     limit: Option<i64>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    db.get_run_history(limit.unwrap_or(20)).map_err(|e| e.to_string())
+    let limit = limit.unwrap_or(20).max(0).min(100);
+    db.get_run_history(limit).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

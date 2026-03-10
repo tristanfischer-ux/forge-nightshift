@@ -26,8 +26,9 @@ function StatusIcon({ status }: { status: string }) {
 
 function formatRate(rate: number | null): string {
   if (!rate || rate === 0) return "";
+  if (rate >= 60) return `${Math.round(rate / 60)}/min`;
   if (rate >= 1) return `${Math.round(rate)}/hr`;
-  return `${(rate * 60).toFixed(1)}/min`;
+  return `1 per ${Math.round(60 / rate)}min`;
 }
 
 function formatElapsed(secs: number | null): string {
@@ -73,9 +74,6 @@ export default function FlowNode({ nodeId, label, state, x, y }: FlowNodeProps) 
       {state?.model && (
         <p className="text-[10px] text-gray-400 mb-1 truncate">{state.model}</p>
       )}
-      {!state?.model && nodeId === "push" && (
-        <p className="text-[10px] text-gray-400 mb-1">Supabase</p>
-      )}
       {!state?.model && nodeId === "push_techniques" && (
         <p className="text-[10px] text-gray-400 mb-1">Supabase</p>
       )}
@@ -115,11 +113,14 @@ export default function FlowNode({ nodeId, label, state, x, y }: FlowNodeProps) 
         <p className="text-[10px] text-green-600 mt-1">{formatElapsed(state.elapsed_secs)}</p>
       )}
 
-      {status === "running" && progress && progress.total && progress.total > 0 && progress.current < progress.total && progress.rate && progress.rate > 0 && (
-        <p className="text-[10px] text-gray-400 mt-0.5">
-          ~{formatElapsed(Math.round((progress.total - progress.current) / progress.rate * 3600))} remaining
-        </p>
-      )}
+      {status === "running" && progress && progress.total && progress.total > 0 && progress.current < progress.total && progress.rate && progress.rate > 0.001 && (() => {
+        const eta = Math.round((progress.total - progress.current) / progress.rate * 3600);
+        return !isNaN(eta) && isFinite(eta) && eta > 0 && eta < 864000 ? (
+          <p className="text-[10px] text-gray-400 mt-0.5">
+            ~{formatElapsed(eta)} remaining
+          </p>
+        ) : null;
+      })()}
 
       {status === "running" && state?.concurrency && state.concurrency > 1 && (
         <p className="text-[10px] text-forge-500 mt-0.5">x{state.concurrency} parallel</p>

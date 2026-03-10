@@ -39,6 +39,7 @@ export async function playSound(type: "success" | "error" | "complete") {
       osc.connect(gain);
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + 0.1);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     } else if (type === "error") {
       const osc = ctx.createOscillator();
       osc.type = "sine";
@@ -46,7 +47,9 @@ export async function playSound(type: "success" | "error" | "complete") {
       osc.connect(gain);
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + 0.2);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     } else if (type === "complete") {
+      gain.disconnect(); // Not used for arpeggio — disconnect the outer gain
       const notes = [523, 659, 784];
       notes.forEach((freq, i) => {
         const osc = ctx.createOscillator();
@@ -58,6 +61,7 @@ export async function playSound(type: "success" | "error" | "complete") {
         osc.connect(g);
         osc.start(ctx.currentTime + i * 0.12);
         osc.stop(ctx.currentTime + i * 0.12 + 0.15);
+        osc.onended = () => { osc.disconnect(); g.disconnect(); };
       });
     }
   } catch {

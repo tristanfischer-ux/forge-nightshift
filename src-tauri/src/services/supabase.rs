@@ -2,6 +2,13 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
+/// Validate that a listing ID is a valid UUID to prevent PostgREST query injection.
+fn validate_listing_id(listing_id: &str) -> Result<()> {
+    uuid::Uuid::parse_str(listing_id)
+        .map_err(|_| anyhow::anyhow!("Invalid listing ID format: {}", listing_id))?;
+    Ok(())
+}
+
 pub async fn test_connection(url: &str, service_key: &str) -> Result<bool> {
     let client = reqwest::Client::new();
     let resp = client
@@ -224,6 +231,7 @@ pub async fn push_listing(
         .filter(|s| !s.is_empty());
 
     if let Some(listing_id) = existing_listing_id {
+        validate_listing_id(listing_id)?;
         // UPDATE existing listing via PATCH
         let resp = client
             .patch(format!(
@@ -284,6 +292,7 @@ pub async fn patch_listing_capabilities(
     listing_id: &str,
     capabilities: Value,
 ) -> Result<()> {
+    validate_listing_id(listing_id)?;
     let client = reqwest::Client::new();
     let body = json!({
         "process_capabilities": capabilities,
@@ -400,6 +409,12 @@ pub async fn fetch_low_quality_listings(
     ];
 
     if !countries.is_empty() {
+        // Validate country codes are 2-letter alpha to prevent PostgREST filter injection
+        for c in countries {
+            if c.len() != 2 || !c.chars().all(|ch| ch.is_ascii_alphabetic()) {
+                anyhow::bail!("Invalid country code: {}", c);
+            }
+        }
         let country_list = countries.join(",");
         query_params.push(("country", format!("in.({})", country_list)));
     }
@@ -463,6 +478,7 @@ fn parse_json_field(company: &Value, field: &str) -> Value {
 
 /// Delete a listing from ForgeOS marketplace_listings by ID.
 pub async fn delete_listing(url: &str, service_key: &str, listing_id: &str) -> Result<()> {
+    validate_listing_id(listing_id)?;
     let client = reqwest::Client::new();
     let resp = client
         .delete(format!(

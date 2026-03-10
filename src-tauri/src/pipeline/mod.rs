@@ -54,11 +54,9 @@ pub fn is_enrich_active() -> bool {
 }
 
 pub async fn start_pipeline(app: tauri::AppHandle, stages: Vec<String>) -> Result<String> {
-    if RUNNING.load(Ordering::SeqCst) {
+    if RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         anyhow::bail!("Pipeline is already running");
     }
-
-    RUNNING.store(true, Ordering::SeqCst);
     CANCEL.store(false, Ordering::SeqCst);
     reset_node_states();
 
