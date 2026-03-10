@@ -130,7 +130,7 @@ export default function CommandPalette({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]">
+    <div data-command-palette className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]">
       <div className="fixed inset-0 bg-black/30" onClick={onClose} />
       <div className="relative w-[520px] bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-100">

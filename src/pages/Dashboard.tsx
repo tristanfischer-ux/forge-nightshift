@@ -121,7 +121,9 @@ export default function Dashboard() {
       setLogs(l);
       setAnalytics(a);
       setStatsHistory(h);
-    } catch {}
+    } catch (e) {
+      console.warn("Failed to refresh stats:", e);
+    }
   }
 
   async function handleStartPipeline() {

@@ -16,7 +16,7 @@ export default function StatCard({
   color = "text-gray-500",
   trend,
 }: StatCardProps) {
-  const trendData = trend?.map((v, i) => ({ i, v }));
+  const trendData = trend?.filter((v) => v != null && !isNaN(v)).map((v, i) => ({ i, v }));
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">

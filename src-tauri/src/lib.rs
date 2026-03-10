@@ -320,14 +320,20 @@ async fn import_for_audit(
     let quality_threshold = threshold.unwrap_or(50);
 
     // Use target_countries config to filter audit imports to relevant regions
-    let target_countries: Vec<String> = config
-        .get("target_countries")
-        .and_then(|v| v.as_str())
-        .unwrap_or("DE")
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    // Settings stores as JSON array (e.g. '["DE","FR"]'), fall back to comma-separated
+    let target_countries: Vec<String> = {
+        let raw = config
+            .get("target_countries")
+            .and_then(|v| v.as_str())
+            .unwrap_or("DE");
+        // Try JSON array first
+        serde_json::from_str::<Vec<String>>(raw).unwrap_or_else(|_| {
+            raw.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+    };
 
     let listings = services::supabase::fetch_low_quality_listings(
         supabase_url,

@@ -7,9 +7,9 @@ try {
   if (stored === "false") soundEnabled = false;
 } catch {}
 
-function getCtx(): AudioContext {
+async function getCtx(): Promise<AudioContext> {
   if (!audioCtx) audioCtx = new AudioContext();
-  if (audioCtx.state === "suspended") audioCtx.resume();
+  if (audioCtx.state === "suspended") await audioCtx.resume();
   return audioCtx;
 }
 
@@ -24,10 +24,10 @@ export function setSoundEnabled(enabled: boolean) {
   } catch {}
 }
 
-export function playSound(type: "success" | "error" | "complete") {
+export async function playSound(type: "success" | "error" | "complete") {
   if (!soundEnabled) return;
   try {
-    const ctx = getCtx();
+    const ctx = await getCtx();
     const gain = ctx.createGain();
     gain.connect(ctx.destination);
     gain.gain.value = 0.15;

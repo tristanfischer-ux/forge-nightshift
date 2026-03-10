@@ -14,7 +14,7 @@ export default function FlowConnector({ from, to, active }: FlowConnectorProps) 
       fill="none"
       stroke={active ? "#5c7cfa" : "#d1d5db"}
       strokeWidth={active ? 2 : 1.5}
-      strokeDasharray={active ? "6 4" : "none"}
+      strokeDasharray={active ? "6 4" : undefined}
       className={active ? "animate-dash" : ""}
     />
   );

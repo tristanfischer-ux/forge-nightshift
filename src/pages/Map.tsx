@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
@@ -105,7 +105,7 @@ function ZoomTracker({ onZoomChange }: { onZoomChange: (z: number) => void }) {
   return null;
 }
 
-function FlyToCluster({ cluster }: { cluster: Cluster | null }) {
+function FlyToCluster({ cluster, version }: { cluster: Cluster | null; version: number }) {
   const map = useMap();
   useEffect(() => {
     if (cluster && cluster.companies.length > 1) {
@@ -114,7 +114,7 @@ function FlyToCluster({ cluster }: { cluster: Cluster | null }) {
       );
       map.flyToBounds(bounds, { padding: [50, 50], maxZoom: 14 });
     }
-  }, [cluster, map]);
+  }, [version, map]);
   return null;
 }
 
@@ -166,12 +166,12 @@ export default function MapPage() {
   const [geocoding, setGeocoding] = useState(false);
   const [zoom, setZoom] = useState(6);
   const [flyTarget, setFlyTarget] = useState<Cluster | null>(null);
+  const [flyVersion, setFlyVersion] = useState(0);
   const [filterOpen, setFilterOpen] = useState(false);
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [minRelevance, setMinRelevance] = useState(0);
   const [mapMode, setMapMode] = useState<"markers" | "heatmap">("markers");
   const [showBoundaries, setShowBoundaries] = useState(false);
-  const prevFlyRef = useRef<Cluster | null>(null);
 
   useEffect(() => {
     loadCompanies();
@@ -371,7 +371,7 @@ export default function MapPage() {
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
             <ZoomTracker onZoomChange={handleZoomChange} />
-            <FlyToCluster cluster={flyTarget !== prevFlyRef.current ? flyTarget : null} />
+            <FlyToCluster cluster={flyTarget} version={flyVersion} />
             <BoundaryLayer visible={showBoundaries} />
 
             {mapMode === "heatmap" ? (
@@ -436,8 +436,8 @@ export default function MapPage() {
                   icon={createClusterIcon(cluster.companies.length)}
                   eventHandlers={{
                     click: () => {
-                      prevFlyRef.current = flyTarget;
                       setFlyTarget(cluster);
+                      setFlyVersion((v) => v + 1);
                     },
                   }}
                 >

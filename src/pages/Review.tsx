@@ -199,6 +199,8 @@ export default function Review() {
 
   const { showError, showInfo } = useError();
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pageRef = useRef(page);
+  pageRef.current = page;
 
   // Drill-down filters from URL params
   const drillSubcategory = searchParams.get("subcategory");
@@ -215,11 +217,17 @@ export default function Review() {
     loadCounts();
   }, [filter, drillSubcategory, drillCountry, drillSearch, page]);
 
-  // Reset page and selection when filters change
+  // Reset page and selection when filters change (page change handled separately below)
   useEffect(() => {
     setPage(0);
     setSelectedIds(new Set());
+    setCompareList([]);
   }, [filter, drillSubcategory, drillCountry, drillSearch, searchQuery]);
+
+  // Clear selection when page changes
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [page]);
 
   // Debounced search
   useEffect(() => {
@@ -243,8 +251,8 @@ export default function Review() {
         setEnrichProgress(null);
         setPushProgress(null);
         setCancelling(false);
-        loadCompanies(filter).catch(() => {});
-        loadCounts().catch(() => {});
+        loadCompanies(filter).catch((e) => console.warn("pipeline:status refresh failed:", e));
+        loadCounts().catch((e) => console.warn("pipeline:status counts refresh failed:", e));
       }
     });
     return () => { unlisten.then((fn) => fn()); };
@@ -290,8 +298,8 @@ export default function Review() {
       if (!refreshTimer.current) {
         refreshTimer.current = setTimeout(() => {
           refreshTimer.current = null;
-          loadCompanies(filter).catch(() => {});
-          loadCounts().catch(() => {});
+          loadCompanies(filter).catch((e) => console.warn("progress refresh failed:", e));
+          loadCounts().catch((e) => console.warn("progress counts refresh failed:", e));
         }, 3000);
       }
     });
@@ -303,6 +311,8 @@ export default function Review() {
     function handleKeyDown(e: KeyboardEvent) {
       // Don't intercept when typing in input fields
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      // Don't intercept when CommandPalette or other overlays are open
+      if (document.querySelector("[data-command-palette]")) return;
 
       if (e.key === "ArrowDown" || e.key === "j") {
         e.preventDefault();
@@ -356,11 +366,14 @@ export default function Review() {
         else if (row.status === "error") c.error += Number(row.count) || 0;
       }
       setCounts(c);
-      // Update totalCount based on current filter
-      if (filter === "all") {
-        setTotalCount(c.all);
-      } else {
-        setTotalCount(c[filter] || 0);
+      // Only update totalCount from stats when no drill-down/search is active
+      // (drill-down totalCount is set by loadCompanies from getCompaniesCount)
+      if (!hasDrillDown && !searchQuery.trim()) {
+        if (filter === "all") {
+          setTotalCount(c.all);
+        } else {
+          setTotalCount(c[filter] || 0);
+        }
       }
     } catch (e) {
       showError(`Failed to load counts: ${e}`);
@@ -665,10 +678,11 @@ export default function Review() {
   const [processCapOpen, setProcessCapOpen] = useState(true);
 
   // Reset detail state when selected company changes
+  const selectedId = selected ? String(selected.id) : null;
   useEffect(() => {
     setExpandedExcerpts(new Set());
     setDetailTab("overview");
-  }, [selected ? String(selected.id) : null]);
+  }, [selectedId]);
 
   return (
     <div className="space-y-6">

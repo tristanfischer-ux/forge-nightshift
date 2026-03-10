@@ -68,8 +68,11 @@ export default function Settings() {
     if ((key === "brave_api_key" || key === "resend_api_key" || key === "supabase_service_key") && value && value.length < 8) {
       return "Key seems too short";
     }
-    if (key === "schedule_time" && value && !/^\d{2}:\d{2}$/.test(value)) {
-      return "Must be HH:MM format";
+    if (key === "schedule_time" && value) {
+      const m = value.match(/^(\d{2}):(\d{2})$/);
+      if (!m) return "Must be HH:MM format";
+      const h = parseInt(m[1], 10), min = parseInt(m[2], 10);
+      if (h > 23 || min > 59) return "Must be valid time (00:00-23:59)";
     }
     return "";
   }
@@ -223,9 +226,16 @@ export default function Settings() {
     setSaving(true);
     try {
       for (const [key, value] of Object.entries(importPreview)) {
-        if (typeof value === "string") await setConfig(key, value);
+        // Stringify non-string values (numbers, booleans, arrays) for the config store
+        const strValue = typeof value === "string" ? value : JSON.stringify(value);
+        await setConfig(key, strValue);
       }
-      setConfigState((prev) => ({ ...prev, ...importPreview }));
+      // Normalize all values to strings for local state
+      const normalized: Record<string, string> = {};
+      for (const [key, value] of Object.entries(importPreview)) {
+        normalized[key] = typeof value === "string" ? value : JSON.stringify(value);
+      }
+      setConfigState((prev) => ({ ...prev, ...normalized }));
       setImportPreview(null);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -639,6 +649,8 @@ function ModelSelect({ label, value, onChange, models, placeholder }: {
   label: string; value: string; onChange: (v: string) => void; models: string[]; placeholder: string;
 }) {
   if (models.length > 0) {
+    // Include current value in options even if not in Ollama list (e.g. model was pulled after last test)
+    const options = value && !models.includes(value) ? [value, ...models] : models;
     return (
       <div>
         <label className="block text-xs text-gray-500 mb-1">{label}</label>
@@ -648,7 +660,7 @@ function ModelSelect({ label, value, onChange, models, placeholder }: {
           className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500 focus:border-forge-500 transition-colors"
         >
           <option value="">Select a model...</option>
-          {models.map((m) => <option key={m} value={m}>{m}</option>)}
+          {options.map((m) => <option key={m} value={m}>{m}{!models.includes(m) ? " (not found)" : ""}</option>)}
         </select>
       </div>
     );
