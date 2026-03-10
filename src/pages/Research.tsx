@@ -42,7 +42,7 @@ export default function Research() {
         setEnabledCountries(new Set(parsed));
       }
     } catch (e) {
-      showError(`Failed to load country config: ${e}`);
+      console.error("Failed to load country config:", e);
     }
   }
 
@@ -64,7 +64,7 @@ export default function Research() {
       const data = await getCompanies(undefined, 2000, 0);
       setCompanies(data);
     } catch (e) {
-      showError(`Failed to load companies: ${e}`);
+      console.error("Failed to load companies:", e);
     }
   }
 

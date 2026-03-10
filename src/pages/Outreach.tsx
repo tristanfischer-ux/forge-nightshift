@@ -34,7 +34,7 @@ export default function Outreach() {
       const data = await getEmails(undefined, 100);
       setEmails(data);
     } catch (e) {
-      showError(`Failed to load emails: ${e}`);
+      console.error("Failed to load emails:", e);
     }
   }
 

@@ -50,7 +50,7 @@ export default function Settings() {
       const data = await getConfig();
       setConfigState(data);
     } catch (e) {
-      showError(`Failed to load config: ${e}`);
+      console.error("Failed to load config:", e);
     }
   }
 
