@@ -281,3 +281,38 @@ export interface RunHistoryEntry {
 export async function getRunHistory(limit?: number) {
   return invoke<RunHistoryEntry[]>("get_run_history", { limit });
 }
+
+// Email Templates
+export interface EmailTemplate {
+  id: string;
+  name: string;
+  subject: string;
+  body: string;
+  is_active: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getEmailTemplates() {
+  return invoke<EmailTemplate[]>("get_email_templates");
+}
+
+export async function saveEmailTemplate(params: {
+  id?: string;
+  name: string;
+  subject: string;
+  body: string;
+}) {
+  return invoke<{ id: string; created?: boolean; updated?: boolean }>(
+    "save_email_template",
+    params
+  );
+}
+
+export async function deleteEmailTemplate(id: string) {
+  return invoke("delete_email_template", { id });
+}
+
+export async function getCampaignEligibleCount() {
+  return invoke<number>("get_campaign_eligible_count");
+}

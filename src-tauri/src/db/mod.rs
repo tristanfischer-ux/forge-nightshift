@@ -60,6 +60,7 @@ impl Database {
             include_str!("migrations/013_deep_enrichment.sql"),
             include_str!("migrations/014_technique_knowledge.sql"),
             include_str!("migrations/015_indexes.sql"),
+            include_str!("migrations/016_email_templates.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -1301,6 +1302,148 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
+    }
+
+    // --- Email Templates ---
+
+    pub fn insert_email_template(&self, name: &str, subject: &str, body: &str) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO email_templates (id, name, subject, body) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, name, subject, body],
+        )?;
+        Ok(id)
+    }
+
+    pub fn update_email_template(&self, id: &str, name: &str, subject: &str, body: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE email_templates SET name = ?1, subject = ?2, body = ?3, updated_at = datetime('now') WHERE id = ?4",
+            rusqlite::params![name, subject, body, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_email_template(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM email_templates WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn get_email_templates(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, subject, body, is_active, created_at, updated_at FROM email_templates ORDER BY updated_at DESC"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "subject": row.get::<_, String>(2)?,
+                    "body": row.get::<_, String>(3)?,
+                    "is_active": row.get::<_, i64>(4)?,
+                    "created_at": row.get::<_, String>(5)?,
+                    "updated_at": row.get::<_, String>(6)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    pub fn get_email_template(&self, id: &str) -> Result<Value> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn.query_row(
+            "SELECT id, name, subject, body, is_active, created_at, updated_at FROM email_templates WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "subject": row.get::<_, String>(2)?,
+                    "body": row.get::<_, String>(3)?,
+                    "is_active": row.get::<_, i64>(4)?,
+                    "created_at": row.get::<_, String>(5)?,
+                    "updated_at": row.get::<_, String>(6)?,
+                }))
+            },
+        )?;
+        Ok(row)
+    }
+
+    /// Get companies eligible for template-based outreach campaigns.
+    /// Must be pushed, have contact_email + supabase_listing_id, and not already emailed via template.
+    pub fn get_campaign_eligible_companies(&self, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.name, c.contact_name, c.contact_email, c.country, c.supabase_listing_id \
+             FROM companies c \
+             WHERE c.status = 'pushed' \
+             AND c.contact_email IS NOT NULL AND c.contact_email != '' \
+             AND c.supabase_listing_id IS NOT NULL AND c.supabase_listing_id != '' \
+             AND c.id NOT IN ( \
+                 SELECT e.company_id FROM emails e \
+                 WHERE e.template_id IS NOT NULL \
+                 AND e.status NOT IN ('failed', 'bounced') \
+             ) \
+             ORDER BY c.updated_at DESC \
+             LIMIT ?1"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "contact_name": row.get::<_, Option<String>>(2)?,
+                    "contact_email": row.get::<_, String>(3)?,
+                    "country": row.get::<_, Option<String>>(4)?,
+                    "supabase_listing_id": row.get::<_, String>(5)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    pub fn get_campaign_eligible_count(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM companies c \
+             WHERE c.status = 'pushed' \
+             AND c.contact_email IS NOT NULL AND c.contact_email != '' \
+             AND c.supabase_listing_id IS NOT NULL AND c.supabase_listing_id != '' \
+             AND c.id NOT IN ( \
+                 SELECT e.company_id FROM emails e \
+                 WHERE e.template_id IS NOT NULL \
+                 AND e.status NOT IN ('failed', 'bounced') \
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Insert an email created from a template, with claim token for audit trail.
+    pub fn insert_template_email(
+        &self,
+        company_id: &str,
+        template_id: &str,
+        subject: &str,
+        body: &str,
+        to_email: &str,
+        from_email: &str,
+        claim_token: &str,
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO emails (id, company_id, subject, body, to_email, from_email, language, status, template_id, claim_token) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'en', 'draft', ?7, ?8)",
+            rusqlite::params![id, company_id, subject, body, to_email, from_email, template_id, claim_token],
+        )?;
+        Ok(id)
     }
 }
 

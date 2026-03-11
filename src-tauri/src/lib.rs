@@ -777,6 +777,48 @@ fn get_run_history(
     db.get_run_history(limit).map_err(|e| e.to_string())
 }
 
+// --- Email Templates ---
+
+#[tauri::command]
+fn get_email_templates(db: tauri::State<'_, Database>) -> Result<Vec<serde_json::Value>, String> {
+    db.get_email_templates().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_email_template(
+    db: tauri::State<'_, Database>,
+    id: Option<String>,
+    name: String,
+    subject: String,
+    body: String,
+) -> Result<serde_json::Value, String> {
+    if name.trim().is_empty() || subject.trim().is_empty() || body.trim().is_empty() {
+        return Err("Name, subject, and body are required".to_string());
+    }
+    match id {
+        Some(existing_id) if !existing_id.is_empty() => {
+            db.update_email_template(&existing_id, &name, &subject, &body)
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "id": existing_id, "updated": true }))
+        }
+        _ => {
+            let new_id = db.insert_email_template(&name, &subject, &body)
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "id": new_id, "created": true }))
+        }
+    }
+}
+
+#[tauri::command]
+fn delete_email_template(db: tauri::State<'_, Database>, id: String) -> Result<(), String> {
+    db.delete_email_template(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_campaign_eligible_count(db: tauri::State<'_, Database>) -> Result<i64, String> {
+    db.get_campaign_eligible_count().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -861,6 +903,10 @@ pub fn run() {
             get_stats_history,
             get_run_history,
             get_pipeline_nodes,
+            get_email_templates,
+            save_email_template,
+            delete_email_template,
+            get_campaign_eligible_count,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
