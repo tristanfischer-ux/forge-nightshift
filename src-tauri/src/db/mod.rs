@@ -1375,10 +1375,16 @@ impl Database {
 
     /// Get companies eligible for template-based outreach campaigns.
     /// Must be pushed, have contact_email + supabase_listing_id, and not already emailed via template.
+    /// Returns all fields needed for LLM personalisation prompt.
     pub fn get_campaign_eligible_companies(&self, limit: i64) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT c.id, c.name, c.contact_name, c.contact_email, c.country, c.supabase_listing_id \
+            "SELECT c.id, c.name, c.contact_name, c.contact_email, c.contact_title, \
+                    c.country, c.city, c.subcategory, c.description, \
+                    c.specialties, c.certifications, c.industries, \
+                    c.company_size, c.year_founded, \
+                    c.attributes_json, c.process_capabilities_json, \
+                    c.supabase_listing_id \
              FROM companies c \
              WHERE c.status = 'pushed' \
              AND c.contact_email IS NOT NULL AND c.contact_email != '' \
@@ -1398,8 +1404,19 @@ impl Database {
                     "name": row.get::<_, String>(1)?,
                     "contact_name": row.get::<_, Option<String>>(2)?,
                     "contact_email": row.get::<_, String>(3)?,
-                    "country": row.get::<_, Option<String>>(4)?,
-                    "supabase_listing_id": row.get::<_, String>(5)?,
+                    "contact_title": row.get::<_, Option<String>>(4)?,
+                    "country": row.get::<_, Option<String>>(5)?,
+                    "city": row.get::<_, Option<String>>(6)?,
+                    "subcategory": row.get::<_, Option<String>>(7)?,
+                    "description": row.get::<_, Option<String>>(8)?,
+                    "specialties": row.get::<_, Option<String>>(9)?,
+                    "certifications": row.get::<_, Option<String>>(10)?,
+                    "industries": row.get::<_, Option<String>>(11)?,
+                    "company_size": row.get::<_, Option<String>>(12)?,
+                    "year_founded": row.get::<_, Option<i64>>(13)?,
+                    "attributes_json": row.get::<_, Option<String>>(14)?,
+                    "process_capabilities_json": row.get::<_, Option<String>>(15)?,
+                    "supabase_listing_id": row.get::<_, String>(16)?,
                 }))
             })?
             .filter_map(|r| r.ok())

@@ -552,7 +552,7 @@ function TemplatesTab({ showError }: { showError: (msg: string) => void }) {
                   ) : (
                     <Play className="w-3 h-3" />
                   )}
-                  Send Campaign
+                  Generate Drafts
                 </button>
               )}
             </div>
@@ -562,18 +562,18 @@ function TemplatesTab({ showError }: { showError: (msg: string) => void }) {
           {showConfirm && (
             <div className="mx-4 mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
               <p className="text-sm text-amber-800 font-medium">
-                Send campaign to {eligibleCount ?? "?"} eligible companies?
+                Generate personalised drafts for {eligibleCount ?? "?"} companies?
               </p>
               <p className="text-xs text-amber-600 mt-1">
-                This will create claim tokens and send emails via Resend. Daily
-                limit applies.
+                Ollama will personalise each email using company data. You'll
+                review each draft before sending.
               </p>
               <div className="flex gap-2 mt-3">
                 <button
                   onClick={handleSendCampaign}
                   className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-xs font-medium text-white transition-colors"
                 >
-                  Confirm & Send
+                  Generate Drafts
                 </button>
                 <button
                   onClick={() => setShowConfirm(false)}
