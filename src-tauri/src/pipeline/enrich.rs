@@ -343,6 +343,7 @@ Return ONLY valid JSON. /no_think"#,
                                     .get("ch_company_number")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("?");
+                                let _ = db.mark_ch_verified(&id, ch_number);
                                 let _ = db.log_activity(
                                     &job_id,
                                     "enrich",

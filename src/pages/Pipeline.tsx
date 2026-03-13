@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { Play, Square, RefreshCw, Search, Activity, Zap, Clock, ChevronDown, ChevronRight } from "lucide-react";
+import { Play, Square, RefreshCw, Search, Activity, Zap, Clock, ChevronDown, ChevronRight, Building2 } from "lucide-react";
 import FlowChart from "../components/FlowChart";
 import {
   startPipeline,
@@ -48,6 +48,12 @@ const PRESETS: { label: string; stages: string[]; icon: React.ReactNode; descrip
     stages: ["research", "enrich", "push"],
     icon: <Search className="w-3.5 h-3.5" />,
     description: "Find + enrich + deep enrich + push",
+  },
+  {
+    label: "CH Verify",
+    stages: ["companies_house"],
+    icon: <Building2 className="w-3.5 h-3.5" />,
+    description: "Cross-check all GB companies against Companies House",
   },
 ];
 

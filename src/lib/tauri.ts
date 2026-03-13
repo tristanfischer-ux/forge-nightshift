@@ -316,3 +316,19 @@ export async function deleteEmailTemplate(id: string) {
 export async function getCampaignEligibleCount() {
   return invoke<number>("get_campaign_eligible_count");
 }
+
+export async function deleteEmails(ids: string[]) {
+  return invoke<number>("delete_emails", { ids });
+}
+
+// Send all approved emails via Resend
+export async function sendApprovedEmails() {
+  return invoke<{ sent: number; failed: number; total: number }>(
+    "send_approved_emails"
+  );
+}
+
+// Reset failed emails back to "approved" for retry
+export async function retryFailedEmails() {
+  return invoke<number>("retry_failed_emails");
+}

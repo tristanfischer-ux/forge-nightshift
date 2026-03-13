@@ -303,8 +303,8 @@ async fn refresh_email_statuses(
             }
         }
 
-        // Rate limit between Resend API calls
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Rate limit between Resend API calls (600ms = ~1.6/sec, safe for Resend free tier 2/sec)
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     }
 
     Ok(updated)
@@ -534,6 +534,86 @@ async fn push_single_company(
     Ok(serde_json::json!({ "pushed": true, "name": name }))
 }
 
+#[tauri::command]
+async fn send_approved_emails(
+    db: tauri::State<'_, Database>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    let config = db.get_all_config().map_err(|e| e.to_string())?;
+    let api_key = config
+        .get("resend_api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if api_key.is_empty() {
+        return Err("Resend API key not configured".to_string());
+    }
+
+    let emails = db.get_approved_emails().map_err(|e| e.to_string())?;
+    let total = emails.len() as i64;
+
+    if total == 0 {
+        return Ok(serde_json::json!({ "sent": 0, "failed": 0, "total": 0 }));
+    }
+
+    let mut sent = 0i64;
+    let mut failed = 0i64;
+
+    for (i, email) in emails.iter().enumerate() {
+        let id = email.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let to = email.get("to_email").and_then(|v| v.as_str()).unwrap_or("");
+        let from = email.get("from_email").and_then(|v| v.as_str()).unwrap_or("");
+        let subject = email.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+        let body = email.get("body").and_then(|v| v.as_str()).unwrap_or("");
+
+        if to.is_empty() || from.is_empty() {
+            failed += 1;
+            continue;
+        }
+
+        // Set status to sending for visual feedback
+        let _ = db.update_email_status(id, "sending");
+        let _ = app.emit("send_approved:progress", serde_json::json!({
+            "current": i + 1,
+            "total": total,
+            "to": to,
+        }));
+
+        match services::resend::send_email(api_key, from, to, subject, body).await {
+            Ok(resend_id) => {
+                let _ = db.update_email_sent(id, &resend_id);
+                sent += 1;
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                log::error!("Failed to send email {}: {}", id, err_msg);
+                let _ = db.update_email_status(id, "failed");
+                let _ = db.set_email_error(id, &err_msg);
+                failed += 1;
+            }
+        }
+
+        // Rate limit between Resend API calls (600ms = ~1.6/sec, safe for Resend free tier 2/sec)
+        if i + 1 < emails.len() {
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        }
+    }
+
+    Ok(serde_json::json!({
+        "sent": sent,
+        "failed": failed,
+        "total": total,
+    }))
+}
+
+/// Reset all failed emails back to "approved" so they can be re-sent.
+#[tauri::command]
+async fn retry_failed_emails(
+    db: tauri::State<'_, Database>,
+) -> Result<usize, String> {
+    db.retry_failed_emails().map_err(|e| e.to_string())
+}
+
 /// Remove a company from the ForgeOS marketplace and delete it locally.
 /// Requires the company to have a supabase_listing_id (i.e. it was imported via audit or pushed).
 #[tauri::command]
@@ -741,6 +821,17 @@ async fn remove_all_from_marketplace(
 }
 
 #[tauri::command]
+fn delete_emails(
+    db: tauri::State<'_, Database>,
+    ids: Vec<String>,
+) -> Result<i64, String> {
+    if ids.len() > 500 {
+        return Err("Too many IDs (max 500)".to_string());
+    }
+    db.delete_emails(&ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_companies_count(
     db: tauri::State<'_, Database>,
     status: Option<String>,
@@ -891,6 +982,8 @@ pub fn run() {
             get_analytics,
             get_companies_filtered,
             refresh_email_statuses,
+            send_approved_emails,
+            retry_failed_emails,
             backup_database,
             import_for_audit,
             push_single_company,
@@ -907,6 +1000,7 @@ pub fn run() {
             save_email_template,
             delete_email_template,
             get_campaign_eligible_count,
+            delete_emails,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

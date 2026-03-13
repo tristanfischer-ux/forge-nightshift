@@ -6,6 +6,7 @@ mod report;
 mod deep_enrich;
 mod technique_aggregate;
 mod template_outreach;
+mod companies_house;
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -343,6 +344,7 @@ async fn run_single_stage(
             let sector = &s["deep_enrich:".len()..];
             deep_enrich::run_sector(app, job_id, config, sector).await
         }
+        "companies_house" => companies_house::run(app, job_id, config).await,
         s if s.starts_with("template_outreach:") => {
             let template_id = &s["template_outreach:".len()..];
             template_outreach::run(app, job_id, config, template_id).await
@@ -486,11 +488,12 @@ pub async fn start_scheduler(app: tauri::AppHandle) {
             last_run_date = current_date;
             log::info!("Scheduler triggered at {}", current_time);
 
+            // DECISION: old outreach stage removed — it auto-sends without review.
+            // Use template_outreach (draft-only) via the Outreach UI instead.
             let stages = vec![
                 "research".to_string(),
                 "enrich".to_string(),
                 "push".to_string(),
-                "outreach".to_string(),
                 "report".to_string(),
             ];
 

@@ -61,6 +61,8 @@ impl Database {
             include_str!("migrations/014_technique_knowledge.sql"),
             include_str!("migrations/015_indexes.sql"),
             include_str!("migrations/016_email_templates.sql"),
+            include_str!("migrations/017_companies_house_verified.sql"),
+            include_str!("migrations/018_email_last_error.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -273,6 +275,71 @@ impl Database {
         Ok(())
     }
 
+    /// Get GB companies needing Companies House verification (never checked or stale >90 days).
+    /// Excludes 'discovered' and 'error' statuses.
+    pub fn get_gb_companies_needing_ch_check(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, country, attributes_json, financial_health \
+             FROM companies \
+             WHERE (country = 'GB' OR country = 'UK') \
+               AND status NOT IN ('discovered', 'error') \
+               AND (ch_verified_at IS NULL OR ch_verified_at < datetime('now', '-90 days')) \
+             ORDER BY ch_verified_at ASC NULLS FIRST"
+        )?;
+
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "country": row.get::<_, String>(2)?,
+                    "attributes_json": row.get::<_, Option<String>>(3)?,
+                    "financial_health": row.get::<_, Option<String>>(4)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(rows)
+    }
+
+    /// Full CH verification update: merges attributes, sets ch_verified_at + ch_company_number + financial_health.
+    pub fn update_ch_verification(
+        &self,
+        id: &str,
+        company_number: &str,
+        attributes_json: &str,
+        financial_health: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET \
+             attributes_json = ?1, \
+             financial_health = ?2, \
+             ch_verified_at = datetime('now'), \
+             ch_company_number = ?3, \
+             updated_at = datetime('now') \
+             WHERE id = ?4",
+            rusqlite::params![attributes_json, financial_health, company_number, id],
+        )?;
+        Ok(())
+    }
+
+    /// Lightweight: just mark ch_verified_at + ch_company_number (used by enrich stage).
+    pub fn mark_ch_verified(&self, id: &str, company_number: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET \
+             ch_verified_at = datetime('now'), \
+             ch_company_number = ?1, \
+             updated_at = datetime('now') \
+             WHERE id = ?2",
+            rusqlite::params![company_number, id],
+        )?;
+        Ok(())
+    }
+
     pub fn reset_error_companies(&self) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -343,6 +410,25 @@ impl Database {
             [status, id],
         )?;
         Ok(())
+    }
+
+    /// Store the error message on a failed email for debugging.
+    pub fn set_email_error(&self, id: &str, error: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE emails SET last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
+            [error, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn retry_failed_emails(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count = conn.execute(
+            "UPDATE emails SET status = 'approved', last_error = NULL, updated_at = datetime('now') WHERE status = 'failed'",
+            [],
+        )?;
+        Ok(count)
     }
 
     pub fn get_all_config(&self) -> Result<Value> {
@@ -557,6 +643,27 @@ impl Database {
             [resend_id, id],
         )?;
         Ok(())
+    }
+
+    /// Get all approved emails ready for sending.
+    pub fn get_approved_emails(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, to_email, from_email, subject, body FROM emails WHERE status = 'approved' ORDER BY created_at ASC"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "to_email": row.get::<_, String>(1)?,
+                    "from_email": row.get::<_, String>(2)?,
+                    "subject": row.get::<_, String>(3)?,
+                    "body": row.get::<_, String>(4)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
     }
 
     /// Update email tracking fields from Resend polling.
@@ -843,6 +950,25 @@ impl Database {
         );
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         params.push(Box::new(status.to_string()));
+        for id in ids {
+            params.push(Box::new(id.clone()));
+        }
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        conn.execute(&query, params_refs.as_slice())?;
+        Ok(conn.changes() as i64)
+    }
+
+    pub fn delete_emails(&self, ids: &[String]) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{}", i)).collect();
+        let query = format!(
+            "DELETE FROM emails WHERE id IN ({})",
+            placeholders.join(",")
+        );
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         for id in ids {
             params.push(Box::new(id.clone()));
         }

@@ -232,7 +232,7 @@ fn build_personalisation_prompt(company: &Value, claim_url: &str) -> String {
         .unwrap_or_default();
 
     format!(
-r#"You are writing a personalised outreach email for Fractional Forge, a UK manufacturing marketplace. You will receive company data and an approved email structure. Your job is to write a natural, personalised version of the email using the company's real data.
+r#"You are ghostwriting a personal outreach email from Tristan Fischer, founder of Fractional Forge — a UK marketplace connecting hardware startups with British manufacturers. This email must read like a real person wrote it specifically for this company, not like a mail-merged template.
 
 COMPANY DATA:
 - Company name: {company_name}
@@ -250,22 +250,58 @@ COMPANY DATA:
 - Founded: {founded}
 - Claim URL: {claim_url}
 
-Write an email following this exact structure. Do not add, remove, or reorder any sections.
+VOICE AND TONE:
+- Write as Tristan — a British founder in his 30s who genuinely cares about UK manufacturing. Not a salesperson.
+- Conversational but respectful. Like emailing someone you've researched but haven't met.
+- Short sentences. No filler. Every sentence must earn its place.
+- Never say "I noticed", "I stumbled across", or "I'd love to". These are spam tells.
+- Never use the phrase "various industries" or "wide range of".
+- Never use marketing buzzwords: "leverage", "synergy", "cutting-edge", "state-of-the-art", "solutions provider".
+- Do not flatter or be sycophantic. Treat them as a peer, not a prospect.
+
+Write the email following this exact structure. Do not add, remove, or reorder any sections.
 
 SECTION 1 — SUBJECT LINE
-Write: "[Company name] is already on Fractional Forge — claim your listing"
+Write exactly: "{company_name} is already on Fractional Forge — claim your listing"
 
-SECTION 2 — GREETING AND INTRO
-Write: "Hi [first name]," then a fixed line: "I'm Tristan, and I'm building Fractional Forge — a marketplace that makes it easier for UK startups to find and work with British manufacturers."
+SECTION 2 — GREETING AND INTRO (fixed)
+If contact name is available, write: "Hi [first name only],"
+If contact name is empty or null, write: "Hi there,"
+Then write exactly: "I'm Tristan, and I'm building Fractional Forge — a marketplace that makes it easier for UK startups to find and work with British manufacturers."
 
-SECTION 3 — HOW WE FOUND THEM (personalise this)
-Write 2 sentences. First sentence: say you came across them while researching [their subcategory] companies in [their city/region]. Second sentence: mention that you've already created a listing covering their specific capabilities — pick 2-3 of their most notable specialties or certifications from the data. End with: "You can claim it and check everything's accurate — it takes about two minutes."
+SECTION 3 — HOW WE FOUND THEM (personalise — 2-3 sentences)
+First sentence: say you came across them while researching [their subcategory] in [their city/region]. Use their actual subcategory wording — don't paraphrase it into something generic.
+Second sentence: reference 2-3 of their MOST DISTINCTIVE capabilities from the data. Choose things that make them different from a generic shop — specific processes, certifications (e.g. AS9100, ISO 13485), unusual materials, or specialist equipment. Don't just list their subcategory back at them.
+End with exactly: "You can claim it and check everything's accurate — it takes about two minutes."
 
-SECTION 4 — WHY STARTUPS NEED THEM (personalise this)
-Write 2-3 sentences. Describe a concrete, realistic scenario where a hardware startup would need this company's services. Be specific — reference the actual type of work based on their specialties and materials. For example, if they do injection moulding, mention a startup needing a first batch of moulded enclosures. If they do heat treatment, mention a startup needing stress relieving on titanium parts. Do not be generic. Do not say "various industries."
+SECTION 4 — WHY STARTUPS NEED THEM (personalise — 2-3 sentences)
+Describe ONE specific, realistic scenario where a hardware startup would need this exact company. Rules:
+- The scenario MUST be unique to this company's actual capabilities and materials. Never reuse scenarios across emails.
+- Name a specific product a startup might be building (e.g. "a wearable insulin pump", "a compact wind turbine", "an autonomous warehouse robot", "a handheld spectrometer"). Do NOT default to "automated packaging line" or "production line".
+- Reference specific processes from their data (e.g. "5-axis CNC machining of titanium housings" not just "machining services").
+- If they have specific materials listed, mention those materials in the scenario.
+- If they serve specific industries (aerospace, medical, automotive), set the scenario in that industry.
+- The scenario should make the reader think "yes, that's exactly the kind of job we do."
 
-SECTION 5 — FRACTIONAL EXECUTIVE ANGLE (personalise this)
-Write 2 sentences. Suggest what kind of specialist advisory work someone on their team could offer. Base this on their subcategory and specialties — for example, "mould design and material selection" or "DFM for sheet metal" or "alloy selection for casting applications." Frame it as monetising expertise they already have, generating additional revenue.
+BAD examples (never write these):
+- "A startup developing a new automated packaging line..."
+- "A hardware company that needs reliable components..."
+- "A startup building a new product line that requires precision parts..."
+
+GOOD examples (this level of specificity):
+- "A medtech startup prototyping a titanium spinal implant cage needs a shop that can hold ±0.01mm tolerances on Grade 5 Ti — and has the ISO 13485 paperwork to prove it."
+- "A robotics team in Bristol needs 50 aluminium chassis plates waterjet-cut and bent to spec, with anodising done in-house rather than farmed out."
+- "A cleantech founder is designing a heat exchanger that needs TIG-welded Inconel tubes — the kind of job most general fabricators would turn down."
+
+SECTION 5 — FRACTIONAL EXECUTIVE ANGLE (personalise — 2 sentences)
+Suggest a specific kind of advisory work based on their expertise. Rules:
+- Be concrete: "helping founders choose the right alloy for saltwater exposure" not "material selection advisory".
+- Frame it around a decision a startup founder would struggle with, not a generic service.
+- Connect it to their actual specialties — if they do heat treatment, suggest advisory on heat treatment specifications. If they do injection moulding, suggest advisory on mould design and gate placement.
+- End by framing it as additional revenue from knowledge they already have.
+
+BAD: "Someone on your team could offer specialist advisory on manufacturing processes."
+GOOD: "Your team's experience with lost-wax casting could help founders spec the right investment casting process before they commit to tooling — the kind of advice that saves months."
 
 SECTION 6 — FIRST MOVER ADVANTAGE (fixed)
 Write exactly: "We're in early launch, so there's a genuine first-mover advantage: companies that join now will be the first recommendation in their category for the next six months. After that, ranking shifts to user reviews and quality."
@@ -274,7 +310,9 @@ SECTION 7 — FREE TO CLAIM (fixed)
 Write exactly: "Claiming your listing is completely free. No cost unless a transaction happens through the platform."
 
 SECTION 8 — CLAIM LINK (fixed)
-Write exactly: "Claim your listing here: {claim_url}"
+Write exactly: "Claim your listing here: {claim_url}
+
+(Use this email address when you create your account — the claim link is tied to it.)"
 
 SECTION 9 — SIGN OFF (fixed)
 Write exactly:
@@ -285,15 +323,17 @@ Tristan Fischer
 Founder, Fractional Forge
 fractionalforge.app"
 
-RULES:
-1. Use natural, conversational British English. Not salesy, not corporate.
-2. Only reference capabilities, certifications, materials, and equipment that appear in the company data. Never invent or assume.
-3. If a data field is empty, skip it — do not mention it or draw attention to its absence.
-4. Keep the total email under 250 words (excluding subject and sign-off).
-5. No emojis, no bullet points, no bold text, no HTML formatting.
-6. Output the complete email as plain text. First line must be the subject prefixed with "Subject: ".
-7. If the contact name is empty or null, use "Hi there," as the greeting.
-8. Do not include any preamble, explanation, or commentary — just the email."#,
+ABSOLUTE RULES — violating any of these means the email is rejected:
+1. Only reference capabilities, certifications, materials, and equipment that appear in the company data. NEVER invent, assume, or embellish.
+2. If a data field is empty, skip it silently. Never say "your capabilities" or "your services" as a vague substitute.
+3. Keep the total email under 250 words (excluding subject and sign-off).
+4. No emojis, no bullet points, no bold text, no HTML formatting.
+5. Output the complete email as plain text. First line must be the subject prefixed with "Subject: ".
+6. Do not include any preamble, explanation, or commentary — just the email.
+7. The startup scenario in Section 4 must name a specific product. "A startup that needs parts" is not specific enough.
+8. Every personalised section must reference at least one detail that could ONLY apply to this company — not to any other manufacturer in the UK.
+9. Do not repeat any phrase or sentence pattern from the fixed sections in your personalised sections.
+10. The sign-off MUST include "fractionalforge.app" on its own line. Do not omit it."#,
         company_name = company_name,
         contact_name = contact_name,
         contact_title = contact_title,
