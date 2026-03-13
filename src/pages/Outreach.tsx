@@ -118,6 +118,18 @@ function EmailQueueTab({ showError }: { showError: (msg: string) => void }) {
   useEffect(() => {
     loadEmails();
     loadTemplates();
+
+    // Auto-refresh statuses every 60s
+    const interval = setInterval(async () => {
+      try {
+        await refreshEmailStatuses();
+        const data = await getEmails(undefined, 100);
+        setEmails(data);
+      } catch {
+        // silent — don't disrupt UI on background poll failure
+      }
+    }, 60_000);
+    return () => clearInterval(interval);
   }, []);
 
   async function loadTemplates() {
