@@ -85,6 +85,7 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "supabase_url", "supabase_service_key", "foundry_id",
     "companies_house_api_key", "sound_enabled",
     "auto_outreach_enabled", "auto_outreach_template_id", "outreach_batch_size",
+    "send_window_start", "send_window_end",
 ];
 
 #[tauri::command]
