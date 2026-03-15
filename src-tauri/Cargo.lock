@@ -1118,7 +1118,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "forge-nightshift"
-version = "0.20.1"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1126,6 +1126,7 @@ dependencies = [
  "env_logger",
  "futures",
  "log",
+ "rand 0.8.5",
  "regex",
  "reqwest 0.12.28",
  "rusqlite",

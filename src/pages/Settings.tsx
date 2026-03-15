@@ -18,6 +18,8 @@ import {
   testResendConnection,
   backupDatabase,
   reenrichAll,
+  getEmailTemplates,
+  EmailTemplate,
 } from "../lib/tauri";
 import { useError } from "../contexts/ErrorContext";
 
@@ -44,9 +46,11 @@ export default function Settings() {
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [importPreview, setImportPreview] = useState<Record<string, string> | null>(null);
   const [excludeSecrets, setExcludeSecrets] = useState(true);
+  const [templates, setTemplates] = useState<EmailTemplate[]>([]);
 
   useEffect(() => {
     loadConfig();
+    getEmailTemplates().then(setTemplates).catch(() => {});
   }, []);
 
   async function loadConfig() {
@@ -552,6 +556,68 @@ export default function Settings() {
               Resets enriched, enriching, and error companies back to discovered so they go through the new website-scraping enrichment pipeline.
             </p>
           )}
+        </div>
+      </section>
+
+      {/* Autopilot Outreach */}
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+        <h2 className="text-sm font-semibold text-gray-900">Autopilot Outreach</h2>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={config.auto_outreach_enabled === "true"}
+              onChange={(e) =>
+                updateField("auto_outreach_enabled", e.target.checked ? "true" : "false")
+              }
+              className="accent-forge-600 w-4 h-4"
+            />
+            <span className="text-sm text-gray-700">Enable autopilot</span>
+          </label>
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Template</label>
+          <select
+            value={config.auto_outreach_template_id || ""}
+            onChange={(e) => updateField("auto_outreach_template_id", e.target.value)}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
+          >
+            <option value="">Select a template...</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <Input
+          label="Batch Size (emails per hour, 1-20)"
+          value={config.outreach_batch_size || ""}
+          onChange={(v) => updateField("outreach_batch_size", v)}
+          placeholder="5"
+          type="number"
+          min={1}
+          max={20}
+        />
+        <div className="bg-gray-50 border border-gray-100 rounded-lg p-3 space-y-1.5">
+          <p className="text-xs font-medium text-gray-600">How it works across multiple days:</p>
+          <ol className="text-xs text-gray-400 list-decimal list-inside space-y-1">
+            <li>
+              At your scheduled time each day, the pipeline runs (research → enrich → push),
+              then auto-generates personalised drafts for all eligible companies and auto-approves them.
+            </li>
+            <li>
+              Starting the next hour, the batch sender drip-sends {config.outreach_batch_size || "5"} emails/hour
+              until the daily limit ({config.daily_email_limit || "30"}) is reached, then stops for the day.
+            </li>
+            <li>
+              Any unsent approved emails carry over to the next day — they get sent first (FIFO),
+              before new drafts from that day's pipeline run.
+            </li>
+            <li>
+              The daily sent count resets at midnight, so the cycle repeats automatically each day.
+            </li>
+          </ol>
         </div>
       </section>
 

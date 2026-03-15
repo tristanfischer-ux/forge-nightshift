@@ -13,8 +13,21 @@ import {
   Square,
   ChevronDown,
   ChevronRight,
+  ChevronLeft,
   CheckSquare,
   X,
+  Search,
+  ExternalLink,
+  BarChart3,
+  Zap,
+  TrendingUp,
+  TrendingDown,
+  Brain,
+  Clock,
+  AlertCircle,
+  CheckCircle2,
+  XCircle,
+  Info,
 } from "lucide-react";
 import DOMPurify from "dompurify";
 import {
@@ -30,26 +43,48 @@ import {
   deleteEmails,
   sendApprovedEmails,
   retryFailedEmails,
+  getOutreachCompanies,
+  getOutreachStats,
+  getCompanyEmailHistory,
+  generateDraftsForCompanies,
+  syncClaimStatuses,
+  getConfig,
+  getDailyOutreachStats,
+  getExperimentHistory,
+  getOutreachInsights,
+  getAutopilotStatus,
   EmailTemplate,
+  OutreachCompany,
+  OutreachStats,
+  CompanyEmail,
+  DailyOutreachStat,
+  ABExperiment,
+  OutreachInsight,
+  AutopilotStatus,
+  getOutreachReadiness,
+  OutreachReadiness,
 } from "../lib/tauri";
 import { useError } from "../contexts/ErrorContext";
 
 const STATUS_COLORS: Record<string, string> = {
+  not_contacted: "bg-gray-50 text-gray-400",
   draft: "bg-gray-100 text-gray-600",
   approved: "bg-blue-100 text-blue-700",
   sending: "bg-yellow-100 text-yellow-700",
   sent: "bg-green-100 text-green-700",
   opened: "bg-purple-100 text-purple-700",
+  clicked: "bg-indigo-100 text-indigo-700",
+  claimed: "bg-teal-100 text-teal-700",
   replied: "bg-emerald-100 text-emerald-700",
   bounced: "bg-red-100 text-red-700",
   failed: "bg-red-100 text-red-700",
 };
 
-type Tab = "emails" | "templates";
+type Tab = "campaigns" | "emails" | "templates" | "performance";
 
 export default function Outreach() {
   const { showError } = useError();
-  const [tab, setTab] = useState<Tab>("emails");
+  const [tab, setTab] = useState<Tab>("campaigns");
 
   return (
     <div className="space-y-6">
@@ -61,6 +96,17 @@ export default function Outreach() {
           </p>
         </div>
         <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
+          <button
+            onClick={() => setTab("campaigns")}
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              tab === "campaigns"
+                ? "bg-white text-gray-900 shadow-sm"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            <Send className="w-3 h-3 inline mr-1" />
+            Campaigns
+          </button>
           <button
             onClick={() => setTab("emails")}
             className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
@@ -83,13 +129,856 @@ export default function Outreach() {
             <FileText className="w-3 h-3 inline mr-1" />
             Templates
           </button>
+          <button
+            onClick={() => setTab("performance")}
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              tab === "performance"
+                ? "bg-white text-gray-900 shadow-sm"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            <BarChart3 className="w-3 h-3 inline mr-1" />
+            Performance
+          </button>
         </div>
       </div>
 
-      {tab === "emails" ? (
+      {tab === "campaigns" ? (
+        <CampaignsTab showError={showError} />
+      ) : tab === "emails" ? (
         <EmailQueueTab showError={showError} />
+      ) : tab === "performance" ? (
+        <PerformanceTab showError={showError} />
       ) : (
         <TemplatesTab showError={showError} />
+      )}
+    </div>
+  );
+}
+
+// --- Email History Item (expandable) ---
+
+function EmailHistoryItem({ email }: { email: CompanyEmail }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="border border-gray-100 rounded-md overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full text-left p-2 hover:bg-gray-50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${STATUS_COLORS[email.status] || ""}`}>
+            {email.status}
+          </span>
+          {email.ab_variant && (
+            <span className="text-[10px] px-1 py-0.5 bg-gray-100 rounded text-gray-500">
+              Variant {email.ab_variant}
+            </span>
+          )}
+          {email.claim_status && email.claim_status !== "pending" && (
+            <span className="text-[10px] px-1 py-0.5 bg-teal-50 text-teal-700 rounded">
+              {email.claim_status}
+            </span>
+          )}
+          <span className="text-[10px] text-gray-400 ml-auto">
+            {email.created_at ? new Date(email.created_at).toLocaleDateString() : ""}
+          </span>
+          {expanded ? (
+            <ChevronDown className="w-3 h-3 text-gray-400" />
+          ) : (
+            <ChevronRight className="w-3 h-3 text-gray-400" />
+          )}
+        </div>
+        <div className="text-xs font-medium text-gray-800 mt-1 truncate">{email.subject}</div>
+        {email.sent_at && (
+          <div className="text-[10px] text-gray-400">
+            Sent: {new Date(email.sent_at).toLocaleString()}
+          </div>
+        )}
+      </button>
+      {expanded && (
+        <div className="border-t border-gray-100 p-3 bg-gray-50 space-y-2">
+          <div className="text-[10px] text-gray-500">
+            To: {email.to_email}
+          </div>
+          <div className="text-xs font-semibold text-gray-800">{email.subject}</div>
+          <div
+            className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed"
+            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(email.body) }}
+          />
+          {email.opened_at && (
+            <div className="text-[10px] text-purple-600">
+              Opened: {new Date(email.opened_at).toLocaleString()}
+            </div>
+          )}
+          {email.bounced_at && (
+            <div className="text-[10px] text-red-600">
+              Bounced: {new Date(email.bounced_at).toLocaleString()}
+            </div>
+          )}
+          {email.last_error && (
+            <div className="text-[10px] text-red-500">
+              Error: {email.last_error}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Campaigns Tab ---
+
+function SetupChecklist({ onAllReady }: { onAllReady?: () => void }) {
+  const [readiness, setReadiness] = useState<OutreachReadiness | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const r = await getOutreachReadiness();
+        setReadiness(r);
+        if (r.all_ready && onAllReady) onAllReady();
+      } catch {
+        // non-critical
+      } finally {
+        setLoading(false);
+      }
+    };
+    check();
+    const interval = setInterval(check, 30_000);
+    return () => clearInterval(interval);
+  }, [onAllReady]);
+
+  if (loading || !readiness) return null;
+  if (readiness.all_ready) return null;
+
+  const checks = [
+    { key: "resend_key", label: "Resend API key configured", ok: readiness.resend_key, action: "Settings → Resend API Key" },
+    { key: "resend_verified", label: "Resend domain verified", ok: readiness.resend_verified, action: "Verify domain in Resend dashboard" },
+    { key: "supabase_connected", label: "Supabase connected", ok: readiness.supabase_connected, action: "Settings → Supabase URL & Key" },
+    { key: "ollama_running", label: "Ollama running", ok: readiness.ollama_running, action: "Start Ollama (ollama serve)" },
+    { key: "ollama_has_model", label: "Outreach model available", ok: readiness.ollama_has_model, action: "Pull model (ollama pull qwen3.5:27b-q4_K_M)" },
+    { key: "from_email", label: "From email configured", ok: readiness.from_email, action: "Settings → From Email" },
+    { key: "has_templates", label: "At least 1 email template created", ok: readiness.has_templates, action: "Templates tab → Create" },
+    { key: "has_schedule", label: "Schedule time set", ok: readiness.has_schedule, action: "Settings → Schedule Time" },
+    { key: "autopilot_configured", label: "Autopilot enabled with template", ok: readiness.autopilot_configured, action: "Settings → Enable Autopilot" },
+    { key: "eligible", label: `Eligible companies available (${readiness.eligible_companies})`, ok: readiness.eligible_companies > 0, action: "Run pipeline to discover companies" },
+  ];
+
+  const passCount = checks.filter(c => c.ok).length;
+
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="w-full flex items-center justify-between p-4 text-left"
+      >
+        <div className="flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-amber-600" />
+          <span className="text-sm font-medium text-amber-800">
+            Setup Checklist — {passCount}/{checks.length} ready
+          </span>
+        </div>
+        {collapsed ? (
+          <ChevronRight className="w-4 h-4 text-amber-600" />
+        ) : (
+          <ChevronDown className="w-4 h-4 text-amber-600" />
+        )}
+      </button>
+      {!collapsed && (
+        <div className="px-4 pb-4 space-y-2">
+          {checks.map((c) => (
+            <div key={c.key} className="flex items-center gap-2 text-sm">
+              {c.ok ? (
+                <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />
+              ) : (
+                <XCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+              )}
+              <span className={c.ok ? "text-gray-600" : "text-gray-900 font-medium"}>
+                {c.label}
+              </span>
+              {!c.ok && (
+                <span className="text-xs text-amber-600 ml-auto">{c.action}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HowAutopilotWorks() {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="bg-blue-50 border border-blue-200 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between p-3 text-left"
+      >
+        <div className="flex items-center gap-2">
+          <Info className="w-4 h-4 text-blue-600" />
+          <span className="text-sm font-medium text-blue-800">How Autopilot Works</span>
+        </div>
+        {expanded ? (
+          <ChevronDown className="w-4 h-4 text-blue-600" />
+        ) : (
+          <ChevronRight className="w-4 h-4 text-blue-600" />
+        )}
+      </button>
+      {expanded && (
+        <div className="px-4 pb-4 text-sm text-blue-800 space-y-2">
+          <ol className="list-decimal list-inside space-y-1.5">
+            <li><strong>Set schedule time</strong> (e.g., 02:00) — pipeline runs daily at this time</li>
+            <li><strong>Pipeline runs:</strong> discovers companies → enriches → pushes to ForgeOS → learns from yesterday → generates 30 personalised emails</li>
+            <li><strong>All 30 drafts auto-approved</strong> immediately after generation</li>
+            <li><strong>Hourly sender</strong> drip-sends 5 at a time (5/hr × 6hrs = 30/day)</li>
+            <li><strong>Tracking</strong> — system checks opens/bounces every 6 hours (runs in background, no UI needed)</li>
+            <li><strong>Next day:</strong> learning cycle analyses what worked, evolves A/B strategy</li>
+            <li><strong>By day 5–7:</strong> insights accumulate, emails get more targeted</li>
+          </ol>
+          <p className="text-xs text-blue-600 mt-2">
+            Failed emails auto-retry after 1 hour. If Ollama is down, outreach stages are skipped but research/enrich/push still run.
+            If the pipeline fails, it retries once 4 hours later.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CampaignsTab({ showError }: { showError: (msg: string) => void }) {
+  const [companies, setCompanies] = useState<OutreachCompany[]>([]);
+  const [total, setTotal] = useState(0);
+  const [stats, setStats] = useState<OutreachStats | null>(null);
+  const [templates, setTemplates] = useState<EmailTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
+
+  // Filters
+  const [statusFilter, setStatusFilter] = useState<string>("");
+  const [countryFilter, setCountryFilter] = useState<string>("");
+  const [categoryFilter, _setCategoryFilter] = useState<string>("");
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Selection
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectedCompany, setSelectedCompany] = useState<OutreachCompany | null>(null);
+  const [companyEmails, setCompanyEmails] = useState<CompanyEmail[]>([]);
+  const [loadingEmails, setLoadingEmails] = useState(false);
+
+  // Autopilot banner
+  const [autopilotConfig, setAutopilotConfig] = useState<Record<string, string>>({});
+  const [autopilotStatus, setAutopilotStatus] = useState<AutopilotStatus | null>(null);
+
+  // Generate drafts modal
+  const [showDraftModal, setShowDraftModal] = useState(false);
+  const [draftTemplateId, setDraftTemplateId] = useState<string>("");
+  const [draftAbTemplateId, setDraftAbTemplateId] = useState<string>("");
+  const [generating, setGenerating] = useState(false);
+
+  // Keyboard nav
+  const [focusIdx, setFocusIdx] = useState(-1);
+  const tableRef = useRef<HTMLDivElement>(null);
+
+  const loadCompanies = useCallback(async () => {
+    try {
+      const result = await getOutreachCompanies({
+        outreachStatus: statusFilter || undefined,
+        country: countryFilter || undefined,
+        category: categoryFilter || undefined,
+        search: search || undefined,
+        limit: pageSize,
+        offset: page * pageSize,
+      });
+      setCompanies(result.companies);
+      setTotal(result.total);
+    } catch (e) {
+      showError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter, countryFilter, categoryFilter, search, page, showError]);
+
+  const loadStats = useCallback(async () => {
+    try {
+      const s = await getOutreachStats();
+      setStats(s);
+    } catch {
+      // non-critical
+    }
+  }, []);
+
+  const loadTemplates = useCallback(async () => {
+    try {
+      const t = await getEmailTemplates();
+      setTemplates(t);
+    } catch {
+      // non-critical
+    }
+  }, []);
+
+  useEffect(() => {
+    getConfig().then(setAutopilotConfig).catch(() => {});
+    getAutopilotStatus().then(setAutopilotStatus).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadCompanies();
+    loadStats();
+    loadTemplates();
+
+    // Auto-refresh stats + claim sync every 60s
+    const interval = setInterval(async () => {
+      try {
+        await syncClaimStatuses();
+      } catch {
+        // silent
+      }
+      loadStats();
+      loadCompanies();
+      getAutopilotStatus().then(setAutopilotStatus).catch(() => {});
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [loadCompanies, loadStats, loadTemplates]);
+
+  // Debounced search
+  useEffect(() => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(0);
+    }, 300);
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, [searchInput]);
+
+  // Sync selectedIds from fresh companies
+  useEffect(() => {
+    const freshIds = new Set(companies.map((c) => c.id));
+    setSelectedIds((prev) => {
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (freshIds.has(id)) next.add(id);
+      });
+      return next;
+    });
+  }, [companies]);
+
+  // Load email history when company selected
+  useEffect(() => {
+    if (!selectedCompany) {
+      setCompanyEmails([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingEmails(true);
+    getCompanyEmailHistory(selectedCompany.id)
+      .then((emails) => {
+        if (!cancelled) setCompanyEmails(emails);
+      })
+      .catch(() => {
+        if (!cancelled) setCompanyEmails([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingEmails(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedCompany]);
+
+  // Keyboard navigation
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "j") {
+        e.preventDefault();
+        setFocusIdx((prev) => Math.min(prev + 1, companies.length - 1));
+      } else if (e.key === "k") {
+        e.preventDefault();
+        setFocusIdx((prev) => Math.max(prev - 1, 0));
+      } else if (e.key === " " && focusIdx >= 0) {
+        e.preventDefault();
+        const c = companies[focusIdx];
+        if (c) toggleSelect(c.id);
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [companies, focusIdx]);
+
+  useEffect(() => {
+    if (focusIdx >= 0 && focusIdx < companies.length) {
+      setSelectedCompany(companies[focusIdx]);
+    }
+  }, [focusIdx, companies]);
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (selectedIds.size === companies.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(companies.map((c) => c.id)));
+    }
+  }
+
+  async function handleGenerateDrafts() {
+    if (!draftTemplateId || selectedIds.size === 0) return;
+    setGenerating(true);
+    try {
+      const result = await generateDraftsForCompanies({
+        companyIds: Array.from(selectedIds),
+        templateId: draftTemplateId,
+        abTemplateId: draftAbTemplateId || undefined,
+      });
+      setShowDraftModal(false);
+      setSelectedIds(new Set());
+      loadCompanies();
+      loadStats();
+      alert(`Created ${result.drafts_created} drafts${result.errors > 0 ? ` (${result.errors} errors)` : ""}`);
+    } catch (e) {
+      showError(String(e));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  const totalPages = Math.ceil(total / pageSize);
+
+  const autopilotEnabled = autopilotConfig.auto_outreach_enabled === "true";
+  const autopilotTemplateName = autopilotEnabled
+    ? templates.find((t) => t.id === autopilotConfig.auto_outreach_template_id)?.name
+    : null;
+
+  return (
+    <div className="space-y-4">
+      {/* Setup Checklist — shown when not fully configured */}
+      <SetupChecklist />
+
+      {/* How Autopilot Works guide */}
+      {!autopilotEnabled && <HowAutopilotWorks />}
+
+      {/* Enhanced Autopilot Banner */}
+      {autopilotEnabled && autopilotStatus != null && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+              <span className="text-sm font-medium text-green-800">
+                Autopilot Active
+                {autopilotTemplateName ? ` — "${autopilotTemplateName}"` : ""}
+              </span>
+              {autopilotStatus.active_generation != null && (
+                <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                  Gen {autopilotStatus.active_generation}
+                </span>
+              )}
+            </div>
+            {autopilotStatus.schedule_time && (
+              <span className="text-xs text-green-600 flex items-center gap-1">
+                <Clock className="w-3 h-3" />
+                Pipeline at {autopilotStatus.schedule_time}
+              </span>
+            )}
+          </div>
+
+          {/* Progress bar */}
+          <div className="mt-2 ml-4">
+            <div className="flex items-center gap-2">
+              <div className="flex-1 bg-green-200 rounded-full h-2">
+                <div
+                  className="bg-green-600 h-2 rounded-full transition-all"
+                  style={{ width: `${Math.min(100, (autopilotStatus.sent_today / autopilotStatus.daily_limit) * 100)}%` }}
+                />
+              </div>
+              <span className="text-xs font-mono text-green-700 whitespace-nowrap">
+                {autopilotStatus.sent_today}/{autopilotStatus.daily_limit} today
+              </span>
+            </div>
+            <div className="flex items-center gap-4 mt-1.5 text-xs text-green-600">
+              <span>{autopilotStatus.approved_queued} queued</span>
+              <span>{autopilotStatus.batch_size}/hr send rate</span>
+              {autopilotStatus.insight_count > 0 && (
+                <span className="flex items-center gap-1">
+                  <Brain className="w-3 h-3" />
+                  {autopilotStatus.insight_count} insights learned
+                </span>
+              )}
+              {autopilotStatus.last_learning_at && (
+                <span>Last learning: {new Date(autopilotStatus.last_learning_at + "Z").toLocaleDateString()}</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stats Bar */}
+      {stats != null && (
+        <div className="grid grid-cols-4 gap-3">
+          <div className="bg-white border border-gray-200 rounded-lg p-3">
+            <div className="text-xs text-gray-500 font-medium">Contacted</div>
+            <div className="text-xl font-bold text-gray-900 mt-0.5">{stats.total_sent}</div>
+            <div className="text-xs text-gray-400">{stats.total_drafted} drafts, {stats.total_approved} approved</div>
+          </div>
+          <div className="bg-white border border-gray-200 rounded-lg p-3">
+            <div className="text-xs text-gray-500 font-medium">Open Rate</div>
+            <div className="text-xl font-bold text-gray-900 mt-0.5">{stats.open_rate}%</div>
+            <div className="text-xs text-gray-400">{stats.total_opened} opened of {stats.total_sent} sent</div>
+          </div>
+          <div className="bg-white border border-gray-200 rounded-lg p-3">
+            <div className="text-xs text-gray-500 font-medium">Bounce Rate</div>
+            <div className="text-xl font-bold text-gray-900 mt-0.5">{stats.bounce_rate}%</div>
+            <div className="text-xs text-gray-400">{stats.total_bounced} bounced</div>
+          </div>
+          <div className="bg-white border border-gray-200 rounded-lg p-3">
+            <div className="text-xs text-gray-500 font-medium">Claim Rate</div>
+            <div className="text-xl font-bold text-gray-900 mt-0.5">{stats.claim_rate}%</div>
+            <div className="text-xs text-gray-400">{stats.total_claimed} claimed</div>
+          </div>
+        </div>
+      )}
+
+      {/* A/B Comparison */}
+      {stats != null && stats.ab_variants.length >= 2 && (
+        <div className="bg-white border border-gray-200 rounded-lg p-3 text-sm">
+          <span className="font-medium text-gray-700">A/B Test: </span>
+          {stats.ab_variants.map((v, i) => (
+            <span key={v.variant}>
+              {i > 0 && " vs "}
+              <span className={`font-semibold ${
+                stats.ab_variants.length === 2 &&
+                v.open_rate === Math.max(...stats.ab_variants.map((x) => x.open_rate)) &&
+                v.sent >= 20
+                  ? "text-green-700"
+                  : "text-gray-900"
+              }`}>
+                Template {v.variant}: {v.open_rate}% opens
+              </span>
+              <span className="text-gray-400"> ({v.sent} sent)</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Filters + Bulk Actions */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative flex-1 min-w-[200px] max-w-xs">
+          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search companies..."
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            className="w-full pl-8 pr-3 py-1.5 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+        <select
+          value={statusFilter}
+          onChange={(e) => { setStatusFilter(e.target.value); setPage(0); }}
+          className="text-xs border border-gray-200 rounded-md px-2 py-1.5 bg-white"
+        >
+          <option value="">All statuses</option>
+          <option value="not_contacted">Not contacted</option>
+          <option value="draft">Draft</option>
+          <option value="approved">Approved</option>
+          <option value="sent">Sent</option>
+          <option value="opened">Opened</option>
+          <option value="bounced">Bounced</option>
+          <option value="failed">Failed</option>
+        </select>
+        <select
+          value={countryFilter}
+          onChange={(e) => { setCountryFilter(e.target.value); setPage(0); }}
+          className="text-xs border border-gray-200 rounded-md px-2 py-1.5 bg-white"
+        >
+          <option value="">All countries</option>
+          <option value="GB">GB</option>
+          <option value="DE">DE</option>
+          <option value="FR">FR</option>
+          <option value="NL">NL</option>
+          <option value="US">US</option>
+        </select>
+
+        {selectedIds.size > 0 && (
+          <button
+            onClick={() => { setShowDraftModal(true); setDraftTemplateId(""); setDraftAbTemplateId(""); }}
+            className="ml-auto px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700"
+          >
+            <FileText className="w-3 h-3 inline mr-1" />
+            Generate Drafts ({selectedIds.size})
+          </button>
+        )}
+
+        <div className="ml-auto text-xs text-gray-500">
+          {total.toLocaleString()} companies
+        </div>
+      </div>
+
+      {/* Main content: table + detail */}
+      <div className="flex gap-4" style={{ minHeight: 500 }}>
+        {/* Company Table (left) */}
+        <div ref={tableRef} className="flex-[3] bg-white border border-gray-200 rounded-lg overflow-hidden flex flex-col">
+          {/* Table header */}
+          <div className="grid grid-cols-[32px_1fr_120px_60px_180px_100px_100px] gap-2 px-3 py-2 bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500">
+            <div>
+              <input
+                type="checkbox"
+                checked={companies.length > 0 && selectedIds.size === companies.length}
+                onChange={toggleSelectAll}
+                className="rounded"
+              />
+            </div>
+            <div>Company</div>
+            <div>Category</div>
+            <div>Country</div>
+            <div>Contact</div>
+            <div>Status</div>
+            <div>Last Action</div>
+          </div>
+
+          {/* Table body */}
+          <div className="flex-1 overflow-y-auto">
+            {loading ? (
+              <div className="flex items-center justify-center py-12 text-gray-400">
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                Loading...
+              </div>
+            ) : companies.length === 0 ? (
+              <div className="flex items-center justify-center py-12 text-gray-400 text-sm">
+                No companies found
+              </div>
+            ) : (
+              companies.map((c, idx) => (
+                <div
+                  key={c.id}
+                  onClick={() => { setSelectedCompany(c); setFocusIdx(idx); }}
+                  className={`grid grid-cols-[32px_1fr_120px_60px_180px_100px_100px] gap-2 px-3 py-2 text-xs border-b border-gray-100 cursor-pointer transition-colors ${
+                    selectedCompany?.id === c.id
+                      ? "bg-blue-50"
+                      : focusIdx === idx
+                        ? "bg-gray-50"
+                        : "hover:bg-gray-50"
+                  }`}
+                >
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(c.id)}
+                      onChange={() => toggleSelect(c.id)}
+                      className="rounded"
+                    />
+                  </div>
+                  <div className="truncate font-medium text-gray-900">{c.name}</div>
+                  <div className="truncate text-gray-500">{c.subcategory || "—"}</div>
+                  <div className="text-gray-500">{c.country || "—"}</div>
+                  <div className="truncate text-gray-500">{c.contact_email || "—"}</div>
+                  <div>
+                    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${STATUS_COLORS[c.outreach_status] || STATUS_COLORS.not_contacted}`}>
+                      {c.outreach_status}
+                    </span>
+                  </div>
+                  <div className="text-gray-400">
+                    {c.last_email_at ? new Date(c.last_email_at).toLocaleDateString() : "—"}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-3 py-2 border-t border-gray-200 bg-gray-50">
+              <button
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="text-xs text-gray-600 hover:text-gray-900 disabled:opacity-30"
+              >
+                <ChevronLeft className="w-3.5 h-3.5 inline" /> Previous
+              </button>
+              <span className="text-xs text-gray-500">
+                Page {page + 1} of {totalPages}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                disabled={page >= totalPages - 1}
+                className="text-xs text-gray-600 hover:text-gray-900 disabled:opacity-30"
+              >
+                Next <ChevronRight className="w-3.5 h-3.5 inline" />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Company Detail (right) */}
+        <div className="flex-[2] bg-white border border-gray-200 rounded-lg overflow-hidden flex flex-col">
+          {selectedCompany ? (
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {/* Company Info */}
+              <div>
+                <h3 className="text-sm font-bold text-gray-900">{selectedCompany.name}</h3>
+                {selectedCompany.website_url && (
+                  <a
+                    href={selectedCompany.website_url.startsWith("http") ? selectedCompany.website_url : `https://${selectedCompany.website_url}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-600 hover:underline inline-flex items-center gap-0.5"
+                  >
+                    {selectedCompany.website_url} <ExternalLink className="w-2.5 h-2.5" />
+                  </a>
+                )}
+                <div className="mt-2 grid grid-cols-2 gap-1 text-xs">
+                  <div className="text-gray-500">Category</div>
+                  <div className="text-gray-900">{selectedCompany.subcategory || "—"}</div>
+                  <div className="text-gray-500">Location</div>
+                  <div className="text-gray-900">
+                    {[selectedCompany.city, selectedCompany.country].filter(Boolean).join(", ") || "—"}
+                  </div>
+                  <div className="text-gray-500">Contact</div>
+                  <div className="text-gray-900">
+                    {selectedCompany.contact_name || "—"}
+                    {selectedCompany.contact_title ? ` (${selectedCompany.contact_title})` : ""}
+                  </div>
+                  <div className="text-gray-500">Email</div>
+                  <div className="text-gray-900 truncate">{selectedCompany.contact_email || "—"}</div>
+                  <div className="text-gray-500">Status</div>
+                  <div>
+                    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${STATUS_COLORS[selectedCompany.outreach_status] || ""}`}>
+                      {selectedCompany.outreach_status}
+                    </span>
+                  </div>
+                </div>
+                {selectedCompany.description && (
+                  <p className="mt-2 text-xs text-gray-600 line-clamp-3">{selectedCompany.description}</p>
+                )}
+              </div>
+
+              {/* Single company draft button */}
+              {selectedCompany.outreach_status === "not_contacted" && (
+                <button
+                  onClick={() => {
+                    setSelectedIds(new Set([selectedCompany.id]));
+                    setShowDraftModal(true);
+                    setDraftTemplateId("");
+                    setDraftAbTemplateId("");
+                  }}
+                  className="w-full px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                >
+                  <FileText className="w-3 h-3 inline mr-1" />
+                  Generate Draft
+                </button>
+              )}
+
+              {/* Email History */}
+              <div>
+                <h4 className="text-xs font-semibold text-gray-700 mb-2">Email History</h4>
+                {loadingEmails ? (
+                  <div className="text-xs text-gray-400 flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" /> Loading...
+                  </div>
+                ) : companyEmails.length === 0 ? (
+                  <div className="text-xs text-gray-400">No emails yet</div>
+                ) : (
+                  <div className="space-y-2">
+                    {companyEmails.map((email) => (
+                      <EmailHistoryItem key={email.id} email={email} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-xs text-gray-400">
+              Select a company to view details
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Generate Drafts Modal */}
+      {showDraftModal && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => !generating && setShowDraftModal(false)}>
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-bold text-gray-900 mb-4">
+              Generate Drafts for {selectedIds.size} {selectedIds.size === 1 ? "company" : "companies"}
+            </h3>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-medium text-gray-700 block mb-1">Template</label>
+                <select
+                  value={draftTemplateId}
+                  onChange={(e) => setDraftTemplateId(e.target.value)}
+                  className="w-full text-xs border border-gray-200 rounded-md px-2 py-1.5 bg-white"
+                >
+                  <option value="">Select a template...</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-gray-700 block mb-1">
+                  A/B Template (optional)
+                </label>
+                <select
+                  value={draftAbTemplateId}
+                  onChange={(e) => setDraftAbTemplateId(e.target.value)}
+                  className="w-full text-xs border border-gray-200 rounded-md px-2 py-1.5 bg-white"
+                >
+                  <option value="">No A/B test</option>
+                  {templates.filter((t) => t.id !== draftTemplateId).map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+                {draftAbTemplateId && (
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    Companies will alternate A/B (50/50 split)
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 mt-5">
+              <button
+                onClick={() => setShowDraftModal(false)}
+                disabled={generating}
+                className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleGenerateDrafts}
+                disabled={!draftTemplateId || generating}
+                className="px-4 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
+              >
+                {generating ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  "Generate"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -741,6 +1630,243 @@ const DEFAULT_TEMPLATE_BODY = `<p>Hi {contact_name},</p>
 <p>Best regards,<br/>The ForgeOS Team</p>
 
 <p style="font-size:11px;color:#9ca3af;">If you'd prefer not to hear from us, simply ignore this email.</p>`;
+
+// --- Performance Tab ---
+
+function PerformanceTab({ showError }: { showError: (msg: string) => void }) {
+  const [dailyStats, setDailyStats] = useState<DailyOutreachStat[]>([]);
+  const [experiments, setExperiments] = useState<ABExperiment[]>([]);
+  const [insights, setInsights] = useState<OutreachInsight[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadData = useCallback(async () => {
+    try {
+      const [stats, exps, ins] = await Promise.all([
+        getDailyOutreachStats(),
+        getExperimentHistory(),
+        getOutreachInsights(),
+      ]);
+      setDailyStats(stats);
+      setExperiments(exps);
+      setInsights(ins);
+    } catch (e) {
+      showError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [showError]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+      </div>
+    );
+  }
+
+  // Compute headline
+  const firstDay = dailyStats.length > 0 ? dailyStats[0] : null;
+  const lastDay = dailyStats.length > 1 ? dailyStats[dailyStats.length - 1] : null;
+  const totalSent = dailyStats.reduce((sum, d) => sum + d.sent, 0);
+  const totalOpened = dailyStats.reduce((sum, d) => sum + d.opened, 0);
+  const overallRate = totalSent > 0 ? ((totalOpened / totalSent) * 100).toFixed(1) : "0";
+
+  return (
+    <div className="space-y-6">
+      {/* Headline */}
+      <div className="bg-white border border-gray-200 rounded-lg p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">
+              Outreach Performance
+            </h2>
+            <p className="text-sm text-gray-500 mt-0.5">
+              {totalSent} emails sent across {dailyStats.length} days — {overallRate}% overall open rate
+            </p>
+          </div>
+          {firstDay && lastDay && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-500">
+                {firstDay.open_rate}%
+              </span>
+              {lastDay.open_rate > firstDay.open_rate ? (
+                <TrendingUp className="w-4 h-4 text-green-600" />
+              ) : lastDay.open_rate < firstDay.open_rate ? (
+                <TrendingDown className="w-4 h-4 text-red-500" />
+              ) : null}
+              <span className="text-sm font-medium text-gray-900">
+                {lastDay.open_rate}%
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Daily Stats Table */}
+      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-100">
+          <h3 className="text-sm font-semibold text-gray-900">Daily Breakdown</h3>
+        </div>
+        {dailyStats.length === 0 ? (
+          <div className="px-4 py-8 text-center text-sm text-gray-400">
+            No emails sent yet. Start a campaign to see daily stats.
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 text-gray-500 text-xs font-medium">
+                <th className="px-4 py-2 text-left">Date</th>
+                <th className="px-4 py-2 text-right">Sent</th>
+                <th className="px-4 py-2 text-right">Opened</th>
+                <th className="px-4 py-2 text-right">Bounced</th>
+                <th className="px-4 py-2 text-right">Claimed</th>
+                <th className="px-4 py-2 text-right">Open Rate</th>
+                <th className="px-4 py-2 text-right">Gen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...dailyStats].reverse().map((day, i) => {
+                const prev = [...dailyStats].reverse()[i + 1];
+                const improving = prev ? day.open_rate > prev.open_rate : false;
+                const declining = prev ? day.open_rate < prev.open_rate : false;
+                return (
+                  <tr key={day.date} className="border-t border-gray-50 hover:bg-gray-50">
+                    <td className="px-4 py-2 text-gray-900 font-medium">{day.date}</td>
+                    <td className="px-4 py-2 text-right text-gray-700">{day.sent}</td>
+                    <td className="px-4 py-2 text-right text-gray-700">{day.opened}</td>
+                    <td className="px-4 py-2 text-right text-gray-700">{day.bounced}</td>
+                    <td className="px-4 py-2 text-right text-gray-700">{day.claimed}</td>
+                    <td className={`px-4 py-2 text-right font-medium ${
+                      improving ? "text-green-600" : declining ? "text-red-500" : "text-gray-700"
+                    }`}>
+                      {day.open_rate}%
+                      {improving && <TrendingUp className="w-3 h-3 inline ml-1" />}
+                      {declining && <TrendingDown className="w-3 h-3 inline ml-1" />}
+                    </td>
+                    <td className="px-4 py-2 text-right text-gray-400">{day.generation ?? "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* A/B Experiment History */}
+      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-100">
+          <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+            <Zap className="w-4 h-4 text-amber-500" />
+            A/B Experiment History
+          </h3>
+        </div>
+        {experiments.length === 0 ? (
+          <div className="px-4 py-8 text-center text-sm text-gray-400">
+            No experiments yet. The learning loop will create the first one automatically.
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {experiments.map((exp) => {
+              const aRate = exp.variant_a_sent > 0
+                ? ((exp.variant_a_opened / exp.variant_a_sent) * 100).toFixed(1)
+                : "0";
+              const bRate = exp.variant_b_sent > 0
+                ? ((exp.variant_b_opened / exp.variant_b_sent) * 100).toFixed(1)
+                : "0";
+              return (
+                <div key={exp.id} className="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-gray-900">
+                      Generation {exp.generation}
+                    </span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      exp.status === "active"
+                        ? "bg-blue-100 text-blue-700"
+                        : "bg-gray-100 text-gray-600"
+                    }`}>
+                      {exp.status === "active" ? "Running" : `Winner: ${exp.winner}`}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div className={`p-2 rounded border ${
+                      exp.winner === "A" ? "border-green-300 bg-green-50" : "border-gray-200"
+                    }`}>
+                      <div className="font-medium text-gray-700 mb-1">Variant A</div>
+                      <div className="text-gray-500 line-clamp-2">{exp.variant_a_strategy}</div>
+                      <div className="mt-1 font-mono text-gray-900">
+                        {exp.variant_a_sent} sent / {aRate}% open
+                      </div>
+                    </div>
+                    <div className={`p-2 rounded border ${
+                      exp.winner === "B" ? "border-green-300 bg-green-50" : "border-gray-200"
+                    }`}>
+                      <div className="font-medium text-gray-700 mb-1">Variant B</div>
+                      <div className="text-gray-500 line-clamp-2">{exp.variant_b_strategy}</div>
+                      <div className="mt-1 font-mono text-gray-900">
+                        {exp.variant_b_sent} sent / {bRate}% open
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Active Insights */}
+      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-100">
+          <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+            <Brain className="w-4 h-4 text-purple-500" />
+            Learned Insights ({insights.length})
+          </h3>
+        </div>
+        {insights.length === 0 ? (
+          <div className="px-4 py-8 text-center text-sm text-gray-400">
+            No insights yet. The system learns after 10+ emails are sent and tracked.
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-50">
+            {insights.map((insight) => (
+              <div key={insight.id} className="px-4 py-3 flex items-start gap-3">
+                <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap mt-0.5 ${
+                  insight.insight_type === "pattern"
+                    ? "bg-green-100 text-green-700"
+                    : insight.insight_type === "anti_pattern"
+                    ? "bg-red-100 text-red-700"
+                    : "bg-blue-100 text-blue-700"
+                }`}>
+                  {insight.insight_type === "anti_pattern" ? "anti-pattern" : insight.insight_type}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-gray-800">{insight.insight}</p>
+                  <div className="flex items-center gap-3 mt-1 text-xs text-gray-400">
+                    <span>Gen {insight.generation}</span>
+                    <span>From {insight.source_email_count} emails</span>
+                    <div className="flex items-center gap-1">
+                      <div className="w-16 bg-gray-200 rounded-full h-1.5">
+                        <div
+                          className="bg-purple-500 h-1.5 rounded-full"
+                          style={{ width: `${insight.confidence * 100}%` }}
+                        />
+                      </div>
+                      <span>{(insight.confidence * 100).toFixed(0)}%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function TemplatesTab({ showError }: { showError: (msg: string) => void }) {
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);

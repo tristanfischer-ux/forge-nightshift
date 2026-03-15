@@ -1,6 +1,6 @@
 [package]
 name = "forge-nightshift"
-version = "0.20.1"
+version = "0.24.0"
 description = "Overnight company discovery & outreach for ForgeOS"
 authors = ["Fractional Forge"]
 edition = "2021"
@@ -31,3 +31,4 @@ regex = "1"
 futures = "0.3"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+rand = "0.8"

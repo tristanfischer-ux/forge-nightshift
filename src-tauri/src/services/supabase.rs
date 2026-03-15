@@ -579,6 +579,50 @@ pub async fn create_claim_token(
     Ok(token)
 }
 
+/// Query claim token statuses from ForgeOS Supabase listing_claim_tokens table.
+/// Returns Vec of (token, status) pairs.
+pub async fn get_claim_token_statuses(
+    url: &str,
+    service_key: &str,
+    tokens: &[String],
+) -> Result<Vec<(String, String)>> {
+    if tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let client = reqwest::Client::new();
+    let mut results = Vec::new();
+
+    // Batch in chunks of 50 to avoid URL length limits
+    for chunk in tokens.chunks(50) {
+        let token_list = chunk.join(",");
+        let resp = client
+            .get(format!("{}/rest/v1/listing_claim_tokens", url))
+            .header("apikey", service_key)
+            .header("Authorization", format!("Bearer {}", service_key))
+            .query(&[
+                ("select", "token,status"),
+                ("token", &format!("in.({})", token_list)),
+            ])
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            let rows: Vec<Value> = resp.json().await?;
+            for row in rows {
+                let token = row.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("pending").to_string();
+                if !token.is_empty() {
+                    results.push((token, status));
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 /// Push a technique enrichment record to ForgeOS manufacturing_technique_enrichments table.
 /// Uses UPSERT (on technique_slug conflict, update).
 pub async fn push_technique_enrichment(

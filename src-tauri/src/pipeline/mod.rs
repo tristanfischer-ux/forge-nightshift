@@ -5,10 +5,12 @@ mod outreach;
 mod report;
 mod deep_enrich;
 mod technique_aggregate;
-mod template_outreach;
+pub mod template_outreach;
 mod companies_house;
+pub mod outreach_learner;
 
 use anyhow::Result;
+use chrono::Timelike;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +31,7 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
 static RESEARCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ENRICH_ACTIVE: AtomicBool = AtomicBool::new(false);
+static SENDING: AtomicBool = AtomicBool::new(false);
 
 fn node_states() -> &'static Mutex<HashMap<String, Value>> {
     static STATES: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
@@ -155,6 +158,22 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
         }
     }
 
+    // Ollama preflight check — skip outreach stages if Ollama is unreachable
+    let ollama_available = {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            crate::services::ollama::test_connection(),
+        ).await {
+            Ok(Ok(_)) => true,
+            _ => {
+                log::warn!("[pipeline] Ollama unreachable — skipping learn_outreach and template_outreach stages");
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, "pipeline", "warn", "Ollama unreachable, skipping outreach stages");
+                false
+            }
+        }
+    };
+
     let db: tauri::State<'_, Database> = app.state();
     let config = db.get_all_config()?;
 
@@ -171,6 +190,15 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
             log::info!("[pipeline] Auto-injected deep_enrich_drain alongside enrich");
         }
         s
+    };
+
+    // Filter out Ollama-dependent outreach stages if Ollama is down
+    let stages: Vec<String> = if !ollama_available {
+        stages.into_iter().filter(|s| {
+            s != "learn_outreach" && !s.starts_with("template_outreach:")
+        }).collect()
+    } else {
+        stages
     };
 
     // Determine which stages can run concurrently
@@ -224,15 +252,19 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
             process_parallel_result(&mut summary, app, job_id, "deep_enrich_drain", deep_enrich_result);
 
         } else if has_research && has_enrich {
-            // Case 2: research + enrich — existing behavior
+            // Case 2: research + enrich — no deep_enrich_drain
             RESEARCH_ACTIVE.store(true, Ordering::SeqCst);
+            ENRICH_ACTIVE.store(true, Ordering::SeqCst);
 
             let (research_result, enrich_result) = tokio::join!(
                 async {
                     let _guard = AtomicGuard(&RESEARCH_ACTIVE);
                     research::run(app, job_id, &config).await
                 },
-                enrich::run(app, job_id, &config)
+                async {
+                    let _guard = AtomicGuard(&ENRICH_ACTIVE);
+                    enrich::run(app, job_id, &config).await
+                }
             );
 
             process_parallel_result(&mut summary, app, job_id, "research", research_result);
@@ -345,6 +377,7 @@ async fn run_single_stage(
             deep_enrich::run_sector(app, job_id, config, sector).await
         }
         "companies_house" => companies_house::run(app, job_id, config).await,
+        "learn_outreach" => outreach_learner::run_learning_cycle(app, job_id, config).await,
         s if s.starts_with("template_outreach:") => {
             let template_id = &s["template_outreach:".len()..];
             template_outreach::run(app, job_id, config, template_id).await
@@ -360,6 +393,26 @@ async fn run_single_stage(
         Ok(_) => {
             let db: tauri::State<'_, Database> = app.state();
             let _ = db.log_activity(job_id, stage, "info", &format!("{} stage completed", stage));
+
+            // Auto-approve drafts after template_outreach if autopilot is enabled
+            if stage.starts_with("template_outreach:") {
+                let auto_enabled = config
+                    .get("auto_outreach_enabled")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("false") == "true";
+                if auto_enabled {
+                    match db.approve_all_drafts() {
+                        Ok(count) => {
+                            log::info!("[autopilot] Auto-approved {} drafts", count);
+                            let _ = db.log_activity(job_id, "autopilot", "info",
+                                &format!("Auto-approved {} drafts", count));
+                        }
+                        Err(e) => {
+                            log::error!("[autopilot] Failed to auto-approve drafts: {}", e);
+                        }
+                    }
+                }
+            }
         }
         Err(e) => {
             let db: tauri::State<'_, Database> = app.state();
@@ -416,10 +469,219 @@ pub fn get_pipeline_nodes() -> Result<Value> {
     Ok(json!(get_all_node_states()))
 }
 
-/// Automated scheduler — checks trigger file every 5s, schedule every 60s.
+/// Send exactly one approved email (drip sender for anti-spam).
+/// Returns true if an email was sent successfully.
+async fn send_one_email(app: &tauri::AppHandle) -> bool {
+    if SENDING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return false; // Already sending
+    }
+    let _guard = AtomicGuard(&SENDING);
+
+    let db: tauri::State<'_, Database> = app.state();
+    let config = match db.get_all_config() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let api_key = config.get("resend_api_key").and_then(|v| v.as_str()).unwrap_or("");
+    if api_key.is_empty() {
+        return false;
+    }
+
+    let daily_limit: i64 = config
+        .get("daily_email_limit")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+
+    let sent_today = match db.get_emails_sent_today() {
+        Ok(n) => n,
+        Err(e) => {
+            log::error!("[drip] Failed to get sent count: {}", e);
+            return false;
+        }
+    };
+
+    if sent_today >= daily_limit {
+        log::info!("[drip] Daily limit reached ({}/{}), skipping", sent_today, daily_limit);
+        return false;
+    }
+
+    let emails = match db.get_approved_emails_batch(1) {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!("[drip] Failed to get approved email: {}", e);
+            return false;
+        }
+    };
+
+    let email = match emails.first() {
+        Some(e) => e,
+        None => return false,
+    };
+
+    let id = email.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let to = email.get("to_email").and_then(|v| v.as_str()).unwrap_or("");
+    let from = email.get("from_email").and_then(|v| v.as_str()).unwrap_or("");
+    let subject = email.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+    let body = email.get("body").and_then(|v| v.as_str()).unwrap_or("");
+
+    if to.is_empty() || from.is_empty() {
+        return false;
+    }
+
+    let _ = db.update_email_status(id, "sending");
+
+    match crate::services::resend::send_email(api_key, from, to, subject, body).await {
+        Ok(resend_id) => {
+            let _ = db.update_email_sent(id, &resend_id);
+            log::info!("[drip] Sent email to {} ({}/{})", to, sent_today + 1, daily_limit);
+            let _ = db.log_activity("autopilot", "auto_send:drip", "info",
+                &format!("Drip sent to {} (total today: {})", to, sent_today + 1));
+            let _ = app.emit("auto_send:drip", json!({
+                "sent_today": sent_today + 1,
+                "daily_limit": daily_limit,
+            }));
+            true
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            log::error!("[drip] Failed to send email {}: {}", id, err_msg);
+            let _ = db.update_email_status(id, "failed");
+            let _ = db.set_email_error(id, &err_msg);
+            false
+        }
+    }
+}
+
+/// Auto-retry stale failed emails (>1 hour old). Run hourly.
+async fn retry_stale_emails(app: &tauri::AppHandle) {
+    let db: tauri::State<'_, Database> = app.state();
+    match db.retry_stale_failed_emails() {
+        Ok(count) if count > 0 => {
+            log::info!("[autopilot] Retried {} stale failed emails", count);
+            let _ = db.log_activity("autopilot", "auto_retry", "info",
+                &format!("Reset {} stale failed emails for retry", count));
+        }
+        Ok(_) => {} // no stale emails
+        Err(e) => log::warn!("[autopilot] Failed to retry stale emails: {}", e),
+    }
+}
+
+/// Send a batch of approved emails (manual/bulk sender — used by UI "Send Now" and retry commands).
+pub async fn send_batch(app: &tauri::AppHandle) {
+    if SENDING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return; // Already sending
+    }
+    let _guard = AtomicGuard(&SENDING);
+
+    let db: tauri::State<'_, Database> = app.state();
+    let config = match db.get_all_config() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let api_key = config.get("resend_api_key").and_then(|v| v.as_str()).unwrap_or("");
+    if api_key.is_empty() {
+        log::warn!("[autopilot] No resend_api_key configured, skipping batch send");
+        return;
+    }
+
+    let batch_size: i64 = config
+        .get("outreach_batch_size")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    let daily_limit: i64 = config
+        .get("daily_email_limit")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+
+    let sent_today = match db.get_emails_sent_today() {
+        Ok(n) => n,
+        Err(e) => {
+            log::error!("[autopilot] Failed to get sent count: {}", e);
+            return;
+        }
+    };
+
+    if sent_today >= daily_limit {
+        log::info!("[autopilot] Daily limit reached ({}/{}), skipping", sent_today, daily_limit);
+        return;
+    }
+
+    let remaining = (daily_limit - sent_today).min(batch_size);
+    let emails = match db.get_approved_emails_batch(remaining) {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!("[autopilot] Failed to get approved emails: {}", e);
+            return;
+        }
+    };
+
+    if emails.is_empty() {
+        log::info!("[autopilot] No approved emails to send");
+        return;
+    }
+
+    log::info!("[autopilot] Sending batch of {} emails ({}/{} today)", emails.len(), sent_today, daily_limit);
+    let mut sent = 0i64;
+    let mut failed = 0i64;
+
+    for (i, email) in emails.iter().enumerate() {
+        let id = email.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let to = email.get("to_email").and_then(|v| v.as_str()).unwrap_or("");
+        let from = email.get("from_email").and_then(|v| v.as_str()).unwrap_or("");
+        let subject = email.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+        let body = email.get("body").and_then(|v| v.as_str()).unwrap_or("");
+
+        if to.is_empty() || from.is_empty() {
+            failed += 1;
+            continue;
+        }
+
+        let _ = db.update_email_status(id, "sending");
+
+        match crate::services::resend::send_email(api_key, from, to, subject, body).await {
+            Ok(resend_id) => {
+                let _ = db.update_email_sent(id, &resend_id);
+                sent += 1;
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                log::error!("[autopilot] Failed to send email {}: {}", id, err_msg);
+                let _ = db.update_email_status(id, "failed");
+                let _ = db.set_email_error(id, &err_msg);
+                failed += 1;
+            }
+        }
+
+        // Rate limit (600ms for Resend free tier)
+        if i + 1 < emails.len() {
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        }
+    }
+
+    log::info!("[autopilot] Batch complete: {} sent, {} failed", sent, failed);
+    let _ = db.log_activity("autopilot", "auto_send", "info",
+        &format!("Batch sent: {} sent, {} failed (total today: {})", sent, failed, sent_today + sent));
+    let _ = app.emit("auto_send:batch", json!({
+        "sent": sent,
+        "failed": failed,
+        "sent_today": sent_today + sent,
+        "daily_limit": daily_limit,
+    }));
+}
+
+/// Automated scheduler — checks trigger file every 5s, drip-sends emails every ~20min during business hours.
 pub async fn start_scheduler(app: tauri::AppHandle) {
     let mut last_run_date = String::new();
+    let mut last_retry_hour: i32 = -1;
+    let mut last_drip_send: i64 = 0;
     let mut tick: u64 = 0;
+    let mut last_run_failed = false;
+    let mut retry_after_tick: u64 = 0;
 
     let trigger_path = std::path::PathBuf::from(
         std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
@@ -430,9 +692,130 @@ pub async fn start_scheduler(app: tauri::AppHandle) {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         tick += 1;
 
+        // Drip sender — every 60s tick, send one email if within business hours and 20min since last
+        if tick % 12 == 0 && !SENDING.load(Ordering::SeqCst) {
+            let now = chrono::Local::now();
+            let current_hour = now.hour() as i32;
+            let now_ts = now.timestamp();
+
+            // Check if autopilot is enabled
+            let db: tauri::State<'_, Database> = app.state();
+            if let Ok(config) = db.get_all_config() {
+                let auto_enabled = config
+                    .get("auto_outreach_enabled")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("false") == "true";
+
+                if auto_enabled {
+                    // Business hours window (configurable, default 7am–7pm)
+                    let window_start: i32 = config
+                        .get("send_window_start")
+                        .and_then(|v| v.as_str())
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(7);
+                    let window_end: i32 = config
+                        .get("send_window_end")
+                        .and_then(|v| v.as_str())
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(19);
+
+                    let in_window = current_hour >= window_start && current_hour < window_end;
+                    let enough_gap = (now_ts - last_drip_send) >= 1200; // 20 minutes
+
+                    if in_window && enough_gap {
+                        if send_one_email(&app).await {
+                            last_drip_send = now_ts;
+                        }
+                    }
+
+                    // Hourly stale-email retry (independent of drip sends)
+                    if current_hour != last_retry_hour {
+                        last_retry_hour = current_hour;
+                        retry_stale_emails(&app).await;
+                    }
+                }
+            }
+        }
+
+        // 6-hourly email tracking refresh (tick % 4320 == 0 → 4320 × 5s = 6h)
+        if tick % 4320 == 0 && tick > 0 {
+            log::info!("[scheduler] Running 6-hourly email tracking refresh");
+            let db: tauri::State<'_, Database> = app.state();
+            if let Ok(config) = db.get_all_config() {
+                let api_key = config.get("resend_api_key").and_then(|v| v.as_str()).unwrap_or("");
+                if !api_key.is_empty() {
+                    let emails = db.get_sent_emails_for_tracking().unwrap_or_default();
+                    let mut updated = 0i64;
+                    for email in &emails {
+                        let id = email.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let resend_id = email.get("resend_id").and_then(|v| v.as_str()).unwrap_or("");
+                        if resend_id.is_empty() { continue; }
+
+                        match crate::services::resend::get_email_status(api_key, resend_id).await {
+                            Ok(status_data) => {
+                                let last_event = status_data
+                                    .get("last_event")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let bounced = last_event == "bounced";
+                                let opened_at = if last_event == "opened" {
+                                    status_data.get("last_event_at").and_then(|v| v.as_str())
+                                } else {
+                                    None
+                                };
+                                if bounced || opened_at.is_some() {
+                                    let _ = db.update_email_tracking(id, opened_at, bounced);
+                                    updated += 1;
+                                }
+                            }
+                            Err(_) => {} // skip failed lookups
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                    }
+                    if updated > 0 {
+                        log::info!("[scheduler] Tracking refresh: {} emails updated", updated);
+                    }
+                    let _ = db.update_experiment_stats();
+                }
+            }
+        }
+
         // Don't interfere if pipeline is already running
         if RUNNING.load(Ordering::SeqCst) {
             continue;
+        }
+
+        // Pipeline retry after 4 hours if last scheduled run failed
+        if last_run_failed && tick >= retry_after_tick && !RUNNING.load(Ordering::SeqCst) {
+            log::info!("[scheduler] Retrying pipeline after previous failure");
+            last_run_failed = false;
+
+            let db: tauri::State<'_, Database> = app.state();
+            if let Ok(config) = db.get_all_config() {
+                let mut stages = vec![
+                    "research".to_string(),
+                    "enrich".to_string(),
+                    "push".to_string(),
+                    "report".to_string(),
+                ];
+                let auto_enabled = config
+                    .get("auto_outreach_enabled")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("false") == "true";
+                let auto_template = config
+                    .get("auto_outreach_template_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if auto_enabled && !auto_template.is_empty() {
+                    stages.push("learn_outreach".to_string());
+                    stages.push(format!("template_outreach:{}", auto_template));
+                }
+                let app_clone = app.clone();
+                match start_pipeline(app_clone, stages).await {
+                    Ok(job_id) => log::info!("[scheduler] Retry pipeline started: {}", job_id),
+                    Err(e) => log::error!("[scheduler] Retry pipeline also failed: {}", e),
+                }
+            }
         }
 
         // Check for CLI trigger file (~/.nightshift-trigger)
@@ -488,22 +871,39 @@ pub async fn start_scheduler(app: tauri::AppHandle) {
             last_run_date = current_date;
             log::info!("Scheduler triggered at {}", current_time);
 
-            // DECISION: old outreach stage removed — it auto-sends without review.
-            // Use template_outreach (draft-only) via the Outreach UI instead.
-            let stages = vec![
+            let mut stages = vec![
                 "research".to_string(),
                 "enrich".to_string(),
                 "push".to_string(),
                 "report".to_string(),
             ];
 
+            // Autopilot: append template_outreach if enabled and template configured
+            let auto_enabled = config
+                .get("auto_outreach_enabled")
+                .and_then(|v| v.as_str())
+                .unwrap_or("false") == "true";
+            let auto_template = config
+                .get("auto_outreach_template_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if auto_enabled && !auto_template.is_empty() {
+                stages.push("learn_outreach".to_string());
+                stages.push(format!("template_outreach:{}", auto_template));
+                log::info!("[autopilot] Auto-outreach enabled, appending learn_outreach + template_outreach:{}", auto_template);
+            }
+
             let app_clone = app.clone();
             match start_pipeline(app_clone, stages).await {
                 Ok(job_id) => {
                     log::info!("Scheduled pipeline started: {}", job_id);
+                    last_run_failed = false;
                 }
                 Err(e) => {
                     log::error!("Scheduled pipeline failed to start: {}", e);
+                    last_run_failed = true;
+                    retry_after_tick = tick + 2880; // Retry after 4 hours (2880 × 5s)
                 }
             }
         }

@@ -63,6 +63,8 @@ impl Database {
             include_str!("migrations/016_email_templates.sql"),
             include_str!("migrations/017_companies_house_verified.sql"),
             include_str!("migrations/018_email_last_error.sql"),
+            include_str!("migrations/019_campaigns.sql"),
+            include_str!("migrations/020_self_learning.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -431,6 +433,17 @@ impl Database {
         Ok(count)
     }
 
+    /// Reset emails that have been "failed" for >1 hour back to "approved" for retry.
+    /// This avoids tight retry loops while allowing transient errors to self-heal.
+    pub fn retry_stale_failed_emails(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count = conn.execute(
+            "UPDATE emails SET status = 'approved', updated_at = datetime('now') WHERE status = 'failed' AND updated_at < datetime('now', '-1 hour')",
+            [],
+        )?;
+        Ok(count)
+    }
+
     pub fn get_all_config(&self) -> Result<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT key, value FROM config")?;
@@ -664,6 +677,48 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
+    }
+
+    /// Get a batch of approved emails ready for sending (FIFO, limited).
+    pub fn get_approved_emails_batch(&self, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, to_email, from_email, subject, body FROM emails WHERE status = 'approved' ORDER BY created_at ASC LIMIT ?1"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "to_email": row.get::<_, String>(1)?,
+                    "from_email": row.get::<_, String>(2)?,
+                    "subject": row.get::<_, String>(3)?,
+                    "body": row.get::<_, String>(4)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Count emails sent today (sent, opened, replied, bounced).
+    pub fn get_emails_sent_today(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM emails WHERE status IN ('sent','opened','replied','bounced') AND sent_at >= date('now', 'localtime', 'start of day')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Approve all draft emails, returning count updated.
+    pub fn approve_all_drafts(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE emails SET status = 'approved', updated_at = datetime('now') WHERE status = 'draft'",
+            [],
+        )?;
+        Ok(conn.changes() as i64)
     }
 
     /// Update email tracking fields from Resend polling.
@@ -1587,6 +1642,689 @@ impl Database {
             rusqlite::params![id, company_id, subject, body, to_email, from_email, template_id, claim_token],
         )?;
         Ok(id)
+    }
+
+    /// Insert an email with optional A/B variant tracking.
+    pub fn insert_template_email_with_variant(
+        &self,
+        company_id: &str,
+        template_id: &str,
+        subject: &str,
+        body: &str,
+        to_email: &str,
+        from_email: &str,
+        claim_token: &str,
+        ab_variant: Option<&str>,
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO emails (id, company_id, subject, body, to_email, from_email, language, status, template_id, claim_token, ab_variant) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'en', 'draft', ?7, ?8, ?9)",
+            rusqlite::params![id, company_id, subject, body, to_email, from_email, template_id, claim_token, ab_variant],
+        )?;
+        Ok(id)
+    }
+
+    /// Get companies with outreach status for the campaigns view.
+    /// LEFT JOINs with the latest email per company to derive outreach status.
+    pub fn get_outreach_companies(
+        &self,
+        outreach_status: Option<&str>,
+        country: Option<&str>,
+        category: Option<&str>,
+        search: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Value>, i64)> {
+        let conn = self.conn.lock().unwrap();
+
+        // Build the base query with LEFT JOIN to latest email per company
+        let base = "\
+            FROM companies c \
+            LEFT JOIN ( \
+                SELECT company_id, status as email_status, created_at as last_email_at, \
+                       claim_token, ab_variant, claim_status, \
+                       ROW_NUMBER() OVER (PARTITION BY company_id ORDER BY created_at DESC) as rn \
+                FROM emails \
+            ) le ON le.company_id = c.id AND le.rn = 1 \
+            WHERE c.status = 'pushed' \
+            AND c.contact_email IS NOT NULL AND c.contact_email != '' \
+            AND c.supabase_listing_id IS NOT NULL AND c.supabase_listing_id != ''";
+
+        let mut conditions = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut param_idx = 1;
+
+        if let Some(os) = outreach_status {
+            if os == "not_contacted" {
+                conditions.push("le.email_status IS NULL".to_string());
+            } else {
+                conditions.push(format!("le.email_status = ?{}", param_idx));
+                params.push(Box::new(os.to_string()));
+                param_idx += 1;
+            }
+        }
+
+        if let Some(c) = country {
+            conditions.push(format!("c.country = ?{}", param_idx));
+            params.push(Box::new(c.to_string()));
+            param_idx += 1;
+        }
+
+        if let Some(cat) = category {
+            conditions.push(format!("c.subcategory = ?{}", param_idx));
+            params.push(Box::new(cat.to_string()));
+            param_idx += 1;
+        }
+
+        if let Some(s) = search {
+            if !s.is_empty() {
+                conditions.push(format!(
+                    "(c.name LIKE ?{p} OR c.contact_email LIKE ?{p} OR c.contact_name LIKE ?{p})",
+                    p = param_idx
+                ));
+                params.push(Box::new(format!("%{}%", s)));
+                param_idx += 1;
+            }
+        }
+
+        let where_extra = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" AND {}", conditions.join(" AND "))
+        };
+
+        // Count query
+        let count_sql = format!("SELECT COUNT(*) {}{}", base, where_extra);
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let total: i64 = conn.query_row(&count_sql, params_refs.as_slice(), |row| row.get(0))?;
+
+        // Data query
+        let data_sql = format!(
+            "SELECT c.id, c.name, c.subcategory, c.country, c.city, c.contact_email, c.contact_name, \
+                    c.contact_title, c.description, c.website_url, c.supabase_listing_id, \
+                    COALESCE(le.email_status, 'not_contacted') as outreach_status, \
+                    le.last_email_at, le.claim_status \
+             {} {} \
+             ORDER BY le.last_email_at DESC NULLS LAST, c.name ASC \
+             LIMIT ?{} OFFSET ?{}",
+            base, where_extra, param_idx, param_idx + 1
+        );
+
+        let mut data_params = params;
+        data_params.push(Box::new(limit));
+        data_params.push(Box::new(offset));
+        let data_refs: Vec<&dyn rusqlite::types::ToSql> = data_params.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&data_sql)?;
+        let rows: Vec<Value> = stmt
+            .query_map(data_refs.as_slice(), |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "subcategory": row.get::<_, Option<String>>(2)?,
+                    "country": row.get::<_, Option<String>>(3)?,
+                    "city": row.get::<_, Option<String>>(4)?,
+                    "contact_email": row.get::<_, Option<String>>(5)?,
+                    "contact_name": row.get::<_, Option<String>>(6)?,
+                    "contact_title": row.get::<_, Option<String>>(7)?,
+                    "description": row.get::<_, Option<String>>(8)?,
+                    "website_url": row.get::<_, Option<String>>(9)?,
+                    "supabase_listing_id": row.get::<_, Option<String>>(10)?,
+                    "outreach_status": row.get::<_, String>(11)?,
+                    "last_email_at": row.get::<_, Option<String>>(12)?,
+                    "claim_status": row.get::<_, Option<String>>(13)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok((rows, total))
+    }
+
+    /// Get aggregate outreach stats including A/B breakdown.
+    pub fn get_outreach_stats(&self) -> Result<Value> {
+        let conn = self.conn.lock().unwrap();
+
+        let total_sent: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM emails WHERE status IN ('sent', 'opened', 'replied', 'bounced')",
+            [], |row| row.get(0),
+        )?;
+        let total_opened: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM emails WHERE status IN ('opened', 'replied')",
+            [], |row| row.get(0),
+        )?;
+        let total_bounced: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM emails WHERE status = 'bounced'",
+            [], |row| row.get(0),
+        )?;
+        let total_claimed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM emails WHERE claim_status = 'claimed'",
+            [], |row| row.get(0),
+        )?;
+        let total_drafted: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM emails WHERE status = 'draft'",
+            [], |row| row.get(0),
+        )?;
+        let total_approved: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM emails WHERE status = 'approved'",
+            [], |row| row.get(0),
+        )?;
+        let total_failed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM emails WHERE status = 'failed'",
+            [], |row| row.get(0),
+        )?;
+
+        let open_rate = if total_sent > 0 {
+            (total_opened as f64 / total_sent as f64) * 100.0
+        } else {
+            0.0
+        };
+        let bounce_rate = if total_sent > 0 {
+            (total_bounced as f64 / total_sent as f64) * 100.0
+        } else {
+            0.0
+        };
+        let claim_rate = if total_sent > 0 {
+            (total_claimed as f64 / total_sent as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        // A/B breakdown (SQLite doesn't support FILTER — use CASE)
+        let mut ab_stmt = conn.prepare(
+            "SELECT ab_variant, \
+                    SUM(CASE WHEN status IN ('sent','opened','replied','bounced') THEN 1 ELSE 0 END) as sent, \
+                    SUM(CASE WHEN status IN ('opened','replied') THEN 1 ELSE 0 END) as opened \
+             FROM emails \
+             WHERE ab_variant IS NOT NULL \
+             GROUP BY ab_variant"
+        )?;
+        let ab_rows: Vec<Value> = ab_stmt
+            .query_map([], |row| {
+                let variant: String = row.get(0)?;
+                let sent: i64 = row.get(1)?;
+                let opened: i64 = row.get(2)?;
+                let rate = if sent > 0 {
+                    (opened as f64 / sent as f64) * 100.0
+                } else {
+                    0.0
+                };
+                Ok(json!({
+                    "variant": variant,
+                    "sent": sent,
+                    "opened": opened,
+                    "open_rate": (rate * 10.0).round() / 10.0,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(json!({
+            "total_sent": total_sent,
+            "total_opened": total_opened,
+            "total_bounced": total_bounced,
+            "total_claimed": total_claimed,
+            "total_drafted": total_drafted,
+            "total_approved": total_approved,
+            "total_failed": total_failed,
+            "open_rate": (open_rate * 10.0).round() / 10.0,
+            "bounce_rate": (bounce_rate * 10.0).round() / 10.0,
+            "claim_rate": (claim_rate * 10.0).round() / 10.0,
+            "ab_variants": ab_rows,
+        }))
+    }
+
+    /// Get all emails for a specific company, ordered by most recent first.
+    pub fn get_company_email_history(&self, company_id: &str) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.subject, e.body, e.to_email, e.status, e.template_id, \
+                    e.claim_token, e.ab_variant, e.claim_status, e.last_error, \
+                    e.sent_at, e.opened_at, e.bounced_at, e.created_at, e.resend_id \
+             FROM emails e \
+             WHERE e.company_id = ?1 \
+             ORDER BY e.created_at DESC"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([company_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "subject": row.get::<_, String>(1)?,
+                    "body": row.get::<_, String>(2)?,
+                    "to_email": row.get::<_, String>(3)?,
+                    "status": row.get::<_, String>(4)?,
+                    "template_id": row.get::<_, Option<String>>(5)?,
+                    "claim_token": row.get::<_, Option<String>>(6)?,
+                    "ab_variant": row.get::<_, Option<String>>(7)?,
+                    "claim_status": row.get::<_, Option<String>>(8)?,
+                    "last_error": row.get::<_, Option<String>>(9)?,
+                    "sent_at": row.get::<_, Option<String>>(10)?,
+                    "opened_at": row.get::<_, Option<String>>(11)?,
+                    "bounced_at": row.get::<_, Option<String>>(12)?,
+                    "created_at": row.get::<_, Option<String>>(13)?,
+                    "resend_id": row.get::<_, Option<String>>(14)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Batch update claim_status on emails matching by claim_token.
+    pub fn update_claim_statuses(&self, updates: &[(String, String)]) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let mut count = 0i64;
+        for (token, status) in updates {
+            let changed = conn.execute(
+                "UPDATE emails SET claim_status = ?1, claim_status_synced_at = datetime('now') \
+                 WHERE claim_token = ?2",
+                rusqlite::params![status, token],
+            )?;
+            count += changed as i64;
+        }
+        Ok(count)
+    }
+
+    /// Get all emails that have claim tokens (for syncing claim status from Supabase).
+    pub fn get_emails_with_claim_tokens(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT claim_token, id FROM emails \
+             WHERE claim_token IS NOT NULL AND claim_token != '' \
+             AND status IN ('sent', 'opened', 'replied', 'draft', 'approved')"
+        )?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    // --- Self-Learning Outreach (v0.23.0) ---
+
+    /// Get all sent emails with outcomes for the learning cycle.
+    pub fn get_email_outcomes_for_learning(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.status, e.ab_variant, e.strategy_text, e.generation, \
+                    e.sent_at, e.opened_at, e.bounced_at, e.claim_status, \
+                    c.subcategory, c.company_size, c.certifications, c.country \
+             FROM emails e \
+             LEFT JOIN companies c ON c.id = e.company_id \
+             WHERE e.status IN ('sent', 'opened', 'replied', 'bounced') \
+             ORDER BY e.sent_at DESC"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "status": row.get::<_, String>(1)?,
+                    "ab_variant": row.get::<_, Option<String>>(2)?,
+                    "strategy_text": row.get::<_, Option<String>>(3)?,
+                    "generation": row.get::<_, Option<i64>>(4)?,
+                    "sent_at": row.get::<_, Option<String>>(5)?,
+                    "opened_at": row.get::<_, Option<String>>(6)?,
+                    "bounced_at": row.get::<_, Option<String>>(7)?,
+                    "claim_status": row.get::<_, Option<String>>(8)?,
+                    "subcategory": row.get::<_, Option<String>>(9)?,
+                    "company_size": row.get::<_, Option<String>>(10)?,
+                    "certifications": row.get::<_, Option<String>>(11)?,
+                    "country": row.get::<_, Option<String>>(12)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Upsert an insight — replace if same type+text exists, otherwise insert.
+    pub fn upsert_insight(
+        &self,
+        insight_type: &str,
+        insight: &str,
+        confidence: f64,
+        source_count: i64,
+        generation: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        // Check if a similar insight already exists
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT id FROM outreach_insights WHERE insight_type = ?1 AND insight = ?2",
+                rusqlite::params![insight_type, insight],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(id) = existing {
+            conn.execute(
+                "UPDATE outreach_insights SET confidence = ?1, source_email_count = ?2, \
+                 generation = ?3 WHERE id = ?4",
+                rusqlite::params![confidence, source_count, generation, id],
+            )?;
+        } else {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO outreach_insights (id, generation, insight_type, insight, confidence, source_email_count) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, generation, insight_type, insight, confidence, source_count],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Get top N active insights ordered by confidence.
+    pub fn get_active_insights(&self, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, generation, insight_type, insight, confidence, source_email_count, created_at \
+             FROM outreach_insights \
+             ORDER BY confidence DESC \
+             LIMIT ?1"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "generation": row.get::<_, i64>(1)?,
+                    "insight_type": row.get::<_, String>(2)?,
+                    "insight": row.get::<_, String>(3)?,
+                    "confidence": row.get::<_, f64>(4)?,
+                    "source_email_count": row.get::<_, i64>(5)?,
+                    "created_at": row.get::<_, String>(6)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Get the currently active A/B experiment (if any).
+    pub fn get_active_experiment(&self) -> Result<Option<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT id, generation, variant_a_strategy, variant_b_strategy, \
+                    variant_a_sent, variant_b_sent, variant_a_opened, variant_b_opened, \
+                    variant_a_claimed, variant_b_claimed, winner, status, created_at, completed_at \
+             FROM ab_experiments \
+             WHERE status = 'active' \
+             LIMIT 1",
+            [],
+            |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "generation": row.get::<_, i64>(1)?,
+                    "variant_a_strategy": row.get::<_, String>(2)?,
+                    "variant_b_strategy": row.get::<_, String>(3)?,
+                    "variant_a_sent": row.get::<_, i64>(4)?,
+                    "variant_b_sent": row.get::<_, i64>(5)?,
+                    "variant_a_opened": row.get::<_, i64>(6)?,
+                    "variant_b_opened": row.get::<_, i64>(7)?,
+                    "variant_a_claimed": row.get::<_, i64>(8)?,
+                    "variant_b_claimed": row.get::<_, i64>(9)?,
+                    "winner": row.get::<_, Option<String>>(10)?,
+                    "status": row.get::<_, String>(11)?,
+                    "created_at": row.get::<_, String>(12)?,
+                    "completed_at": row.get::<_, Option<String>>(13)?,
+                }))
+            },
+        );
+        match result {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Create a new A/B experiment, returning its ID.
+    pub fn create_experiment(
+        &self,
+        generation: i64,
+        strategy_a: &str,
+        strategy_b: &str,
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO ab_experiments (id, generation, variant_a_strategy, variant_b_strategy) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, generation, strategy_a, strategy_b],
+        )?;
+        Ok(id)
+    }
+
+    /// Recalculate experiment stats from the emails table.
+    pub fn update_experiment_stats(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        // Get active experiment
+        let exp_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM ab_experiments WHERE status = 'active' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let exp_id = match exp_id {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+
+        // Count A/B stats from emails linked to this experiment
+        let (a_sent, a_opened, a_claimed): (i64, i64, i64) = conn.query_row(
+            "SELECT \
+                SUM(CASE WHEN status IN ('sent','opened','replied','bounced') THEN 1 ELSE 0 END), \
+                SUM(CASE WHEN status IN ('opened','replied') THEN 1 ELSE 0 END), \
+                SUM(CASE WHEN claim_status = 'claimed' THEN 1 ELSE 0 END) \
+             FROM emails WHERE experiment_id = ?1 AND ab_variant = 'A'",
+            [&exp_id],
+            |row| Ok((
+                row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+            )),
+        )?;
+
+        let (b_sent, b_opened, b_claimed): (i64, i64, i64) = conn.query_row(
+            "SELECT \
+                SUM(CASE WHEN status IN ('sent','opened','replied','bounced') THEN 1 ELSE 0 END), \
+                SUM(CASE WHEN status IN ('opened','replied') THEN 1 ELSE 0 END), \
+                SUM(CASE WHEN claim_status = 'claimed' THEN 1 ELSE 0 END) \
+             FROM emails WHERE experiment_id = ?1 AND ab_variant = 'B'",
+            [&exp_id],
+            |row| Ok((
+                row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+            )),
+        )?;
+
+        conn.execute(
+            "UPDATE ab_experiments SET \
+             variant_a_sent = ?1, variant_a_opened = ?2, variant_a_claimed = ?3, \
+             variant_b_sent = ?4, variant_b_opened = ?5, variant_b_claimed = ?6 \
+             WHERE id = ?7",
+            rusqlite::params![a_sent, a_opened, a_claimed, b_sent, b_opened, b_claimed, exp_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Complete an experiment by declaring a winner.
+    pub fn complete_experiment(&self, id: &str, winner: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE ab_experiments SET winner = ?1, status = 'completed', \
+             completed_at = datetime('now') WHERE id = ?2",
+            rusqlite::params![winner, id],
+        )?;
+        Ok(())
+    }
+
+    /// Get daily outreach stats grouped by sent date.
+    pub fn get_daily_outreach_stats(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT date(sent_at) as send_date, \
+                    COUNT(*) as sent, \
+                    SUM(CASE WHEN status IN ('opened','replied') THEN 1 ELSE 0 END) as opened, \
+                    SUM(CASE WHEN status = 'bounced' THEN 1 ELSE 0 END) as bounced, \
+                    SUM(CASE WHEN claim_status = 'claimed' THEN 1 ELSE 0 END) as claimed, \
+                    MAX(generation) as generation \
+             FROM emails \
+             WHERE sent_at IS NOT NULL \
+             GROUP BY date(sent_at) \
+             ORDER BY send_date ASC"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                let sent: i64 = row.get(1)?;
+                let opened: i64 = row.get(2)?;
+                let open_rate = if sent > 0 {
+                    (opened as f64 / sent as f64 * 100.0 * 10.0).round() / 10.0
+                } else {
+                    0.0
+                };
+                Ok(json!({
+                    "date": row.get::<_, String>(0)?,
+                    "sent": sent,
+                    "opened": opened,
+                    "bounced": row.get::<_, i64>(3)?,
+                    "claimed": row.get::<_, i64>(4)?,
+                    "open_rate": open_rate,
+                    "generation": row.get::<_, Option<i64>>(5)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Get all A/B experiment history.
+    pub fn get_experiment_history(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, generation, variant_a_strategy, variant_b_strategy, \
+                    variant_a_sent, variant_b_sent, variant_a_opened, variant_b_opened, \
+                    variant_a_claimed, variant_b_claimed, winner, status, created_at, completed_at \
+             FROM ab_experiments \
+             ORDER BY generation ASC"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "generation": row.get::<_, i64>(1)?,
+                    "variant_a_strategy": row.get::<_, String>(2)?,
+                    "variant_b_strategy": row.get::<_, String>(3)?,
+                    "variant_a_sent": row.get::<_, i64>(4)?,
+                    "variant_b_sent": row.get::<_, i64>(5)?,
+                    "variant_a_opened": row.get::<_, i64>(6)?,
+                    "variant_b_opened": row.get::<_, i64>(7)?,
+                    "variant_a_claimed": row.get::<_, i64>(8)?,
+                    "variant_b_claimed": row.get::<_, i64>(9)?,
+                    "winner": row.get::<_, Option<String>>(10)?,
+                    "status": row.get::<_, String>(11)?,
+                    "created_at": row.get::<_, String>(12)?,
+                    "completed_at": row.get::<_, Option<String>>(13)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Insert a template email with full learning metadata.
+    pub fn insert_template_email_with_learning(
+        &self,
+        company_id: &str,
+        template_id: &str,
+        subject: &str,
+        body: &str,
+        to_email: &str,
+        from_email: &str,
+        claim_token: &str,
+        ab_variant: Option<&str>,
+        strategy_text: Option<&str>,
+        generation: i64,
+        experiment_id: Option<&str>,
+        insights_used: Option<&str>,
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO emails (id, company_id, subject, body, to_email, from_email, language, status, \
+             template_id, claim_token, ab_variant, strategy_text, generation, experiment_id, insights_used) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'en', 'draft', ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            rusqlite::params![
+                id, company_id, subject, body, to_email, from_email,
+                template_id, claim_token, ab_variant, strategy_text,
+                generation, experiment_id, insights_used
+            ],
+        )?;
+        Ok(id)
+    }
+
+    /// Get autopilot status: sent today, queued count, active generation info.
+    pub fn get_autopilot_status(&self) -> Result<Value> {
+        let conn = self.conn.lock().unwrap();
+
+        let sent_today: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM emails \
+             WHERE status IN ('sent','opened','replied','bounced') \
+             AND date(sent_at) = date('now', 'localtime')",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let approved_queued: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM emails WHERE status IN ('draft', 'approved')",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let active_generation: Option<i64> = conn
+            .query_row(
+                "SELECT generation FROM ab_experiments WHERE status = 'active' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let active_experiment_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM ab_experiments WHERE status = 'active' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let last_learning: Option<String> = conn
+            .query_row(
+                "SELECT created_at FROM outreach_insights ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let insight_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM outreach_insights",
+            [],
+            |row| row.get(0),
+        )?;
+
+        Ok(json!({
+            "sent_today": sent_today,
+            "approved_queued": approved_queued,
+            "active_generation": active_generation,
+            "active_experiment_id": active_experiment_id,
+            "last_learning_at": last_learning,
+            "insight_count": insight_count,
+        }))
     }
 }
 

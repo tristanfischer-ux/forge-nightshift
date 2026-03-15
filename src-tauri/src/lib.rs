@@ -84,6 +84,7 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "ollama_url", "from_email", "brave_api_key", "resend_api_key",
     "supabase_url", "supabase_service_key", "foundry_id",
     "companies_house_api_key", "sound_enabled",
+    "auto_outreach_enabled", "auto_outreach_template_id", "outreach_batch_size",
 ];
 
 #[tauri::command]
@@ -134,6 +135,17 @@ fn set_config(db: tauri::State<'_, Database>, key: String, value: String) -> Res
                 if h > 23 || m > 59 {
                     return Err("Must be valid HH:MM (00:00-23:59)".to_string());
                 }
+            }
+        }
+        "outreach_batch_size" => {
+            let v: i64 = value.parse().map_err(|_| "Must be a number".to_string())?;
+            if !(1..=20).contains(&v) {
+                return Err("Must be between 1 and 20".to_string());
+            }
+        }
+        "auto_outreach_enabled" => {
+            if value != "true" && value != "false" {
+                return Err("Must be 'true' or 'false'".to_string());
             }
         }
         _ => {}
@@ -306,6 +318,9 @@ async fn refresh_email_statuses(
         // Rate limit between Resend API calls (600ms = ~1.6/sec, safe for Resend free tier 2/sec)
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     }
+
+    // Update A/B experiment stats after tracking refresh
+    let _ = db.update_experiment_stats();
 
     Ok(updated)
 }
@@ -910,6 +925,372 @@ fn get_campaign_eligible_count(db: tauri::State<'_, Database>) -> Result<i64, St
     db.get_campaign_eligible_count().map_err(|e| e.to_string())
 }
 
+// --- Campaigns ---
+
+#[tauri::command]
+fn get_outreach_companies(
+    db: tauri::State<'_, Database>,
+    outreach_status: Option<String>,
+    country: Option<String>,
+    category: Option<String>,
+    search: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let limit = limit.unwrap_or(50).max(1).min(200);
+    let offset = offset.unwrap_or(0).max(0);
+    let (rows, total) = db
+        .get_outreach_companies(
+            outreach_status.as_deref(),
+            country.as_deref(),
+            category.as_deref(),
+            search.as_deref(),
+            limit,
+            offset,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "companies": rows, "total": total }))
+}
+
+#[tauri::command]
+fn get_outreach_stats(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
+    db.get_outreach_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_company_email_history(
+    db: tauri::State<'_, Database>,
+    company_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    db.get_company_email_history(&company_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn generate_drafts_for_companies(
+    db: tauri::State<'_, Database>,
+    app: tauri::AppHandle,
+    company_ids: Vec<String>,
+    template_id: String,
+    ab_template_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if company_ids.is_empty() {
+        return Err("No companies selected".to_string());
+    }
+    if company_ids.len() > 100 {
+        return Err("Maximum 100 companies per batch".to_string());
+    }
+
+    let config = db.get_all_config().map_err(|e| e.to_string())?;
+    let from_email = config.get("from_email").and_then(|v| v.as_str()).unwrap_or("");
+    let supabase_url = config.get("supabase_url").and_then(|v| v.as_str()).unwrap_or("");
+    let supabase_key = config.get("supabase_service_key").and_then(|v| v.as_str()).unwrap_or("");
+
+    if from_email.is_empty() {
+        return Err("from_email not configured".to_string());
+    }
+    if supabase_url.is_empty() || supabase_key.is_empty() {
+        return Err("Supabase credentials not configured".to_string());
+    }
+
+    // Load learning context
+    let insights = db.get_active_insights(10).unwrap_or_default();
+    let insight_texts: Vec<String> = insights
+        .iter()
+        .filter_map(|i| i.get("insight").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+    let active_experiment = db.get_active_experiment().unwrap_or(None);
+    let experiment_id = active_experiment
+        .as_ref()
+        .and_then(|e| e.get("id").and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+    let strategy_a = active_experiment
+        .as_ref()
+        .and_then(|e| e.get("variant_a_strategy").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let strategy_b = active_experiment
+        .as_ref()
+        .and_then(|e| e.get("variant_b_strategy").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let generation = active_experiment
+        .as_ref()
+        .and_then(|e| e.get("generation").and_then(|v| v.as_i64()))
+        .unwrap_or(0);
+    let insights_json = if insight_texts.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&insight_texts).ok()
+    };
+
+    let has_ab = ab_template_id.is_some();
+    let total = company_ids.len();
+    let mut drafts_created = 0i64;
+    let mut errors = 0i64;
+
+    for (i, company_id) in company_ids.iter().enumerate() {
+        // Determine which variant — use experiment strategy if available, else template A/B
+        let variant = if !strategy_a.is_empty() && !strategy_b.is_empty() {
+            if i % 2 == 0 { Some("A") } else { Some("B") }
+        } else if has_ab {
+            if i % 2 == 0 { Some("A") } else { Some("B") }
+        } else {
+            None
+        };
+        let current_template_id = if has_ab && i % 2 == 1 {
+            ab_template_id.as_ref().unwrap().as_str()
+        } else {
+            template_id.as_str()
+        };
+        let strategy = match variant {
+            Some("B") => &strategy_b,
+            _ => &strategy_a,
+        };
+
+        // Fetch company data
+        let company = match db.get_company(company_id) {
+            Ok(c) => c,
+            Err(_) => { errors += 1; continue; }
+        };
+
+        let contact_email = company.get("contact_email").and_then(|v| v.as_str()).unwrap_or("");
+        let listing_id = company.get("supabase_listing_id").and_then(|v| v.as_str()).unwrap_or("");
+        let company_name = company.get("name").and_then(|v| v.as_str()).unwrap_or("");
+
+        if contact_email.is_empty() || listing_id.is_empty() {
+            errors += 1;
+            continue;
+        }
+
+        // Create claim token via Supabase
+        let claim_token = match services::supabase::create_claim_token(
+            supabase_url, supabase_key, listing_id, contact_email,
+        ).await {
+            Ok(token) => token,
+            Err(e) => {
+                log::error!("Claim token failed for {}: {}", company_name, e);
+                errors += 1;
+                continue;
+            }
+        };
+
+        let claim_url = format!("https://fractionalforge.app/claim/{}", claim_token);
+
+        // Build data teaser and assemble email — no LLM, pure template
+        let contact_name_val = company.get("contact_name").and_then(|v| v.as_str()).unwrap_or("");
+        let data_teaser = pipeline::template_outreach::build_data_teaser(&company);
+        let (subject, body) = pipeline::template_outreach::assemble_email(&company, contact_name_val, company_name, &data_teaser, &claim_url);
+
+        // Save draft with learning metadata
+        match db.insert_template_email_with_learning(
+            company_id, current_template_id, &subject, &body,
+            contact_email, from_email, &claim_token, variant,
+            if strategy.is_empty() { None } else { Some(strategy.as_str()) },
+            generation,
+            experiment_id.as_deref(),
+            insights_json.as_deref(),
+        ) {
+            Ok(_) => drafts_created += 1,
+            Err(_) => { errors += 1; continue; }
+        }
+
+        let _ = app.emit("drafts:progress", serde_json::json!({
+            "current": i + 1,
+            "total": total,
+            "company": company_name,
+            "variant": variant,
+        }));
+
+        // Small delay between Supabase claim token calls
+        if i + 1 < total {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    Ok(serde_json::json!({
+        "drafts_created": drafts_created,
+        "errors": errors,
+        "total": total,
+    }))
+}
+
+#[tauri::command]
+async fn sync_claim_statuses(
+    db: tauri::State<'_, Database>,
+) -> Result<serde_json::Value, String> {
+    let config = db.get_all_config().map_err(|e| e.to_string())?;
+    let supabase_url = config.get("supabase_url").and_then(|v| v.as_str()).unwrap_or("");
+    let supabase_key = config.get("supabase_service_key").and_then(|v| v.as_str()).unwrap_or("");
+
+    if supabase_url.is_empty() || supabase_key.is_empty() {
+        return Err("Supabase credentials not configured".to_string());
+    }
+
+    let token_pairs = db.get_emails_with_claim_tokens().map_err(|e| e.to_string())?;
+    if token_pairs.is_empty() {
+        return Ok(serde_json::json!({ "synced": 0 }));
+    }
+
+    let tokens: Vec<String> = token_pairs.iter().map(|(t, _)| t.clone()).collect();
+
+    let statuses = services::supabase::get_claim_token_statuses(
+        supabase_url, supabase_key, &tokens,
+    ).await.map_err(|e| e.to_string())?;
+
+    let updated = db.update_claim_statuses(&statuses).map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({ "synced": updated }))
+}
+
+// --- Self-Learning Outreach (v0.23.0) ---
+
+#[tauri::command]
+fn get_daily_outreach_stats(db: tauri::State<'_, Database>) -> Result<Vec<serde_json::Value>, String> {
+    db.get_daily_outreach_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_experiment_history(db: tauri::State<'_, Database>) -> Result<Vec<serde_json::Value>, String> {
+    db.get_experiment_history().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_outreach_insights(db: tauri::State<'_, Database>) -> Result<Vec<serde_json::Value>, String> {
+    db.get_active_insights(50).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn seed_experiment(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
+    // Check if active experiment already exists
+    if let Ok(Some(exp)) = db.get_active_experiment() {
+        return Ok(exp);
+    }
+    let id = db
+        .create_experiment(
+            1,
+            "Technical Depth: Focus on specific processes, materials, equipment, certifications. \
+             Reference exact capabilities from the company data. Use technical language that \
+             shows you understand their craft.",
+            "Business Value: Focus on speed, cost savings, risk reduction, and revenue outcomes. \
+             Frame everything in terms of business impact rather than technical detail. \
+             Emphasise first-mover advantage and startup deal flow.",
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "id": id, "generation": 1, "created": true }))
+}
+
+#[tauri::command]
+fn get_autopilot_status(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
+    let mut status = db.get_autopilot_status().map_err(|e| e.to_string())?;
+    let config = db.get_all_config().map_err(|e| e.to_string())?;
+
+    // Merge config into status
+    let auto_enabled = config
+        .get("auto_outreach_enabled")
+        .and_then(|v| v.as_str())
+        .unwrap_or("false") == "true";
+    let schedule_time = config
+        .get("schedule_time")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let daily_limit: i64 = config
+        .get("daily_email_limit")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    let batch_size: i64 = config
+        .get("outreach_batch_size")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+
+    status["enabled"] = serde_json::json!(auto_enabled);
+    status["schedule_time"] = serde_json::json!(schedule_time);
+    status["daily_limit"] = serde_json::json!(daily_limit);
+    status["batch_size"] = serde_json::json!(batch_size);
+
+    Ok(status)
+}
+
+#[tauri::command]
+async fn get_outreach_readiness(
+    db: tauri::State<'_, Database>,
+) -> Result<serde_json::Value, String> {
+    let config = db.get_all_config().map_err(|e| e.to_string())?;
+
+    // Check Resend API key
+    let resend_key = config.get("resend_api_key").and_then(|v| v.as_str()).unwrap_or("");
+    let has_resend_key = !resend_key.is_empty();
+
+    // Check Resend domain verified (actually test the API)
+    let resend_verified = if has_resend_key {
+        services::resend::test_connection(resend_key).await.unwrap_or(false)
+    } else {
+        false
+    };
+
+    // Check Supabase
+    let sb_url = config.get("supabase_url").and_then(|v| v.as_str()).unwrap_or("");
+    let sb_key = config.get("supabase_service_key").and_then(|v| v.as_str()).unwrap_or("");
+    let supabase_connected = if !sb_url.is_empty() && !sb_key.is_empty() {
+        services::supabase::test_connection(sb_url, sb_key).await.unwrap_or(false)
+    } else {
+        false
+    };
+
+    // Check Ollama
+    let ollama_result = services::ollama::test_connection().await;
+    let ollama_running = ollama_result.is_ok();
+    let ollama_has_model = if let Ok(ref val) = ollama_result {
+        let outreach_model = config.get("outreach_model").and_then(|v| v.as_str()).unwrap_or("qwen3.5:27b-q4_K_M");
+        val.get("models")
+            .and_then(|m| m.as_array())
+            .map(|models| models.iter().any(|m| {
+                m.as_str().map(|s| s == outreach_model).unwrap_or(false)
+            }))
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    // Check from email
+    let from_email = config.get("from_email").and_then(|v| v.as_str()).unwrap_or("");
+    let has_from_email = !from_email.is_empty();
+
+    // Check templates
+    let templates = db.get_email_templates().map(|t| t.len()).unwrap_or(0);
+    let has_templates = templates > 0;
+
+    // Check schedule time
+    let schedule_time = config.get("schedule_time").and_then(|v| v.as_str()).unwrap_or("");
+    let has_schedule = !schedule_time.is_empty();
+
+    // Check autopilot enabled + template selected
+    let autopilot_enabled = config.get("auto_outreach_enabled").and_then(|v| v.as_str()).unwrap_or("false") == "true";
+    let autopilot_template = config.get("auto_outreach_template_id").and_then(|v| v.as_str()).unwrap_or("");
+    let autopilot_configured = autopilot_enabled && !autopilot_template.is_empty();
+
+    // Check eligible companies
+    let eligible = db.get_campaign_eligible_count().unwrap_or(0);
+
+    Ok(serde_json::json!({
+        "resend_key": has_resend_key,
+        "resend_verified": resend_verified,
+        "supabase_connected": supabase_connected,
+        "ollama_running": ollama_running,
+        "ollama_has_model": ollama_has_model,
+        "from_email": has_from_email,
+        "has_templates": has_templates,
+        "has_schedule": has_schedule,
+        "autopilot_configured": autopilot_configured,
+        "eligible_companies": eligible,
+        "all_ready": has_resend_key && resend_verified && supabase_connected
+            && ollama_running && has_from_email && has_templates
+            && has_schedule && autopilot_configured && eligible > 0,
+    }))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -1001,6 +1382,17 @@ pub fn run() {
             delete_email_template,
             get_campaign_eligible_count,
             delete_emails,
+            get_outreach_companies,
+            get_outreach_stats,
+            get_company_email_history,
+            generate_drafts_for_companies,
+            sync_claim_statuses,
+            get_daily_outreach_stats,
+            get_experiment_history,
+            get_outreach_insights,
+            seed_experiment,
+            get_autopilot_status,
+            get_outreach_readiness,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

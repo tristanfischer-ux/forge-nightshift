@@ -321,6 +321,171 @@ export async function deleteEmails(ids: string[]) {
   return invoke<number>("delete_emails", { ids });
 }
 
+// --- Campaigns ---
+
+export interface OutreachCompany {
+  id: string;
+  name: string;
+  subcategory: string | null;
+  country: string | null;
+  city: string | null;
+  contact_email: string | null;
+  contact_name: string | null;
+  contact_title: string | null;
+  description: string | null;
+  website_url: string | null;
+  supabase_listing_id: string | null;
+  outreach_status: string;
+  last_email_at: string | null;
+  claim_status: string | null;
+}
+
+export interface OutreachStats {
+  total_sent: number;
+  total_opened: number;
+  total_bounced: number;
+  total_claimed: number;
+  total_drafted: number;
+  total_approved: number;
+  total_failed: number;
+  open_rate: number;
+  bounce_rate: number;
+  claim_rate: number;
+  ab_variants: Array<{
+    variant: string;
+    sent: number;
+    opened: number;
+    open_rate: number;
+  }>;
+}
+
+export interface CompanyEmail {
+  id: string;
+  subject: string;
+  body: string;
+  to_email: string;
+  status: string;
+  template_id: string | null;
+  claim_token: string | null;
+  ab_variant: string | null;
+  claim_status: string | null;
+  last_error: string | null;
+  sent_at: string | null;
+  opened_at: string | null;
+  bounced_at: string | null;
+  created_at: string | null;
+  resend_id: string | null;
+}
+
+export async function getOutreachCompanies(filters: {
+  outreachStatus?: string;
+  country?: string;
+  category?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  return invoke<{ companies: OutreachCompany[]; total: number }>(
+    "get_outreach_companies",
+    filters
+  );
+}
+
+export async function getOutreachStats() {
+  return invoke<OutreachStats>("get_outreach_stats");
+}
+
+export async function getCompanyEmailHistory(companyId: string) {
+  return invoke<CompanyEmail[]>("get_company_email_history", { companyId });
+}
+
+export async function generateDraftsForCompanies(params: {
+  companyIds: string[];
+  templateId: string;
+  abTemplateId?: string;
+}) {
+  return invoke<{ drafts_created: number; errors: number; total: number }>(
+    "generate_drafts_for_companies",
+    params
+  );
+}
+
+export async function syncClaimStatuses() {
+  return invoke<{ synced: number }>("sync_claim_statuses");
+}
+
+// --- Self-Learning Outreach (v0.23.0) ---
+
+export interface DailyOutreachStat {
+  date: string;
+  sent: number;
+  opened: number;
+  bounced: number;
+  claimed: number;
+  open_rate: number;
+  generation: number | null;
+}
+
+export interface ABExperiment {
+  id: string;
+  generation: number;
+  variant_a_strategy: string;
+  variant_b_strategy: string;
+  variant_a_sent: number;
+  variant_b_sent: number;
+  variant_a_opened: number;
+  variant_b_opened: number;
+  variant_a_claimed: number;
+  variant_b_claimed: number;
+  winner: string | null;
+  status: string;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface OutreachInsight {
+  id: string;
+  generation: number;
+  insight_type: string;
+  insight: string;
+  confidence: number;
+  source_email_count: number;
+  created_at: string;
+}
+
+export interface AutopilotStatus {
+  enabled: boolean;
+  schedule_time: string;
+  daily_limit: number;
+  batch_size: number;
+  sent_today: number;
+  approved_queued: number;
+  active_generation: number | null;
+  active_experiment_id: string | null;
+  last_learning_at: string | null;
+  insight_count: number;
+}
+
+export async function getDailyOutreachStats() {
+  return invoke<DailyOutreachStat[]>("get_daily_outreach_stats");
+}
+
+export async function getExperimentHistory() {
+  return invoke<ABExperiment[]>("get_experiment_history");
+}
+
+export async function getOutreachInsights() {
+  return invoke<OutreachInsight[]>("get_outreach_insights");
+}
+
+export async function seedExperiment() {
+  return invoke<Record<string, unknown>>("seed_experiment");
+}
+
+export async function getAutopilotStatus() {
+  return invoke<AutopilotStatus>("get_autopilot_status");
+}
+
 // Send all approved emails via Resend
 export async function sendApprovedEmails() {
   return invoke<{ sent: number; failed: number; total: number }>(
@@ -331,4 +496,24 @@ export async function sendApprovedEmails() {
 // Reset failed emails back to "approved" for retry
 export async function retryFailedEmails() {
   return invoke<number>("retry_failed_emails");
+}
+
+// --- Outreach Readiness (v0.23.0 Hardening) ---
+
+export interface OutreachReadiness {
+  resend_key: boolean;
+  resend_verified: boolean;
+  supabase_connected: boolean;
+  ollama_running: boolean;
+  ollama_has_model: boolean;
+  from_email: boolean;
+  has_templates: boolean;
+  has_schedule: boolean;
+  autopilot_configured: boolean;
+  eligible_companies: number;
+  all_ready: boolean;
+}
+
+export async function getOutreachReadiness() {
+  return invoke<OutreachReadiness>("get_outreach_readiness");
 }

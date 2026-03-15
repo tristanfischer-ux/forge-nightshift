@@ -1,12 +1,16 @@
 use anyhow::Result;
+use rand::Rng;
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 
 use crate::db::Database;
 
-/// LLM-personalised template outreach: loads a template, fetches eligible companies
-/// with full enrichment data, creates claim tokens, sends company data to Ollama
-/// for personalisation, and saves as DRAFT only (no auto-send).
+/// Template outreach: fetches eligible companies with enrichment data,
+/// creates claim tokens, assembles fixed-template emails (no LLM),
+/// and saves as DRAFT only (no auto-send).
+///
+/// The email's only job is to get the recipient to click the claim link.
+/// All explanation of the platform, advisory model, etc. lives on the claim page.
 pub async fn run(
     app: &tauri::AppHandle,
     job_id: &str,
@@ -25,14 +29,6 @@ pub async fn run(
         .get("supabase_service_key")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let ollama_url = config
-        .get("ollama_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("http://localhost:11434");
-    let outreach_model = config
-        .get("outreach_model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("qwen3.5:27b-q4_K_M");
 
     if from_email.is_empty() {
         anyhow::bail!("from_email not configured");
@@ -53,8 +49,46 @@ pub async fn run(
         let template = db.get_email_template(template_id)?;
         let name = template.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
         db.log_activity(job_id, "template_outreach", "info",
-            &format!("Using template '{}' with Ollama model '{}'", name, outreach_model))?;
+            &format!("Using template '{}' (no LLM — pure template)", name))?;
     }
+
+    // Load learning metadata for DB tracking (insights/experiment still recorded per draft)
+    let (insights, active_experiment) = {
+        let db: tauri::State<'_, Database> = app.state();
+        let insights = db.get_active_insights(10).unwrap_or_default();
+        let experiment = db.get_active_experiment().unwrap_or(None);
+        (insights, experiment)
+    };
+
+    let insight_texts: Vec<String> = insights
+        .iter()
+        .filter_map(|i| i.get("insight").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+
+    let experiment_id = active_experiment
+        .as_ref()
+        .and_then(|e| e.get("id").and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+    let strategy_a = active_experiment
+        .as_ref()
+        .and_then(|e| e.get("variant_a_strategy").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let strategy_b = active_experiment
+        .as_ref()
+        .and_then(|e| e.get("variant_b_strategy").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let generation = active_experiment
+        .as_ref()
+        .and_then(|e| e.get("generation").and_then(|v| v.as_i64()))
+        .unwrap_or(0);
+
+    let insights_json = if insight_texts.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&insight_texts).ok()
+    };
 
     // Fetch eligible companies (full enrichment data)
     let companies = {
@@ -72,7 +106,7 @@ pub async fn run(
             job_id,
             "template_outreach",
             "info",
-            &format!("Generating personalised drafts for {} eligible companies (limit {})", total, daily_limit),
+            &format!("Generating drafts for {} eligible companies (limit {})", total, daily_limit),
         );
     }
 
@@ -84,6 +118,7 @@ pub async fn run(
         let company_id = company.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let company_name = company.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let contact_email = company.get("contact_email").and_then(|v| v.as_str()).unwrap_or("");
+        let contact_name = company.get("contact_name").and_then(|v| v.as_str()).unwrap_or("");
         let listing_id = company.get("supabase_listing_id").and_then(|v| v.as_str()).unwrap_or("");
 
         if contact_email.is_empty() || listing_id.is_empty() {
@@ -106,40 +141,31 @@ pub async fn run(
 
         let claim_url = format!("https://fractionalforge.app/claim/{}", claim_token);
 
-        // Build Ollama prompt with company data
-        let prompt = build_personalisation_prompt(company, &claim_url);
-
-        // Call Ollama for personalisation
-        let llm_output = match crate::services::ollama::generate(
-            ollama_url, outreach_model, &prompt, false,
-        ).await {
-            Ok(text) => text,
-            Err(e) => {
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, "template_outreach", "error",
-                    &format!("Ollama generation failed for {}: {}", company_name, e));
-                error_count += 1;
-                continue;
-            }
+        // Determine A/B variant (tracked for future analysis, even without LLM)
+        let variant = if !strategy_a.is_empty() && !strategy_b.is_empty() {
+            if drafts_created % 2 == 0 { "A" } else { "B" }
+        } else {
+            "A"
         };
+        let strategy = if variant == "A" { &strategy_a } else { &strategy_b };
 
-        // Parse subject and body from LLM output
-        let (subject, body) = parse_email_output(&llm_output, company_name);
+        // Build a teaser line from enrichment data (what data fields we have on them)
+        let data_teaser = build_data_teaser(company);
 
-        if body.is_empty() {
-            let db: tauri::State<'_, Database> = app.state();
-            let _ = db.log_activity(job_id, "template_outreach", "error",
-                &format!("Empty email body from Ollama for {}", company_name));
-            error_count += 1;
-            continue;
-        }
+        // Assemble the full email — no LLM, pure template, varied subject line
+        let (subject, body) = assemble_email(company, contact_name, company_name, &data_teaser, &claim_url);
 
-        // Save as DRAFT — do NOT send
+        // Save as DRAFT with learning metadata
         {
             let db: tauri::State<'_, Database> = app.state();
-            db.insert_template_email(
+            db.insert_template_email_with_learning(
                 company_id, template_id, &subject, &body,
                 contact_email, from_email, &claim_token,
+                Some(variant),
+                if strategy.is_empty() { None } else { Some(strategy) },
+                generation,
+                experiment_id.as_deref(),
+                insights_json.as_deref(),
             )?;
         }
 
@@ -157,9 +183,6 @@ pub async fn run(
             "total": total,
             "limit": daily_limit,
         }));
-
-        // Small delay between Ollama calls
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
     Ok(json!({
@@ -169,17 +192,21 @@ pub async fn run(
     }))
 }
 
-/// Extract a string field from a company JSON value, falling back to default.
-fn str_or<'a>(company: &'a Value, field: &str, default: &'a str) -> &'a str {
-    company
-        .get(field)
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(default)
+/// Extract the first name from a full contact name.
+fn first_name(contact_name: &str) -> &str {
+    contact_name.split_whitespace().next().unwrap_or(contact_name)
 }
 
-/// Parse a JSON array field (may be stored as JSON string in SQLite) into comma-separated text.
-fn json_array_to_text(company: &Value, field: &str) -> String {
+/// HTML-escape text to prevent malformed HTML from company names with & or <.
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Parse a JSON array field (may be stored as JSON string in SQLite) into a Vec of strings.
+fn json_array_to_vec(company: &Value, field: &str) -> Vec<String> {
     let val = company.get(field).cloned().unwrap_or(Value::Null);
     let arr = if let Some(s) = val.as_str() {
         serde_json::from_str::<Value>(s).ok().unwrap_or(Value::Null)
@@ -188,200 +215,137 @@ fn json_array_to_text(company: &Value, field: &str) -> String {
     };
     if let Some(items) = arr.as_array() {
         items.iter()
-            .filter_map(|v| v.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect()
     } else {
-        String::new()
+        Vec::new()
     }
 }
 
 /// Extract array fields from attributes_json (materials, key_equipment, etc.)
-fn attrs_array_to_text(company: &Value, field: &str) -> String {
+fn attrs_array_to_vec(company: &Value, field: &str) -> Vec<String> {
     let attrs_str = company.get("attributes_json").and_then(|v| v.as_str()).unwrap_or("{}");
     let attrs: Value = serde_json::from_str(attrs_str).unwrap_or(json!({}));
     if let Some(arr) = attrs.get(field).and_then(|v| v.as_array()) {
         arr.iter()
-            .filter_map(|v| v.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect()
     } else {
-        String::new()
+        Vec::new()
     }
 }
 
-/// Build the full Ollama prompt with company data filled in.
-fn build_personalisation_prompt(company: &Value, claim_url: &str) -> String {
-    let company_name = company.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    let contact_name = str_or(company, "contact_name", "");
-    let contact_title = str_or(company, "contact_title", "");
-    let subcategory = str_or(company, "subcategory", "");
-    let city = str_or(company, "city", "");
-    let description = str_or(company, "description", "");
-    let company_size = str_or(company, "company_size", "");
-    let year_founded = company.get("year_founded").and_then(|v| v.as_i64());
+/// Build a short teaser describing what data we have on the company.
+/// This does NOT reveal the details — it tells them what categories of info
+/// we've captured, creating curiosity to click through and check.
+///
+/// Examples:
+/// - "I've put together a listing based on your capabilities, certifications, and the materials you work with."
+/// - "I've put together a listing based on your capabilities and equipment."
+/// - "I've put together a listing based on what I could find online."
+pub fn build_data_teaser(company: &Value) -> String {
+    let has_specialties = !json_array_to_vec(company, "specialties").is_empty();
+    let has_certs = !json_array_to_vec(company, "certifications").is_empty();
+    let has_materials = !attrs_array_to_vec(company, "materials").is_empty();
+    let has_equipment = !attrs_array_to_vec(company, "key_equipment").is_empty();
 
-    let specialties = json_array_to_text(company, "specialties");
-    let certifications = json_array_to_text(company, "certifications");
-    let industries = json_array_to_text(company, "industries");
-    let materials = attrs_array_to_text(company, "materials");
-    let key_equipment = attrs_array_to_text(company, "key_equipment");
+    let mut parts: Vec<&str> = Vec::new();
+    if has_specialties { parts.push("your capabilities"); }
+    if has_certs { parts.push("certifications"); }
+    if has_materials { parts.push("the materials you work with"); }
+    if has_equipment { parts.push("equipment"); }
 
-    let founded_str = year_founded
-        .map(|y| y.to_string())
-        .unwrap_or_default();
-
-    format!(
-r#"You are ghostwriting a personal outreach email from Tristan Fischer, founder of Fractional Forge — a UK marketplace connecting hardware startups with British manufacturers. This email must read like a real person wrote it specifically for this company, not like a mail-merged template.
-
-COMPANY DATA:
-- Company name: {company_name}
-- Contact name: {contact_name}
-- Contact title: {contact_title}
-- Subcategory: {subcategory}
-- City: {city}
-- Description: {description}
-- Specialties: {specialties}
-- Certifications: {certifications}
-- Materials: {materials}
-- Key equipment: {key_equipment}
-- Industries: {industries}
-- Company size: {company_size}
-- Founded: {founded}
-- Claim URL: {claim_url}
-
-VOICE AND TONE:
-- Write as Tristan — a British founder in his 30s who genuinely cares about UK manufacturing. Not a salesperson.
-- Conversational but respectful. Like emailing someone you've researched but haven't met.
-- Short sentences. No filler. Every sentence must earn its place.
-- Never say "I noticed", "I stumbled across", or "I'd love to". These are spam tells.
-- Never use the phrase "various industries" or "wide range of".
-- Never use marketing buzzwords: "leverage", "synergy", "cutting-edge", "state-of-the-art", "solutions provider".
-- Do not flatter or be sycophantic. Treat them as a peer, not a prospect.
-
-Write the email following this exact structure. Do not add, remove, or reorder any sections.
-
-SECTION 1 — SUBJECT LINE
-Write exactly: "{company_name} is already on Fractional Forge — claim your listing"
-
-SECTION 2 — GREETING AND INTRO (fixed)
-If contact name is available, write: "Hi [first name only],"
-If contact name is empty or null, write: "Hi there,"
-Then write exactly: "I'm Tristan, and I'm building Fractional Forge — a marketplace that makes it easier for UK startups to find and work with British manufacturers."
-
-SECTION 3 — HOW WE FOUND THEM (personalise — 2-3 sentences)
-First sentence: say you came across them while researching [their subcategory] in [their city/region]. Use their actual subcategory wording — don't paraphrase it into something generic.
-Second sentence: reference 2-3 of their MOST DISTINCTIVE capabilities from the data. Choose things that make them different from a generic shop — specific processes, certifications (e.g. AS9100, ISO 13485), unusual materials, or specialist equipment. Don't just list their subcategory back at them.
-End with exactly: "You can claim it and check everything's accurate — it takes about two minutes."
-
-SECTION 4 — WHY STARTUPS NEED THEM (personalise — 2-3 sentences)
-Describe ONE specific, realistic scenario where a hardware startup would need this exact company. Rules:
-- The scenario MUST be unique to this company's actual capabilities and materials. Never reuse scenarios across emails.
-- Name a specific product a startup might be building (e.g. "a wearable insulin pump", "a compact wind turbine", "an autonomous warehouse robot", "a handheld spectrometer"). Do NOT default to "automated packaging line" or "production line".
-- Reference specific processes from their data (e.g. "5-axis CNC machining of titanium housings" not just "machining services").
-- If they have specific materials listed, mention those materials in the scenario.
-- If they serve specific industries (aerospace, medical, automotive), set the scenario in that industry.
-- The scenario should make the reader think "yes, that's exactly the kind of job we do."
-
-BAD examples (never write these):
-- "A startup developing a new automated packaging line..."
-- "A hardware company that needs reliable components..."
-- "A startup building a new product line that requires precision parts..."
-
-GOOD examples (this level of specificity):
-- "A medtech startup prototyping a titanium spinal implant cage needs a shop that can hold ±0.01mm tolerances on Grade 5 Ti — and has the ISO 13485 paperwork to prove it."
-- "A robotics team in Bristol needs 50 aluminium chassis plates waterjet-cut and bent to spec, with anodising done in-house rather than farmed out."
-- "A cleantech founder is designing a heat exchanger that needs TIG-welded Inconel tubes — the kind of job most general fabricators would turn down."
-
-SECTION 5 — FRACTIONAL EXECUTIVE ANGLE (personalise — 2 sentences)
-Suggest a specific kind of advisory work based on their expertise. Rules:
-- Be concrete: "helping founders choose the right alloy for saltwater exposure" not "material selection advisory".
-- Frame it around a decision a startup founder would struggle with, not a generic service.
-- Connect it to their actual specialties — if they do heat treatment, suggest advisory on heat treatment specifications. If they do injection moulding, suggest advisory on mould design and gate placement.
-- End by framing it as additional revenue from knowledge they already have.
-
-BAD: "Someone on your team could offer specialist advisory on manufacturing processes."
-GOOD: "Your team's experience with lost-wax casting could help founders spec the right investment casting process before they commit to tooling — the kind of advice that saves months."
-
-SECTION 6 — FIRST MOVER ADVANTAGE (fixed)
-Write exactly: "We're in early launch, so there's a genuine first-mover advantage: companies that join now will be the first recommendation in their category for the next six months. After that, ranking shifts to user reviews and quality."
-
-SECTION 7 — FREE TO CLAIM (fixed)
-Write exactly: "Claiming your listing is completely free. No cost unless a transaction happens through the platform."
-
-SECTION 8 — CLAIM LINK (fixed)
-Write exactly: "Claim your listing here: {claim_url}
-
-(Use this email address when you create your account — the claim link is tied to it.)"
-
-SECTION 9 — SIGN OFF (fixed)
-Write exactly:
-"Any questions, just reply — it comes straight to me.
-
-Best,
-Tristan Fischer
-Founder, Fractional Forge
-fractionalforge.app"
-
-ABSOLUTE RULES — violating any of these means the email is rejected:
-1. Only reference capabilities, certifications, materials, and equipment that appear in the company data. NEVER invent, assume, or embellish.
-2. If a data field is empty, skip it silently. Never say "your capabilities" or "your services" as a vague substitute.
-3. Keep the total email under 250 words (excluding subject and sign-off).
-4. No emojis, no bullet points, no bold text, no HTML formatting.
-5. Output the complete email as plain text. First line must be the subject prefixed with "Subject: ".
-6. Do not include any preamble, explanation, or commentary — just the email.
-7. The startup scenario in Section 4 must name a specific product. "A startup that needs parts" is not specific enough.
-8. Every personalised section must reference at least one detail that could ONLY apply to this company — not to any other manufacturer in the UK.
-9. Do not repeat any phrase or sentence pattern from the fixed sections in your personalised sections.
-10. The sign-off MUST include "fractionalforge.app" on its own line. Do not omit it."#,
-        company_name = company_name,
-        contact_name = contact_name,
-        contact_title = contact_title,
-        subcategory = subcategory,
-        city = city,
-        description = description,
-        specialties = specialties,
-        certifications = certifications,
-        materials = materials,
-        key_equipment = key_equipment,
-        industries = industries,
-        company_size = company_size,
-        founded = founded_str,
-        claim_url = claim_url,
-    )
+    if parts.is_empty() {
+        "I've put together a listing based on what I could find online.".to_string()
+    } else if parts.len() == 1 {
+        format!("I've put together a listing based on {}.", parts[0])
+    } else {
+        let last = parts.pop().unwrap();
+        format!("I've put together a listing based on {}, and {}.", parts.join(", "), last)
+    }
 }
 
-/// Parse the LLM output into (subject, body).
-/// Expects first line to be "Subject: ..." followed by the email body.
-fn parse_email_output(output: &str, company_name: &str) -> (String, String) {
-    let trimmed = output.trim();
+/// Pick a varied subject line based on available company data.
+/// Tier 1 subjects require specific enrichment fields; Tier 2 only need company name.
+/// One is chosen at random from all applicable options.
+fn pick_subject_line(company: &Value, company_name: &str) -> String {
+    let mut pool: Vec<String> = Vec::new();
 
-    // Try to extract "Subject: ..." from first line
-    let (subject, body) = if let Some(rest) = trimmed.strip_prefix("Subject:") {
-        if let Some(newline_pos) = rest.find('\n') {
-            let subj = rest[..newline_pos].trim().to_string();
-            let body = rest[newline_pos..].trim().to_string();
-            (subj, body)
-        } else {
-            // Only subject line, no body
-            (rest.trim().to_string(), String::new())
-        }
+    // Tier 1 — data-rich (only when relevant data exists)
+    let specialties = json_array_to_vec(company, "specialties");
+    if let Some(first) = specialties.first() {
+        pool.push(format!("Your {} capabilities caught my eye", first));
+    }
+
+    let certs = json_array_to_vec(company, "certifications");
+    if let Some(first) = certs.first() {
+        pool.push(format!("{} certified — have I got the details right?", first));
+    }
+
+    let city = company.get("city").and_then(|v| v.as_str()).unwrap_or("");
+    if !city.is_empty() {
+        pool.push(format!("I found {} while researching {} manufacturers", company_name, city));
+    }
+
+    let materials = attrs_array_to_vec(company, "materials");
+    if let Some(first) = materials.first() {
+        pool.push(format!("Your {} work — quick question", first));
+    }
+
+    // Tier 2 — always available (company name only)
+    pool.push(format!("{} — is this listing accurate?", company_name));
+    pool.push(format!("Quick question about {}", company_name));
+    pool.push(format!("Listing for {}", company_name));
+    pool.push(format!("{} — worth a quick look?", company_name));
+
+    let idx = rand::thread_rng().gen_range(0..pool.len());
+    pool.swap_remove(idx)
+}
+
+/// Assemble the full email from fixed template text.
+/// No LLM involved — the only personalisation is company name, contact name,
+/// claim URL, and a teaser of what data categories we have.
+/// Returns (subject, html_body).
+pub fn assemble_email(
+    company: &Value,
+    contact_name: &str,
+    company_name: &str,
+    data_teaser: &str,
+    claim_url: &str,
+) -> (String, String) {
+    let greeting = if contact_name.is_empty() {
+        "Hi,".to_string()
     } else {
-        // No "Subject:" prefix — use default subject, treat entire output as body
-        let default_subject = format!(
-            "{} is already on Fractional Forge — claim your listing",
-            company_name
-        );
-        (default_subject, trimmed.to_string())
+        format!("Hi {},", first_name(contact_name))
     };
 
-    // Convert plain text body to simple HTML (wrap paragraphs in <p> tags)
-    let html_body = body
-        .split("\n\n")
-        .filter(|p| !p.trim().is_empty())
-        .map(|p| format!("<p>{}</p>", p.trim().replace('\n', "<br/>")))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let safe_company = html_escape(company_name);
 
+    let subject = pick_subject_line(company, company_name);
+
+    let body = format!(
+        "{greeting}\n\n\
+        I've added {safe_company} to Fractional Forge \u{2014} a platform I'm building to help \
+        companies find UK manufacturers. {data_teaser}\n\n\
+        Could you take two minutes to check I got it right?\n\
+        <a href=\"{claim_url}\">Check your listing</a>\n\n\
+        Bit about me \u{2014} I've set up and equipped factories myself with products shipping \
+        from them, so this comes from experience. I'm trying to make UK manufacturing easier to find.\n\n\
+        No cost to be listed. Any thoughts on how to make this more useful, I'm all ears.\n\n\
+        Tristan\n\
+        <a href=\"https://fractionalforge.app\">fractionalforge.app</a> | \
+        <a href=\"https://www.linkedin.com/in/tristanfischer/\">LinkedIn</a>"
+    );
+
+    let html_body = html_wrap(&body);
     (subject, html_body)
+}
+
+/// Convert plain text email body to simple HTML (paragraphs wrapped in <p> tags).
+fn html_wrap(text: &str) -> String {
+    text.split("\n\n")
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| format!("<p style=\"margin:0 0 12px 0;\">{}</p>", p.trim().replace('\n', "<br/>")))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
