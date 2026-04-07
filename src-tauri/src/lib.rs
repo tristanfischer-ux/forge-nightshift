@@ -130,6 +130,7 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "auto_outreach_enabled", "auto_outreach_template_id", "outreach_batch_size",
     "send_window_start", "send_window_end",
     "schedules",
+    "active_profile_id",
 ];
 
 #[tauri::command]
@@ -1542,6 +1543,42 @@ async fn search_semantic(
     }))
 }
 
+// ── Search Profile Commands ───────────────────────────────────────────
+
+#[tauri::command]
+fn get_search_profiles(db: tauri::State<'_, Database>) -> Result<Vec<serde_json::Value>, String> {
+    db.get_search_profiles().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_search_profile(
+    db: tauri::State<'_, Database>,
+    id: String,
+    name: String,
+    description: String,
+    domain: String,
+    categories_json: String,
+    target_countries_json: String,
+) -> Result<(), String> {
+    db.save_search_profile(&id, &name, &description, &domain, &categories_json, &target_countries_json)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_search_profile(db: tauri::State<'_, Database>, id: String) -> Result<(), String> {
+    db.delete_search_profile(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_active_profile(db: tauri::State<'_, Database>) -> Result<String, String> {
+    Ok(db.get_active_profile_id())
+}
+
+#[tauri::command]
+fn set_active_profile(db: tauri::State<'_, Database>, id: String) -> Result<(), String> {
+    db.set_config("active_profile_id", &id).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -1652,6 +1689,11 @@ pub fn run() {
             get_company_activities,
             get_company_intel,
             get_company_verification,
+            get_search_profiles,
+            save_search_profile,
+            delete_search_profile,
+            get_active_profile,
+            set_active_profile,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

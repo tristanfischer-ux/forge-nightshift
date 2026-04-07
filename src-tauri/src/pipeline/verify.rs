@@ -48,6 +48,16 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .max(1)
         .min(10);
 
+    // Load active profile domain for prompt customization
+    let active_domain = {
+        let db: tauri::State<'_, Database> = app.state();
+        let profile_id = db.get_active_profile_id();
+        match db.get_search_profile(&profile_id) {
+            Ok(Some(profile)) => profile.get("domain").and_then(|v| v.as_str()).unwrap_or("manufacturing").to_string(),
+            _ => "manufacturing".to_string(),
+        }
+    };
+
     let verified_count = Arc::new(AtomicI64::new(0));
     let error_count = Arc::new(AtomicI64::new(0));
     let corrections_count = Arc::new(AtomicI64::new(0));
@@ -115,6 +125,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 let deepseek_api_key = deepseek_api_key.clone();
                 let ollama_url = ollama_url.clone();
                 let enrich_model = enrich_model.clone();
+                let active_domain = active_domain.clone();
                 let verified_count = Arc::clone(&verified_count);
                 let error_count = Arc::clone(&error_count);
                 let corrections_count = Arc::clone(&corrections_count);
@@ -184,11 +195,11 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                     let relevance = company.get("relevance_score").and_then(|v| v.as_i64()).unwrap_or(0);
                     let quality = company.get("enrichment_quality").and_then(|v| v.as_i64()).unwrap_or(0);
 
-                    let system_prompt = "You are verifying a manufacturing company's data against their own website. \
+                    let system_prompt = format!("You are verifying a {} company's data against their own website. \
                         The website is the SINGLE SOURCE OF TRUTH. Only report what is evidenced on the website. \
                         Do NOT guess or infer information that isn't explicitly stated. \
                         Use the company's own words for descriptions — do not paraphrase into formal third-person. \
-                        Return valid JSON only. /no_think";
+                        Return valid JSON only. /no_think", active_domain);
 
                     let user_prompt = format!(
                         r#"EXISTING DATABASE RECORD:
@@ -313,7 +324,7 @@ Return ONLY valid JSON."#,
                     let response = if llm_backend == "haiku" {
                         match crate::services::anthropic::chat(
                             &anthropic_api_key,
-                            Some(system_prompt),
+                            Some(&system_prompt),
                             &user_prompt,
                             true,
                         )
@@ -332,7 +343,7 @@ Return ONLY valid JSON."#,
                     } else if llm_backend == "deepseek" {
                         match crate::services::deepseek::chat(
                             &deepseek_api_key,
-                            Some(system_prompt),
+                            Some(&system_prompt),
                             &user_prompt,
                             true,
                         )

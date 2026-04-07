@@ -66,7 +66,10 @@ import {
   type ActivityItem,
   getCompanyIntel,
   getCompanyVerification,
+  getSearchProfiles,
+  getActiveProfile,
 } from "../lib/tauri";
+import type { SearchProfile } from "../lib/tauri";
 import { useError } from "../contexts/ErrorContext";
 import ConfirmDialog from "../components/ConfirmDialog";
 
@@ -227,6 +230,8 @@ export default function Review() {
   const [compareMode, setCompareMode] = useState(false);
   const [compareList, setCompareList] = useState<string[]>([]);
 
+  const [activeProfileName, setActiveProfileName] = useState<string>("");
+
   const { showError, showInfo } = useError();
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pageRef = useRef(page);
@@ -243,6 +248,16 @@ export default function Review() {
   function clearDrillDown() {
     setSearchParams({});
   }
+
+  // Load active profile name on mount
+  useEffect(() => {
+    Promise.all([getSearchProfiles(), getActiveProfile()])
+      .then(([profiles, activeId]) => {
+        const active = profiles.find((p: SearchProfile) => p.id === activeId);
+        if (active) setActiveProfileName(active.name);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     loadCompanies(filter);
@@ -842,6 +857,9 @@ export default function Review() {
           <h1 className="text-2xl font-bold text-gray-900">Review Queue</h1>
           <p className="text-sm text-gray-500 mt-1">
             Review all companies across every pipeline stage
+            {activeProfileName && (
+              <span className="ml-2 text-forge-600 font-medium">(Showing: {activeProfileName})</span>
+            )}
           </p>
         </div>
 

@@ -8,6 +8,9 @@ import {
   HardDrive,
   RefreshCw,
   Download,
+  Plus,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import {
   getConfig,
@@ -22,7 +25,13 @@ import {
   reenrichAll,
   getEmailTemplates,
   EmailTemplate,
+  getSearchProfiles,
+  saveSearchProfile,
+  deleteSearchProfile,
+  getActiveProfile,
+  setActiveProfile,
 } from "../lib/tauri";
+import type { SearchProfile } from "../lib/tauri";
 import ScheduleCalendar from "../components/ScheduleCalendar";
 import { useError } from "../contexts/ErrorContext";
 
@@ -55,10 +64,94 @@ export default function Settings() {
   const [excludeSecrets, setExcludeSecrets] = useState(true);
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
 
+  // Search Profiles state
+  const [searchProfiles, setSearchProfiles] = useState<SearchProfile[]>([]);
+  const [activeProfileId, setActiveProfileIdState] = useState<string>("");
+  const [editingProfile, setEditingProfile] = useState<Partial<SearchProfile> | null>(null);
+  const [profileSaving, setProfileSaving] = useState(false);
+
   useEffect(() => {
     loadConfig();
     getEmailTemplates().then(setTemplates).catch(() => {});
+    loadProfiles();
   }, []);
+
+  async function loadProfiles() {
+    try {
+      const [profiles, activeId] = await Promise.all([
+        getSearchProfiles(),
+        getActiveProfile(),
+      ]);
+      setSearchProfiles(profiles);
+      setActiveProfileIdState(activeId);
+    } catch (e) {
+      console.error("Failed to load profiles:", e);
+    }
+  }
+
+  async function handleSaveProfile() {
+    if (!editingProfile?.name || !editingProfile?.domain) return;
+    setProfileSaving(true);
+    try {
+      const id = editingProfile.id || crypto.randomUUID();
+      await saveSearchProfile({
+        id,
+        name: editingProfile.name,
+        description: editingProfile.description || "",
+        domain: editingProfile.domain,
+        categories_json: editingProfile.categories_json || "[]",
+        target_countries_json: editingProfile.target_countries_json || "[]",
+      });
+      setEditingProfile(null);
+      await loadProfiles();
+    } catch (e) {
+      showError(`Failed to save profile: ${e}`);
+    }
+    setProfileSaving(false);
+  }
+
+  async function handleDeleteProfile(id: string) {
+    try {
+      await deleteSearchProfile(id);
+      await loadProfiles();
+    } catch (e) {
+      showError(`Failed to delete profile: ${e}`);
+    }
+  }
+
+  async function handleSetActiveProfile(id: string) {
+    try {
+      await setActiveProfile(id);
+      setActiveProfileIdState(id);
+    } catch (e) {
+      showError(`Failed to set active profile: ${e}`);
+    }
+  }
+
+  function getCategoryCount(json: string): number {
+    try {
+      const parsed = JSON.parse(json);
+      return Array.isArray(parsed) ? parsed.length : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function getCountryList(json: string): string {
+    try {
+      const parsed = JSON.parse(json);
+      if (Array.isArray(parsed)) return parsed.join(", ");
+      return String(json);
+    } catch {
+      return json;
+    }
+  }
+
+  const DOMAIN_BADGE_COLORS: Record<string, string> = {
+    manufacturing: "bg-blue-100 text-blue-700",
+    cleantech: "bg-green-100 text-green-700",
+    biotech: "bg-purple-100 text-purple-700",
+  };
 
   async function loadConfig() {
     try {
@@ -328,6 +421,165 @@ export default function Settings() {
           {saved ? "Saved" : "Save All"}
         </button>
       </div>
+
+      {/* Search Profiles */}
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-gray-900">Search Profiles</h2>
+          <button
+            onClick={() => setEditingProfile({ id: "", name: "", domain: "", description: "", categories_json: "[]", target_countries_json: "[]" })}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-forge-600 hover:bg-forge-700 rounded-lg text-xs font-medium text-white transition-colors"
+          >
+            <Plus className="w-3 h-3" />
+            Create Profile
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          {searchProfiles.map((profile) => (
+            <div
+              key={profile.id}
+              className={`border rounded-lg p-3 ${
+                profile.id === activeProfileId
+                  ? "border-forge-300 bg-forge-50"
+                  : "border-gray-200"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-sm text-gray-900">{profile.name}</span>
+                  <span className={`px-2 py-0.5 rounded-full text-xs ${DOMAIN_BADGE_COLORS[profile.domain] || "bg-gray-100 text-gray-600"}`}>
+                    {profile.domain}
+                  </span>
+                  {profile.id === activeProfileId && (
+                    <span className="px-2 py-0.5 rounded-full text-xs bg-forge-100 text-forge-700 font-medium">
+                      Active
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  {profile.id !== activeProfileId && (
+                    <button
+                      onClick={() => handleSetActiveProfile(profile.id)}
+                      className="px-2 py-1 text-xs text-forge-600 hover:bg-forge-50 rounded transition-colors"
+                    >
+                      Set Active
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setEditingProfile({ ...profile })}
+                    className="p-1 text-gray-400 hover:text-gray-600 rounded transition-colors"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => handleDeleteProfile(profile.id)}
+                    disabled={profile.id === "manufacturing"}
+                    className="p-1 text-gray-400 hover:text-red-500 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-500">
+                <span>{getCategoryCount(profile.categories_json)} categories</span>
+                <span>{getCountryList(profile.target_countries_json) || "All countries"}</span>
+              </div>
+              {profile.description && (
+                <p className="text-xs text-gray-400 mt-1">{profile.description}</p>
+              )}
+            </div>
+          ))}
+          {searchProfiles.length === 0 && (
+            <p className="text-sm text-gray-400 text-center py-4">No search profiles configured</p>
+          )}
+        </div>
+
+        {/* Edit/Create Profile Form */}
+        {editingProfile && (
+          <div className="border border-gray-200 rounded-lg p-4 space-y-3 bg-gray-50">
+            <h3 className="text-sm font-semibold text-gray-900">
+              {editingProfile.id ? "Edit Profile" : "New Profile"}
+            </h3>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Name</label>
+              <input
+                type="text"
+                value={editingProfile.name || ""}
+                onChange={(e) => setEditingProfile({ ...editingProfile, name: e.target.value })}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
+                placeholder="e.g. Clean Tech UK"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Domain</label>
+              <input
+                type="text"
+                value={editingProfile.domain || ""}
+                onChange={(e) => setEditingProfile({ ...editingProfile, domain: e.target.value })}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
+                placeholder="e.g. cleantech, biotech, manufacturing"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Description</label>
+              <textarea
+                value={editingProfile.description || ""}
+                onChange={(e) => setEditingProfile({ ...editingProfile, description: e.target.value })}
+                rows={2}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500 resize-none"
+                placeholder="Optional description"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Categories (JSON array)</label>
+              <textarea
+                value={editingProfile.categories_json || "[]"}
+                onChange={(e) => setEditingProfile({ ...editingProfile, categories_json: e.target.value })}
+                rows={4}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500 resize-none"
+                placeholder='["CNC Machining", "Sheet Metal", ...]'
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Target Countries (comma-separated)</label>
+              <input
+                type="text"
+                value={(() => {
+                  try {
+                    const parsed = JSON.parse(editingProfile.target_countries_json || "[]");
+                    return Array.isArray(parsed) ? parsed.join(", ") : editingProfile.target_countries_json || "";
+                  } catch {
+                    return editingProfile.target_countries_json || "";
+                  }
+                })()}
+                onChange={(e) => {
+                  const countries = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                  setEditingProfile({ ...editingProfile, target_countries_json: JSON.stringify(countries) });
+                }}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
+                placeholder="DE, FR, GB, NL"
+              />
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                onClick={handleSaveProfile}
+                disabled={profileSaving || !editingProfile.name || !editingProfile.domain}
+                className="flex items-center gap-1.5 px-4 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors"
+              >
+                {profileSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                Save
+              </button>
+              <button
+                onClick={() => setEditingProfile(null)}
+                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs font-medium text-gray-600 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* LLM Backend */}
       <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">

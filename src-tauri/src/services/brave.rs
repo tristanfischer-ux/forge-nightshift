@@ -33,6 +33,114 @@ pub struct SearchCategory {
     pub keywords: &'static [&'static str],
 }
 
+/// Owned version of SearchCategory for dynamic profiles loaded from DB.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicSearchCategory {
+    pub id: String,
+    pub name: String,
+    pub keywords: Vec<String>,
+}
+
+/// Return domain-appropriate role words for query building.
+pub fn get_role_words_for_domain(domain: &str) -> Vec<&'static str> {
+    match domain {
+        "manufacturing" => vec!["manufacturer", "supplier", "factory", "producer", "fabricator"],
+        "cleantech" => vec!["company", "provider", "solutions", "developer", "installer"],
+        "biotech" => vec!["company", "laboratory", "research", "developer", "pharmaceutical"],
+        _ => vec!["company", "provider", "business", "service", "solutions"],
+    }
+}
+
+/// Generate search queries for a dynamic (DB-loaded) category.
+/// Same strategy as generate_queries_for_category but works with owned strings.
+pub fn generate_queries_for_dynamic_category(country: &str, category: &DynamicSearchCategory, domain: &str) -> Vec<(String, String)> {
+    let names = country_names(country);
+    if names.is_empty() {
+        return vec![];
+    }
+
+    let role_words = get_role_words_for_domain(domain);
+    let mut queries = Vec::new();
+    let cat_id = category.id.clone();
+    let primary = names[0];
+
+    for (i, keyword) in category.keywords.iter().enumerate() {
+        let has_role = keyword_has_role_suffix(keyword);
+
+        let templates_count = if i < 3 {
+            role_words.len() // all
+        } else if i < 7 {
+            2.min(role_words.len())
+        } else {
+            1.min(role_words.len())
+        };
+
+        for template_role in &role_words[..templates_count] {
+            let query = if has_role {
+                format!("{} {}", keyword, primary)
+            } else {
+                format!("{} {} {}", keyword, template_role, primary)
+            };
+            queries.push((query, cat_id.clone()));
+        }
+
+        if (country == "GB" || country == "UK") && i < 3 {
+            queries.push((
+                format!("{} ltd {}", keyword, primary),
+                cat_id.clone(),
+            ));
+        }
+    }
+
+    // Alternate country name queries
+    for alt in names.iter().skip(1) {
+        if let Some(keyword) = category.keywords.first() {
+            if keyword_has_role_suffix(keyword) {
+                queries.push((format!("{} {}", keyword, alt), cat_id.clone()));
+            } else {
+                queries.push((format!("{} company {}", keyword, alt), cat_id.clone()));
+            }
+        }
+    }
+
+    // UK regional queries
+    if country == "GB" || country == "UK" {
+        let regional_keywords = category.keywords.iter().take(3);
+        for keyword in regional_keywords {
+            for region in UK_REGIONS {
+                let query = if keyword_has_role_suffix(keyword) {
+                    format!("{} {}", keyword, region)
+                } else {
+                    let role = role_words.first().unwrap_or(&"company");
+                    format!("{} {} {}", keyword, role, region)
+                };
+                queries.push((query, cat_id.clone()));
+            }
+        }
+    }
+
+    // Native-language queries for non-English countries
+    let terms = native_terms(country);
+    if let Some(native_name) = native_country_name(country) {
+        if !terms.is_empty() {
+            if let Some(keyword) = category.keywords.first() {
+                queries.push((
+                    format!("{} {} {}", keyword, terms[0], native_name),
+                    cat_id.clone(),
+                ));
+                if terms.len() > 1 {
+                    queries.push((
+                        format!("{} {} {}", keyword, terms[1], native_name),
+                        cat_id.clone(),
+                    ));
+                }
+            }
+        }
+    }
+
+    queries
+}
+
 pub const CATEGORIES: &[SearchCategory] = &[
     SearchCategory { id: "cnc_machining", name: "CNC Machining", keywords: &[
         "CNC machining", "precision turned parts", "5-axis milling",

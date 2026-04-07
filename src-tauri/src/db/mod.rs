@@ -69,6 +69,7 @@ impl Database {
             include_str!("migrations/022_synthesis.sql"),
             include_str!("migrations/023_activity_feed.sql"),
             include_str!("migrations/024_nightshift_intel.sql"),
+            include_str!("migrations/025_search_profiles.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -77,7 +78,92 @@ impl Database {
                 }
             }
         }
+
+        // Seed default search profiles (idempotent — uses INSERT OR IGNORE)
+        Self::seed_search_profiles(&conn);
+
         Ok(())
+    }
+
+    fn seed_search_profiles(conn: &Connection) {
+        let manufacturing_categories = r#"[
+            {"id":"cnc_machining","name":"CNC Machining","keywords":["CNC machining","precision turned parts","5-axis milling","CNC turning service","Swiss screw machining","CNC milling subcontractor","precision engineering","CNC prototype parts","multi-axis machining","CNC job shop"]},
+            {"id":"cnc_aerospace","name":"CNC Machining - Aerospace","keywords":["aerospace machining","AS9100 CNC","flight-critical parts","aerospace precision components","aircraft parts machining","turbine blade machining","defence machining","aerospace subcontract machining","NADCAP machining","aerospace turned parts"]},
+            {"id":"sheet_metal","name":"Sheet Metal Fabrication","keywords":["sheet metal fabrication","laser cutting service","metal forming","sheet metal enclosures","metal stampings","press brake forming","thin gauge fabrication","aluminium sheet metal","stainless sheet work","prototype sheet metal"]},
+            {"id":"injection_molding","name":"Injection Molding & Plastics","keywords":["injection moulding","rubber molding","plastic parts manufacturer","thermoplastic moulding","overmoulding service","insert moulding","plastic injection tooling","medical grade moulding","nylon moulding","polymer processing"]},
+            {"id":"casting_forging","name":"Casting & Forging","keywords":["investment casting","die casting","forging foundry","sand casting foundry","aluminium casting","precision lost wax casting","closed die forging","centrifugal casting","gravity die casting","iron foundry"]},
+            {"id":"3d_printing","name":"3D Printing & Additive Mfg","keywords":["3D printing service","additive manufacturing","SLS DMLS printing","metal 3D printing","rapid prototyping service","SLA printing service","polymer additive manufacturing","3D printing bureau","binder jetting service","FDM production parts"]},
+            {"id":"electronics","name":"Electronics Manufacturing","keywords":["PCB assembly","EMS contract electronics","electronic manufacturing","PCBA service","surface mount assembly","through-hole assembly","electronic box build","PCB design and assembly","prototype PCB assembly","cable harness assembly"]},
+            {"id":"composites","name":"Composites & Advanced Materials","keywords":["carbon fibre manufacturer","GFRP CFRP composites","composite parts","prepreg composites","filament winding","composite tooling","aerospace composites","structural composites","composite moulding","resin transfer moulding"]},
+            {"id":"welding_steel","name":"Welding & Structural Steel","keywords":["welding fabrication","structural steel","metal stamping","TIG welding service","MIG welding fabrication","steel fabrication company","heavy fabrication","aluminium welding","stainless steel fabrication","coded welding"]},
+            {"id":"springs_fasteners","name":"Springs, Fasteners & Gears","keywords":["spring manufacturer","precision gears","custom fasteners","compression spring manufacturer","bespoke fasteners","gear cutting service","wire forming","torsion spring manufacturer","special fasteners","worm gear manufacturer"]},
+            {"id":"surface_treatment","name":"Surface Treatment & Finishing","keywords":["anodising plating","heat treatment service","powder coating","electroplating service","hard anodising","zinc plating","shot blasting service","phosphating","passivation service","thermal spraying"]},
+            {"id":"contract_assembly","name":"Assembly & Contract Manufacturing","keywords":["contract assembly","turnkey manufacturing","box build assembly","mechanical assembly service","sub-assembly service","kitting and assembly","electromechanical assembly","clean room assembly","batch assembly","jig and fixture assembly"]},
+            {"id":"optics_photonics","name":"Precision Optics & Photonics","keywords":["optical components manufacturer","photonics company","precision lens sensor","optical coating service","fibre optic manufacturer","laser components","infrared optics","optical assemblies","photonic devices","precision mirrors"]},
+            {"id":"hydraulics","name":"Hydraulics & Pneumatics","keywords":["hydraulic systems","pneumatic actuators","fluid power","hydraulic cylinder manufacturer","pneumatic valves","hydraulic power pack","bespoke hydraulic systems","pneumatic conveying","hydraulic hose assembly","pneumatic cylinder"]},
+            {"id":"motors_drives","name":"Motors, Drives & Power Electronics","keywords":["electric motors manufacturer","servo drives","VFD power electronics","brushless motor manufacturer","motor winding","stepper motor","power converter manufacturer","drive systems","electric actuator","motor control electronics"]},
+            {"id":"bearings_motion","name":"Bearings & Linear Motion","keywords":["bearings manufacturer","linear guides","motion control seals","precision bearings","ball screw manufacturer","linear actuator","needle roller bearings","cam follower manufacturer","slewing bearings","bearing refurbishment"]},
+            {"id":"process_vessels","name":"Process Vessels & Pharma Equipment","keywords":["stainless vessels","pharma equipment manufacturer","GMP tanks","pressure vessel manufacturer","mixing vessels","jacketed vessels","pharmaceutical stainless steel","process piping","reactor vessel","CIP systems"]},
+            {"id":"valves_pumps","name":"Valves, Pumps & Flow Control","keywords":["industrial valves","pumps manufacturer","filtration systems","control valves manufacturer","diaphragm pump","positive displacement pump","ball valve manufacturer","check valve manufacturer","solenoid valve","metering pump"]},
+            {"id":"automation_robotics","name":"Automation & Robotics Integration","keywords":["automation systems integrator","robot integrator PLC","control panels","factory automation","SCADA systems","machine vision systems","robotic welding","PLC programming","automated test equipment","conveyor systems"]},
+            {"id":"connectors_cabling","name":"Connectors, Cabling & Magnetics","keywords":["electrical connectors","HV cable manufacturer","transformers magnetics","connector manufacturer","cable assembly","magnetic components","RF connectors","power transformers","toroidal transformer","coil winding"]},
+            {"id":"battery_energy","name":"Battery & Energy Components","keywords":["battery components","energy storage manufacturer","renewable equipment","battery pack assembly","fuel cell components","power electronics","inverter manufacturer","battery management system","supercapacitor","energy harvesting"]},
+            {"id":"ceramics_glass","name":"Ceramics, Glass & Specialty Coatings","keywords":["advanced ceramics","industrial glass manufacturer","specialty coatings","technical ceramics","alumina ceramics","zirconia components","borosilicate glass","ceramic machining","glass-to-metal seals","thin film coating"]},
+            {"id":"thermal_management","name":"Thermal Management & Heat Exchangers","keywords":["heat exchangers manufacturer","cooling systems","thermal management","plate heat exchanger","heat sink manufacturer","thermal interface materials","industrial cooling","finned tube heat exchanger","thermal simulation","cold plate manufacturer"]},
+            {"id":"testing_ndt","name":"Testing, Inspection & NDT","keywords":["NDT services","environmental testing","metrology CMM","radiographic inspection","ultrasonic testing service","UKAS calibration","coordinate measuring machine","materials testing lab","fatigue testing","dimensional inspection"]},
+            {"id":"ai_compute","name":"AI Infrastructure & Compute Hardware","keywords":["AI chip manufacturer","compute hardware","AI inference hardware","GPU server manufacturer","edge computing hardware","AI accelerator","FPGA systems","high-performance computing","machine learning hardware","data centre hardware"]},
+            {"id":"quantum","name":"Quantum Computing & Technology","keywords":["quantum computing company","quantum sensor","cryogenics equipment","quantum components","dilution refrigerator","superconducting electronics","quantum photonics","quantum sensing","cryostat manufacturer","quantum key distribution"]},
+            {"id":"robotics_autonomous","name":"Robotics & Autonomous Systems","keywords":["robotics company","cobot manufacturer","AMR autonomous robot","industrial robot systems","drone manufacturer","AGV manufacturer","robotic arms","autonomous vehicles","robot end effectors","mobile robots"]},
+            {"id":"cleantech","name":"Cleantech & Energy Hardware","keywords":["cleantech manufacturer","solar panel manufacturer","wind turbine electrolyzer","heat pump manufacturer","hydrogen electrolyser","solar inverter","wind turbine components","biomass equipment","tidal energy","carbon capture equipment"]},
+            {"id":"space_tech","name":"Space Technology & Satellites","keywords":["satellite manufacturer","space components","launch technology","small satellite manufacturer","space grade electronics","CubeSat components","rocket propulsion","satellite subsystems","space mechanisms","radiation hardened electronics"]},
+            {"id":"toolmaking","name":"Toolmaking & Mould Making","keywords":["toolmaker","mould maker","die manufacturer jig fixture","injection mould toolmaker","press tool manufacturer","precision tooling","extrusion die maker","gauge and fixture","EDM toolmaking","tool and die shop"]},
+            {"id":"wire_cable","name":"Wire & Cable Manufacturing","keywords":["wire manufacturer","cable assembly","wire harness","loom manufacturer","cable harness assembly","specialist wire","multicore cable manufacturer","bespoke cable assembly","coaxial cable manufacturer","ribbon cable assembly"]},
+            {"id":"packaging_machinery","name":"Packaging Machinery & Systems","keywords":["packaging machinery","filling machine","labelling equipment","packaging automation","cartoning machine","shrink wrap machine","blister packaging","weighing and packing","palletising systems","form fill seal"]},
+            {"id":"precision_grinding","name":"Precision Grinding & Lapping","keywords":["precision grinding","cylindrical grinding","surface lapping","centreless grinding","jig grinding","creep feed grinding","diamond grinding","honing service","flat lapping","thread grinding"]},
+            {"id":"waterjet_laser","name":"Waterjet & Laser Cutting","keywords":["waterjet cutting","laser profiling","CNC plasma cutting","abrasive waterjet cutting","fibre laser cutting","tube laser cutting","metal profiling service","laser engraving service","flame cutting","precision laser cutting"]},
+            {"id":"rubber_seals","name":"Rubber, Seals & Gaskets","keywords":["rubber moulding","O-ring manufacturer","gasket manufacturer","silicone moulding","rubber extrusion","hydraulic seal manufacturer","rubber to metal bonding","custom seals","PTFE seals","bespoke gaskets"]},
+            {"id":"filtration_separation","name":"Filtration & Separation Equipment","keywords":["industrial filtration","separation equipment","filter element","dust extraction systems","oil filtration","HEPA filter manufacturer","membrane filtration","centrifugal separator","coalescence filtration","process filtration"]},
+            {"id":"medical_devices","name":"Medical Device Manufacturing","keywords":["medical device","surgical instrument","implant manufacturer","ISO 13485 manufacturer","orthopaedic implants","medical precision machining","cleanroom medical manufacturing","catheter manufacturer","diagnostic equipment","dental implant manufacturer"]}
+        ]"#;
+
+        let cleantech_categories = r#"[
+            {"id":"solar","name":"Solar Energy","keywords":["solar panel manufacturer","solar installation company","photovoltaic systems","solar farm developer","solar inverter","solar EPC contractor","commercial solar installer","solar energy solutions","building-integrated photovoltaics","solar panel distributor"]},
+            {"id":"wind","name":"Wind Energy","keywords":["wind turbine manufacturer","wind farm developer","offshore wind company","wind energy services","wind turbine maintenance","wind blade manufacturer","small wind turbines","wind energy consultancy","wind farm construction","onshore wind developer"]},
+            {"id":"heat_pumps","name":"Heat Pumps & HVAC","keywords":["heat pump installer","ground source heat pump","air source heat pump company","heat pump manufacturer","district heating","commercial heat pump","heat pump maintenance","renewable heating systems","heat network developer","heat pump distributor"]},
+            {"id":"battery_storage","name":"Battery & Energy Storage","keywords":["battery storage company","energy storage systems","grid-scale battery","commercial battery storage","lithium battery manufacturer","battery management systems","behind-the-meter storage","battery recycling company","flow battery","energy storage developer"]},
+            {"id":"ev_charging","name":"EV Charging","keywords":["EV charging company","electric vehicle charger installer","charge point operator","EV charging infrastructure","workplace EV charging","rapid charger manufacturer","EV fleet charging","smart charging solutions","charging network operator","destination charging"]},
+            {"id":"energy_efficiency","name":"Energy Efficiency","keywords":["energy efficiency company","building energy management","LED lighting company","insulation manufacturer","smart building technology","energy audit company","building retrofit","energy monitoring systems","green building consultancy","passive house"]},
+            {"id":"hydrogen","name":"Hydrogen & Fuel Cells","keywords":["hydrogen company","fuel cell manufacturer","green hydrogen producer","hydrogen electrolyser","hydrogen storage","hydrogen refuelling station","fuel cell systems","hydrogen technology","PEM electrolyser","hydrogen distribution"]},
+            {"id":"carbon_capture","name":"Carbon Capture & Removal","keywords":["carbon capture company","direct air capture","carbon removal technology","CCUS company","carbon offset technology","biochar company","carbon mineralisation","industrial carbon capture","carbon sequestration","negative emissions"]},
+            {"id":"smart_grid","name":"Smart Grid & Energy Management","keywords":["smart grid company","energy management system","demand response","virtual power plant","smart meter company","grid flexibility","power electronics company","energy trading platform","microgrid developer","distributed energy"]},
+            {"id":"waste_energy","name":"Waste & Circular Economy","keywords":["waste to energy company","recycling technology","circular economy company","plastic recycling","anaerobic digestion","waste management technology","materials recovery","pyrolysis company","industrial symbiosis","e-waste recycling"]}
+        ]"#;
+
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO search_profiles (id, name, description, domain, categories_json, target_countries_json, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "manufacturing",
+                "UK Manufacturing",
+                "Precision manufacturers, fabricators, and engineering companies across the UK",
+                "manufacturing",
+                manufacturing_categories,
+                r#"["GB"]"#,
+                1,
+            ],
+        );
+
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO search_profiles (id, name, description, domain, categories_json, target_countries_json, is_active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "cleantech-uk",
+                "Clean Tech UK",
+                "Solar, wind, hydrogen, battery storage, EV charging, and energy efficiency companies in the UK",
+                "cleantech",
+                cleantech_categories,
+                r#"["GB"]"#,
+                1,
+            ],
+        );
     }
 
     pub fn get_stats(&self) -> Result<Value> {
@@ -463,6 +549,96 @@ impl Database {
         Ok(())
     }
 
+    // ── Search Profile CRUD ───────────────────────────────────────────
+
+    pub fn get_search_profiles(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, domain, categories_json, target_countries_json, is_active, created_at, updated_at FROM search_profiles ORDER BY name"
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "description": row.get::<_, Option<String>>(2)?,
+                    "domain": row.get::<_, String>(3)?,
+                    "categories_json": row.get::<_, String>(4)?,
+                    "target_countries_json": row.get::<_, Option<String>>(5)?,
+                    "is_active": row.get::<_, i64>(6)?,
+                    "created_at": row.get::<_, Option<String>>(7)?,
+                    "updated_at": row.get::<_, Option<String>>(8)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    pub fn get_search_profile(&self, id: &str) -> Result<Option<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, domain, categories_json, target_countries_json, is_active, created_at, updated_at FROM search_profiles WHERE id = ?1"
+        )?;
+        let mut rows = stmt.query_map([id], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "description": row.get::<_, Option<String>>(2)?,
+                "domain": row.get::<_, String>(3)?,
+                "categories_json": row.get::<_, String>(4)?,
+                "target_countries_json": row.get::<_, Option<String>>(5)?,
+                "is_active": row.get::<_, i64>(6)?,
+                "created_at": row.get::<_, Option<String>>(7)?,
+                "updated_at": row.get::<_, Option<String>>(8)?,
+            }))
+        })?;
+        match rows.next() {
+            Some(Ok(v)) => Ok(Some(v)),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn save_search_profile(
+        &self,
+        id: &str,
+        name: &str,
+        description: &str,
+        domain: &str,
+        categories_json: &str,
+        target_countries_json: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO search_profiles (id, name, description, domain, categories_json, target_countries_json, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now')) \
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, \
+             domain = excluded.domain, categories_json = excluded.categories_json, \
+             target_countries_json = excluded.target_countries_json, updated_at = datetime('now')",
+            rusqlite::params![id, name, description, domain, categories_json, target_countries_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_search_profile(&self, id: &str) -> Result<()> {
+        if id == "manufacturing" {
+            anyhow::bail!("Cannot delete the default manufacturing profile");
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM search_profiles WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn get_active_profile_id(&self) -> String {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT value FROM config WHERE key = 'active_profile_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "manufacturing".to_string())
+    }
+
     pub fn retry_failed_emails(&self) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let count = conn.execute(
@@ -544,9 +720,10 @@ impl Database {
         let id = uuid::Uuid::new_v4().to_string();
         let name = company.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let name_normalized = normalize_company_name(name);
+        let search_profile_id = company.get("search_profile_id").and_then(|v| v.as_str()).unwrap_or("manufacturing");
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO companies (id, name, website_url, domain, country, city, source, source_url, source_query, raw_snippet, name_normalized, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'discovered')",
+            "INSERT INTO companies (id, name, website_url, domain, country, city, source, source_url, source_query, raw_snippet, name_normalized, status, search_profile_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'discovered', ?12)",
             rusqlite::params![
                 id,
                 name,
@@ -559,6 +736,7 @@ impl Database {
                 company.get("source_query").and_then(|v| v.as_str()).unwrap_or(""),
                 company.get("raw_snippet").and_then(|v| v.as_str()).unwrap_or(""),
                 name_normalized,
+                search_profile_id,
             ],
         )?;
         Ok(id)

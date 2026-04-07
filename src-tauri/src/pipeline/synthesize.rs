@@ -48,6 +48,16 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .max(1)
         .min(10);
 
+    // Load active profile domain for prompt customization
+    let active_domain = {
+        let db: tauri::State<'_, Database> = app.state();
+        let profile_id = db.get_active_profile_id();
+        match db.get_search_profile(&profile_id) {
+            Ok(Some(profile)) => profile.get("domain").and_then(|v| v.as_str()).unwrap_or("manufacturing").to_string(),
+            _ => "manufacturing".to_string(),
+        }
+    };
+
     let synthesized_count = Arc::new(AtomicI64::new(0));
     let error_count = Arc::new(AtomicI64::new(0));
 
@@ -114,6 +124,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 let deepseek_api_key = deepseek_api_key.clone();
                 let ollama_url = ollama_url.clone();
                 let enrich_model = enrich_model.clone();
+                let active_domain = active_domain.clone();
                 let synthesized_count = Arc::clone(&synthesized_count);
                 let error_count = Arc::clone(&error_count);
 
@@ -275,7 +286,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                         .unwrap_or("Not detected");
 
                     // ── PUBLIC SYNTHESIS ────────────────────────────────────────
-                    let public_system = "You are a manufacturing intelligence analyst writing marketplace listings for Fractional Forge, a B2B marketplace connecting buyers with precision manufacturers. Write in a professional but approachable tone. Be specific — mention actual certifications, equipment, and capabilities.\n\nCRITICAL RULES:\n- Use only information provided. Do not infer or speculate.\n- Be specific: \"AS9100-certified 5-axis CNC machining of titanium\" not \"precision work\".\n- Write for buyers looking for manufacturing partners.\n- Highlight competitive differentiation.\n- NEVER include: director ages, acquisition scores, ownership structure, financial data, founder bios, board composition.\n- Return ONLY valid JSON. No markdown, no explanations.";
+                    let public_system = format!("You are a {} intelligence analyst writing marketplace listings for Fractional Forge, a B2B marketplace connecting buyers with {} companies. Write in a professional but approachable tone. Be specific — mention actual certifications, equipment, and capabilities.\n\nCRITICAL RULES:\n- Use only information provided. Do not infer or speculate.\n- Be specific about capabilities and differentiators.\n- Write for buyers looking for {} partners.\n- Highlight competitive differentiation.\n- NEVER include: director ages, acquisition scores, ownership structure, financial data, founder bios, board composition.\n- Return ONLY valid JSON. No markdown, no explanations.", active_domain, active_domain, active_domain);
 
                     let public_user = format!(
                         r#"COMPANY DATA:
@@ -346,7 +357,7 @@ Return ONLY valid JSON."#,
                     let public_response = if llm_backend == "haiku" {
                         crate::services::anthropic::chat(
                             &anthropic_api_key,
-                            Some(public_system),
+                            Some(&public_system),
                             &public_user,
                             true,
                         )
@@ -354,7 +365,7 @@ Return ONLY valid JSON."#,
                     } else if llm_backend == "deepseek" {
                         crate::services::deepseek::chat(
                             &deepseek_api_key,
-                            Some(public_system),
+                            Some(&public_system),
                             &public_user,
                             true,
                         )
@@ -396,7 +407,7 @@ Return ONLY valid JSON."#,
                     };
 
                     // ── PRIVATE SYNTHESIS ───────────────────────────────────────
-                    let private_system = "You are a business analyst evaluating manufacturing SMEs for a private equity investor interested in acquiring and improving manufacturing companies. Be analytical and direct. Focus on actionable intelligence for acquisition diligence and fractional executive recruitment.\n\nCRITICAL RULES:\n- Use only information provided. Do not infer.\n- Focus on growth trajectory, team depth, and acquisition readiness.\n- Identify gaps where fractional executives could add value.\n- Assess M&A attractiveness based on signals in the data.\n- Return ONLY valid JSON. No markdown, no explanations.";
+                    let private_system = format!("You are a business analyst evaluating {} SMEs for a private equity investor interested in acquiring and improving {} companies. Be analytical and direct. Focus on actionable intelligence for acquisition diligence and fractional executive recruitment.\n\nCRITICAL RULES:\n- Use only information provided. Do not infer.\n- Focus on growth trajectory, team depth, and acquisition readiness.\n- Identify gaps where fractional executives could add value.\n- Assess M&A attractiveness based on signals in the data.\n- Return ONLY valid JSON. No markdown, no explanations.", active_domain, active_domain);
 
                     let private_user = format!(
                         r#"COMPANY DATA:
@@ -483,7 +494,7 @@ Return ONLY valid JSON."#,
                     let private_response = if llm_backend == "haiku" {
                         crate::services::anthropic::chat(
                             &anthropic_api_key,
-                            Some(private_system),
+                            Some(&private_system),
                             &private_user,
                             true,
                         )
@@ -491,7 +502,7 @@ Return ONLY valid JSON."#,
                     } else if llm_backend == "deepseek" {
                         crate::services::deepseek::chat(
                             &deepseek_api_key,
-                            Some(private_system),
+                            Some(&private_system),
                             &private_user,
                             true,
                         )

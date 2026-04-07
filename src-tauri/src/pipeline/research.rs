@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use tauri::{Emitter, Manager};
 
 use crate::db::Database;
-use crate::services::brave::CATEGORIES;
+use crate::services::brave::{CATEGORIES, DynamicSearchCategory};
 
 /// Run the research stage using category rotation and Supabase dedup.
 /// Returns discovered company IDs for immediate enrichment.
@@ -69,6 +69,29 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
+    // Load active search profile from DB
+    let (active_profile_id, active_domain, dynamic_categories) = {
+        let db: tauri::State<'_, Database> = app.state();
+        let profile_id = db.get_active_profile_id();
+        match db.get_search_profile(&profile_id) {
+            Ok(Some(profile)) => {
+                let domain = profile.get("domain").and_then(|v| v.as_str()).unwrap_or("manufacturing").to_string();
+                let cats_str = profile.get("categories_json").and_then(|v| v.as_str()).unwrap_or("[]");
+                let cats: Vec<DynamicSearchCategory> = serde_json::from_str(cats_str).unwrap_or_default();
+                (profile_id, domain, cats)
+            }
+            _ => {
+                // Fallback: use hardcoded CATEGORIES
+                let cats: Vec<DynamicSearchCategory> = CATEGORIES.iter().map(|c| DynamicSearchCategory {
+                    id: c.id.to_string(),
+                    name: c.name.to_string(),
+                    keywords: c.keywords.iter().map(|k| k.to_string()).collect(),
+                }).collect();
+                (profile_id, "manufacturing".to_string(), cats)
+            }
+        }
+    };
+
     {
         let db: tauri::State<'_, Database> = app.state();
         let _ = db.log_activity(
@@ -76,8 +99,8 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             "research",
             "info",
             &format!(
-                "Starting research using Brave Search API + LLM parser (model: {})",
-                research_model
+                "Starting research using Brave Search API + LLM parser (model: {}, profile: {}, domain: {})",
+                research_model, active_profile_id, active_domain
             ),
         );
     }
@@ -133,11 +156,11 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             break;
         }
 
-        let selected_categories = pick_categories(app, country, categories_per_run);
+        let selected_categories = pick_dynamic_categories(app, country, categories_per_run, &dynamic_categories);
 
         {
             let db: tauri::State<'_, Database> = app.state();
-            let names: Vec<&str> = selected_categories.iter().map(|c| c.name).collect();
+            let names: Vec<&str> = selected_categories.iter().map(|c| c.name.as_str()).collect();
             let _ = db.log_activity(
                 job_id,
                 "research",
@@ -152,7 +175,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 break;
             }
 
-            let queries = crate::services::brave::generate_queries_for_category(country, category);
+            let queries = crate::services::brave::generate_queries_for_dynamic_category(country, category, &active_domain);
             let mut batch_discovered = 0;
             let mut batch_results = 0u64;
             let mut skipped_llm_error = 0u64;
@@ -232,9 +255,9 @@ Title: {}
 URL: {}
 Description: {}
 
-If this is NOT a manufacturing/engineering company, return {{"skip": true}}.
+If this is NOT a {} company, return {{"skip": true}}.
 Return ONLY valid JSON."#,
-                        country, category.name, result.title, result.url, result.description
+                        country, category.name, result.title, result.url, result.description, active_domain
                     );
 
                     let llm_response = if llm_backend == "haiku" {
@@ -383,6 +406,7 @@ Return ONLY valid JSON."#,
                     company["source_url"] = json!(result.url);
                     company["source_query"] = json!(query);
                     company["raw_snippet"] = json!(result.description);
+                    company["search_profile_id"] = json!(&active_profile_id);
 
                     let db: tauri::State<'_, Database> = app.state();
                     match db.insert_company(&company) {
@@ -459,9 +483,9 @@ Title: {}
 URL: {}
 Description: {}
 
-If this is NOT a manufacturing/engineering company, return {{"skip": true}}.
+If this is NOT a {} company, return {{"skip": true}}.
 Return ONLY valid JSON."#,
-                                    country, category.name, result.title, result.url, result.description
+                                    country, category.name, result.title, result.url, result.description, active_domain
                                 );
 
                                 let llm_response = match crate::services::ollama::generate(
@@ -502,6 +526,7 @@ Return ONLY valid JSON."#,
                                 company["source_url"] = json!(result.url);
                                 company["source_query"] = json!(page2_key);
                                 company["raw_snippet"] = json!(result.description);
+                                company["search_profile_id"] = json!(&active_profile_id);
 
                                 let db: tauri::State<'_, Database> = app.state();
                                 if let Ok(_) = db.insert_company(&company) {
@@ -539,7 +564,7 @@ Return ONLY valid JSON."#,
             // Update category coverage
             {
                 let db: tauri::State<'_, Database> = app.state();
-                let _ = db.increment_category_coverage(category.id, country, batch_discovered);
+                let _ = db.increment_category_coverage(&category.id, country, batch_discovered);
                 let _ = db.log_activity(
                     job_id,
                     "research",
@@ -573,26 +598,24 @@ Return ONLY valid JSON."#,
     }))
 }
 
-/// Pick the least-covered categories for a country.
+/// Pick the least-covered dynamic categories for a country.
 /// Returns `count` categories sorted by fewest companies found.
-fn pick_categories(
+fn pick_dynamic_categories(
     app: &tauri::AppHandle,
     country: &str,
     count: usize,
-) -> Vec<&'static crate::services::brave::SearchCategory> {
+    all_categories: &[DynamicSearchCategory],
+) -> Vec<DynamicSearchCategory> {
     let db: tauri::State<'_, Database> = app.state();
     let coverage = db.get_category_coverage(country).unwrap_or_default();
 
-    // Build a map of category_id -> (companies_found, searches_run)
     let coverage_map: std::collections::HashMap<String, (i64, i64)> = coverage
         .into_iter()
         .map(|(cat_id, searches, companies)| (cat_id, (companies, searches)))
         .collect();
 
-    // Sort by (companies_found, searches_run) tuple — guarantees rotation
-    // when all have 0 found, those with fewer searches get picked first
-    let mut categories: Vec<&crate::services::brave::SearchCategory> = CATEGORIES.iter().collect();
-    categories.sort_by_key(|cat| coverage_map.get(cat.id).copied().unwrap_or((0, 0)));
+    let mut categories: Vec<DynamicSearchCategory> = all_categories.to_vec();
+    categories.sort_by_key(|cat| coverage_map.get(&cat.id).copied().unwrap_or((0, 0)));
     categories.truncate(count);
     categories
 }

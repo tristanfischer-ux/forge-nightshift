@@ -70,6 +70,16 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .max(1)
         .min(10);
 
+    // Load active profile domain for prompt customization
+    let active_domain = {
+        let db: tauri::State<'_, Database> = app.state();
+        let profile_id = db.get_active_profile_id();
+        match db.get_search_profile(&profile_id) {
+            Ok(Some(profile)) => profile.get("domain").and_then(|v| v.as_str()).unwrap_or("manufacturing").to_string(),
+            _ => "manufacturing".to_string(),
+        }
+    };
+
     // Reset stuck 'enriching' companies from a previous crashed run
     let stuck_count = {
         let db: tauri::State<'_, Database> = app.state();
@@ -197,6 +207,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 let deepseek_api_key = deepseek_api_key.clone();
                 let ch_api_key = ch_api_key.clone();
                 let oc_api_key = oc_api_key.clone();
+                let active_domain = active_domain.clone();
                 let enriched_count = Arc::clone(&enriched_count);
                 let approved_count = Arc::clone(&approved_count);
                 let error_count = Arc::clone(&error_count);
@@ -238,7 +249,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                     let website_text = crate::services::scraper::fetch_website_text(&website).await.ok();
 
                     let enrich_prompt = format!(
-                        r#"Analyze this manufacturing company for a B2B marketplace. Return JSON with these fields:
+                        r#"Analyze this {} company for a B2B marketplace. Return JSON with these fields:
 description (2-3 sentences, English), description_original (original language if not English, else null), snippet_english (English translation of snippet, null if already English), category ("Products"/"Services"), subcategory, capabilities (array), industries (array), materials (array of specific materials with grades/alloys, e.g. ["Aluminium 6061-T6", "Stainless Steel 316L", "Titanium Ti-6Al-4V", "ABS", "Carbon Fibre", "PA12 Nylon", "Brass CZ121", "Mild Steel S275"]), key_equipment (array with brand+model), production_capacity (string or null), certifications (array), company_size ("1-9"/"10-49"/"50-99"/"100-249"/"250-499"/"500+"), employee_count_exact (int or null), key_people (array of name+title, max 5), founded_year (int or null), contact_name, contact_email (extract from mailto: links, contact/about pages, footer — prefer sales@, info@, contact@ — if listed in CONTACT EMAILS FOUND above, USE IT), contact_title, address (full with postcode or null), products (array), lead_time (string or null), minimum_order (string or null), quality_systems (string or null), export_controls (string or null), security_clearances (array), relevance_score (0-100, 80+=clearly manufacturing), enrichment_quality (0-100).
 
 CRITICAL: Return null if no evidence. Do NOT guess. All text in English.
@@ -251,7 +262,7 @@ Data:
 Snippet: {}
 
 Return ONLY valid JSON. /no_think"#,
-                        name, website,
+                        active_domain, name, website,
                         website_text.as_deref().unwrap_or(""),
                         snippet
                     );

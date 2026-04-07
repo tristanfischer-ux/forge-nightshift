@@ -221,6 +221,44 @@ export async function getExtendedStats() {
   return invoke<ExtendedStats>("get_extended_stats");
 }
 
+// Search Profiles
+export interface SearchProfile {
+  id: string;
+  name: string;
+  description: string | null;
+  domain: string;
+  categories_json: string;
+  target_countries_json: string;
+  is_active: number;
+}
+
+export async function getSearchProfiles(): Promise<SearchProfile[]> {
+  return invoke<SearchProfile[]>("get_search_profiles");
+}
+
+export async function saveSearchProfile(profile: {
+  id: string;
+  name: string;
+  description: string;
+  domain: string;
+  categories_json: string;
+  target_countries_json: string;
+}): Promise<void> {
+  return invoke("save_search_profile", profile);
+}
+
+export async function deleteSearchProfile(id: string): Promise<void> {
+  return invoke("delete_search_profile", { id });
+}
+
+export async function getActiveProfile(): Promise<string> {
+  return invoke<string>("get_active_profile");
+}
+
+export async function setActiveProfile(id: string): Promise<void> {
+  return invoke("set_active_profile", { id });
+}
+
 // Event listeners
 export function onPipelineStatus(
   callback: (payload: Record<string, unknown>) => void

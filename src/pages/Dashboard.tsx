@@ -25,7 +25,8 @@ import {
   getStatsHistory,
   getExtendedStats,
 } from "../lib/tauri";
-import type { AnalyticsData, StatsHistoryEntry, ExtendedStats } from "../lib/tauri";
+import type { AnalyticsData, StatsHistoryEntry, ExtendedStats, SearchProfile } from "../lib/tauri";
+import { getSearchProfiles, getActiveProfile } from "../lib/tauri";
 import { playSound } from "../lib/sounds";
 
 interface PipelineState {
@@ -49,9 +50,18 @@ export default function Dashboard() {
   const [logLevelFilter, setLogLevelFilter] = useState("all");
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevRunningRef = useRef(false);
+  const [activeProfileName, setActiveProfileName] = useState<string>("");
 
   useEffect(() => {
     loadData();
+
+    // Load active profile name
+    Promise.all([getSearchProfiles(), getActiveProfile()])
+      .then(([profiles, activeId]) => {
+        const active = profiles.find((p: SearchProfile) => p.id === activeId);
+        if (active) setActiveProfileName(active.name);
+      })
+      .catch(() => {});
 
     const unlistenStatus = onPipelineStatus((payload) => {
       const isRunning = payload.status === "running";
@@ -181,6 +191,9 @@ export default function Dashboard() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+          {activeProfileName && (
+            <p className="text-sm text-forge-600 font-medium mt-0.5">{activeProfileName}</p>
+          )}
           <p className="text-sm text-gray-500 mt-1">
             Overnight pipeline status & controls
           </p>

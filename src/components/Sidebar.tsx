@@ -13,7 +13,8 @@ import {
   Workflow,
   Rows3,
 } from "lucide-react";
-import { getPipelineStatus, getStats } from "../lib/tauri";
+import { getPipelineStatus, getStats, getSearchProfiles, getActiveProfile, setActiveProfile } from "../lib/tauri";
+import type { SearchProfile } from "../lib/tauri";
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -25,15 +26,28 @@ const navItems = [
   { path: "/settings", label: "Settings", icon: Settings },
 ];
 
+function domainDot(domain: string): string {
+  if (domain === "manufacturing") return "\u{1F535}";
+  if (domain === "cleantech") return "\u{1F7E2}";
+  if (domain === "biotech") return "\u{1F7E3}";
+  return "\u{26AA}";
+}
+
 export default function Sidebar() {
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [version, setVersion] = useState("");
   const [badges, setBadges] = useState<Record<string, number>>({});
   const [dense, setDense] = useState(() => localStorage.getItem("nightshift-density") === "dense");
+  const [profiles, setProfiles] = useState<SearchProfile[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<string>("");
 
   useEffect(() => {
     getVersion().then(setVersion);
+
+    // Load search profiles
+    getSearchProfiles().then(setProfiles).catch(() => {});
+    getActiveProfile().then(setActiveProfileId).catch(() => {});
 
     // Listen for Ollama status from startup check
     const unlistenOllama = listen<{ connected: boolean }>(
@@ -104,6 +118,31 @@ export default function Sidebar() {
           </div>
         </div>
       </div>
+
+      {profiles.length > 0 && (
+        <div className="px-3 py-2 border-b border-gray-200">
+          <select
+            value={activeProfileId}
+            onChange={async (e) => {
+              const id = e.target.value;
+              try {
+                await setActiveProfile(id);
+                setActiveProfileId(id);
+                window.location.reload();
+              } catch (err) {
+                console.error("Failed to set active profile:", err);
+              }
+            }}
+            className="w-full text-xs border border-gray-200 rounded-md px-2 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-forge-500"
+          >
+            {profiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {domainDot(p.domain)} {p.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <nav className="flex-1 p-2">
         {navItems.map((item) => (
