@@ -65,6 +65,10 @@ impl Database {
             include_str!("migrations/018_email_last_error.sql"),
             include_str!("migrations/019_campaigns.sql"),
             include_str!("migrations/020_self_learning.sql"),
+            include_str!("migrations/021_verification.sql"),
+            include_str!("migrations/022_synthesis.sql"),
+            include_str!("migrations/023_activity_feed.sql"),
+            include_str!("migrations/024_nightshift_intel.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -969,6 +973,78 @@ impl Database {
         Ok(rows)
     }
 
+    /// Load all embeddings from supplier_embeddings table.
+    /// Returns Vec<(company_id, embedding)>.
+    pub fn load_embeddings(&self) -> Result<Vec<(String, Vec<f32>)>> {
+        let conn = self.conn.lock().unwrap();
+
+        // Check if table exists
+        let table_exists: bool = conn
+            .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='supplier_embeddings'")?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map(|c| c > 0)?;
+
+        if !table_exists {
+            return Ok(Vec::new());
+        }
+
+        let mut stmt = conn.prepare("SELECT company_id, embedding FROM supplier_embeddings")?;
+        let rows: Vec<(String, Vec<f32>)> = stmt
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let emb_json: String = row.get(1)?;
+                Ok((id, emb_json))
+            })?
+            .filter_map(|r| r.ok())
+            .filter_map(|(id, emb_json)| {
+                let emb: Vec<f32> = serde_json::from_str(&emb_json).ok()?;
+                Some((id, emb))
+            })
+            .collect();
+
+        Ok(rows)
+    }
+
+    /// Get companies by a list of IDs, preserving the order of the input.
+    pub fn get_companies_by_ids(&self, ids: &[String]) -> Result<Vec<Value>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().unwrap();
+
+        let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{}", i)).collect();
+        let query = format!(
+            "SELECT * FROM companies WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+
+        let mut stmt = conn.prepare(&query)?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+
+        let rows: Vec<Value> = stmt
+            .query_map(params.as_slice(), |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Re-order to match input ids order
+        let mut map: HashMap<String, Value> = HashMap::new();
+        for row in rows {
+            if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
+                map.insert(id.to_string(), row);
+            }
+        }
+        let ordered: Vec<Value> = ids.iter().filter_map(|id| map.remove(id)).collect();
+        Ok(ordered)
+    }
+
     /// Approve all enriched companies (set status from 'enriched' to 'approved')
     pub fn approve_all_enriched(&self) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
@@ -1077,37 +1153,6 @@ impl Database {
             })?
             .filter_map(|r| r.ok())
             .collect();
-        Ok(rows)
-    }
-
-    /// Get companies by list of IDs
-    #[allow(dead_code)]
-    pub fn get_companies_by_ids(&self, ids: &[String]) -> Result<Vec<Value>> {
-        if ids.is_empty() {
-            return Ok(vec![]);
-        }
-        let conn = self.conn.lock().unwrap();
-        let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
-        let query = format!(
-            "SELECT * FROM companies WHERE id IN ({}) ORDER BY created_at DESC",
-            placeholders.join(",")
-        );
-        let mut stmt = conn.prepare(&query)?;
-        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
-        let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
-
-        let rows: Vec<Value> = stmt
-            .query_map(params.as_slice(), |row| {
-                let mut obj = serde_json::Map::new();
-                for (i, col) in columns.iter().enumerate() {
-                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
-                    obj.insert(col.clone(), sqlite_to_json(val));
-                }
-                Ok(Value::Object(obj))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
         Ok(rows)
     }
 
@@ -2325,6 +2370,428 @@ impl Database {
             "last_learning_at": last_learning,
             "insight_count": insight_count,
         }))
+    }
+
+    // ── Verification stage helpers ──────────────────────────────────────
+
+    /// Get companies that need verification: enriched/approved/pushed with no verified_v2_at.
+    pub fn get_verifiable_companies(&self, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, website_url, country, city, status, \
+                    description, category, subcategory, certifications, company_size, \
+                    contact_email, contact_name, contact_title, address, \
+                    relevance_score, enrichment_quality, attributes_json \
+             FROM companies \
+             WHERE verified_v2_at IS NULL \
+               AND status IN ('enriched', 'approved', 'pushed') \
+               AND website_url IS NOT NULL AND website_url != '' \
+             ORDER BY created_at ASC \
+             LIMIT ?1"
+        )?;
+
+        let rows: Vec<Value> = stmt
+            .query_map([limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "website_url": row.get::<_, String>(2)?,
+                    "country": row.get::<_, Option<String>>(3)?,
+                    "city": row.get::<_, Option<String>>(4)?,
+                    "status": row.get::<_, String>(5)?,
+                    "description": row.get::<_, Option<String>>(6)?,
+                    "category": row.get::<_, Option<String>>(7)?,
+                    "subcategory": row.get::<_, Option<String>>(8)?,
+                    "certifications": row.get::<_, Option<String>>(9)?,
+                    "company_size": row.get::<_, Option<String>>(10)?,
+                    "contact_email": row.get::<_, Option<String>>(11)?,
+                    "contact_name": row.get::<_, Option<String>>(12)?,
+                    "contact_title": row.get::<_, Option<String>>(13)?,
+                    "address": row.get::<_, Option<String>>(14)?,
+                    "relevance_score": row.get::<_, Option<i64>>(15)?,
+                    "enrichment_quality": row.get::<_, Option<i64>>(16)?,
+                    "attributes_json": row.get::<_, Option<String>>(17)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(rows)
+    }
+
+    /// Apply verification results to a company.
+    /// Uses COALESCE so corrections only overwrite when a value is provided (non-destructive).
+    pub fn apply_verification(
+        &self,
+        id: &str,
+        corrections: &Value,
+        verification_changes_json: &str,
+        fractional_signals_json: &str,
+        relevance_score: Option<i64>,
+        enrichment_quality: Option<i64>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET \
+             description = COALESCE(?1, description), \
+             certifications = COALESCE(?2, certifications), \
+             company_size = COALESCE(?3, company_size), \
+             contact_email = COALESCE(?4, contact_email), \
+             contact_name = COALESCE(?5, contact_name), \
+             contact_title = COALESCE(?6, contact_title), \
+             address = COALESCE(?7, address), \
+             relevance_score = COALESCE(?8, relevance_score), \
+             enrichment_quality = COALESCE(?9, enrichment_quality), \
+             verification_changes_json = ?10, \
+             fractional_signals_json = ?11, \
+             verified_v2_at = datetime('now'), \
+             updated_at = datetime('now') \
+             WHERE id = ?12",
+            rusqlite::params![
+                corrections.get("description").and_then(|v| v.as_str()),
+                corrections.get("certifications").map(|v| v.to_string()),
+                corrections.get("company_size").and_then(|v| v.as_str()),
+                corrections.get("contact_email").and_then(|v| v.as_str()),
+                corrections.get("contact_name").and_then(|v| v.as_str()),
+                corrections.get("contact_title").and_then(|v| v.as_str()),
+                corrections.get("address").and_then(|v| v.as_str()),
+                relevance_score,
+                enrichment_quality,
+                verification_changes_json,
+                fractional_signals_json,
+                id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Mark a company as verified with no corrections (just sets timestamp).
+    pub fn mark_verified(&self, id: &str, verification_changes_json: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET \
+             verification_changes_json = ?1, \
+             verified_v2_at = datetime('now'), \
+             updated_at = datetime('now') \
+             WHERE id = ?2",
+            rusqlite::params![verification_changes_json, id],
+        )?;
+        Ok(())
+    }
+
+    /// Get companies that need synthesis (verified but not yet synthesized).
+    pub fn get_synthesizable_companies(&self, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, domain, website_url, country, city, status, \
+                    description, category, subcategory, certifications, company_size, \
+                    contact_email, contact_name, contact_title, address, year_founded, \
+                    relevance_score, enrichment_quality, \
+                    verification_changes_json, fractional_signals_json \
+             FROM companies \
+             WHERE verified_v2_at IS NOT NULL \
+               AND (synthesis_public_json IS NULL OR synthesis_public_json = '') \
+               AND status IN ('enriched', 'approved', 'pushed') \
+             ORDER BY CASE WHEN status = 'pushed' THEN 0 ELSE 1 END, created_at ASC \
+             LIMIT ?1"
+        )?;
+
+        let rows: Vec<Value> = stmt
+            .query_map([limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, Option<String>>(1)?,
+                    "domain": row.get::<_, Option<String>>(2)?,
+                    "website_url": row.get::<_, Option<String>>(3)?,
+                    "country": row.get::<_, Option<String>>(4)?,
+                    "city": row.get::<_, Option<String>>(5)?,
+                    "status": row.get::<_, String>(6)?,
+                    "description": row.get::<_, Option<String>>(7)?,
+                    "category": row.get::<_, Option<String>>(8)?,
+                    "subcategory": row.get::<_, Option<String>>(9)?,
+                    "certifications": row.get::<_, Option<String>>(10)?,
+                    "company_size": row.get::<_, Option<String>>(11)?,
+                    "contact_email": row.get::<_, Option<String>>(12)?,
+                    "contact_name": row.get::<_, Option<String>>(13)?,
+                    "contact_title": row.get::<_, Option<String>>(14)?,
+                    "address": row.get::<_, Option<String>>(15)?,
+                    "year_founded": row.get::<_, Option<String>>(16)?,
+                    "relevance_score": row.get::<_, Option<i64>>(17)?,
+                    "enrichment_quality": row.get::<_, Option<i64>>(18)?,
+                    "verification_changes_json": row.get::<_, Option<String>>(19)?,
+                    "fractional_signals_json": row.get::<_, Option<String>>(20)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(rows)
+    }
+
+    /// Save synthesis results (public + private JSON) for a company.
+    pub fn save_synthesis(&self, id: &str, public_json: &str, private_json: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET \
+             synthesis_public_json = ?1, \
+             synthesis_private_json = ?2, \
+             synthesized_v2_at = datetime('now'), \
+             updated_at = datetime('now') \
+             WHERE id = ?3",
+            rusqlite::params![public_json, private_json, id],
+        )?;
+        Ok(())
+    }
+
+    // ── Activity Feed helpers ──────────────────────────────────────────
+
+    /// Save an activity feed item. Deduplicates by URL (INSERT OR IGNORE).
+    pub fn save_activity(
+        &self,
+        company_id: &str,
+        title: &str,
+        url: &str,
+        snippet: Option<&str>,
+        activity_type: &str,
+        published_at: Option<&str>,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "INSERT OR IGNORE INTO activity_feed (company_id, title, url, snippet, activity_type, published_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![company_id, title, url, snippet, activity_type, published_at],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Get recent activity feed items for a company.
+    pub fn get_company_activities(&self, company_id: &str, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, company_id, title, url, snippet, activity_type, published_at, fetched_at \
+             FROM activity_feed WHERE company_id = ?1 \
+             ORDER BY fetched_at DESC LIMIT ?2",
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map(rusqlite::params![company_id, limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, i64>(0)?,
+                    "company_id": row.get::<_, String>(1)?,
+                    "title": row.get::<_, String>(2)?,
+                    "url": row.get::<_, String>(3)?,
+                    "snippet": row.get::<_, Option<String>>(4)?,
+                    "activity_type": row.get::<_, String>(5)?,
+                    "published_at": row.get::<_, Option<String>>(6)?,
+                    "fetched_at": row.get::<_, String>(7)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Get companies eligible for activity feed fetch (pushed/approved, limit N).
+    pub fn get_activity_eligible_companies(&self, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, city, country FROM companies \
+             WHERE status IN ('pushed', 'approved') \
+             ORDER BY RANDOM() LIMIT ?1",
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map(rusqlite::params![limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "city": row.get::<_, Option<String>>(2)?,
+                    "country": row.get::<_, Option<String>>(3)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    // ── Nightshift Intel (PRIVATE — never push to ForgeOS) ────────────
+
+    /// Upsert director intel for a company. ON CONFLICT(company_id) updates.
+    pub fn save_intel(&self, company_id: &str, intel: &Value) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO nightshift_intel (
+                company_id, directors_json, director_count,
+                avg_director_age, oldest_director_age, youngest_director_age,
+                founder_director_name, founder_director_age, founder_director_tenure_years,
+                psc_json, psc_count, single_owner, owner_is_director, majority_control_nature,
+                no_young_directors, recent_director_changes, years_trading, has_company_secretary,
+                accounts_type, last_accounts_date, accounts_overdue,
+                has_charges, has_insolvency_history, company_status, sic_codes,
+                acquisition_readiness_score, acquisition_signals_json,
+                ownership_structure, age_source, ch_fetched_at, estimated_at,
+                updated_at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13, ?14,
+                ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+                ?26, ?27, ?28, ?29, ?30, ?31,
+                datetime('now')
+             )
+             ON CONFLICT(company_id) DO UPDATE SET
+                directors_json = excluded.directors_json,
+                director_count = excluded.director_count,
+                avg_director_age = excluded.avg_director_age,
+                oldest_director_age = excluded.oldest_director_age,
+                youngest_director_age = excluded.youngest_director_age,
+                founder_director_name = excluded.founder_director_name,
+                founder_director_age = excluded.founder_director_age,
+                founder_director_tenure_years = excluded.founder_director_tenure_years,
+                psc_json = excluded.psc_json,
+                psc_count = excluded.psc_count,
+                single_owner = excluded.single_owner,
+                owner_is_director = excluded.owner_is_director,
+                majority_control_nature = excluded.majority_control_nature,
+                no_young_directors = excluded.no_young_directors,
+                recent_director_changes = excluded.recent_director_changes,
+                years_trading = excluded.years_trading,
+                has_company_secretary = excluded.has_company_secretary,
+                accounts_type = excluded.accounts_type,
+                last_accounts_date = excluded.last_accounts_date,
+                accounts_overdue = excluded.accounts_overdue,
+                has_charges = excluded.has_charges,
+                has_insolvency_history = excluded.has_insolvency_history,
+                company_status = excluded.company_status,
+                sic_codes = excluded.sic_codes,
+                acquisition_readiness_score = excluded.acquisition_readiness_score,
+                acquisition_signals_json = excluded.acquisition_signals_json,
+                ownership_structure = excluded.ownership_structure,
+                age_source = excluded.age_source,
+                ch_fetched_at = excluded.ch_fetched_at,
+                estimated_at = excluded.estimated_at,
+                updated_at = datetime('now')",
+            rusqlite::params![
+                company_id,
+                intel.get("directors_json").and_then(|v| v.as_str()),
+                intel.get("director_count").and_then(|v| v.as_i64()).unwrap_or(0),
+                intel.get("avg_director_age").and_then(|v| v.as_f64()),
+                intel.get("oldest_director_age").and_then(|v| v.as_i64()),
+                intel.get("youngest_director_age").and_then(|v| v.as_i64()),
+                intel.get("founder_director_name").and_then(|v| v.as_str()),
+                intel.get("founder_director_age").and_then(|v| v.as_i64()),
+                intel.get("founder_director_tenure_years").and_then(|v| v.as_i64()),
+                intel.get("psc_json").and_then(|v| v.as_str()),
+                intel.get("psc_count").and_then(|v| v.as_i64()).unwrap_or(0),
+                intel.get("single_owner").and_then(|v| v.as_i64()).unwrap_or(0),
+                intel.get("owner_is_director").and_then(|v| v.as_i64()).unwrap_or(0),
+                intel.get("majority_control_nature").and_then(|v| v.as_str()),
+                intel.get("no_young_directors").and_then(|v| v.as_i64()).unwrap_or(0),
+                intel.get("recent_director_changes").and_then(|v| v.as_i64()).unwrap_or(0),
+                intel.get("years_trading").and_then(|v| v.as_i64()),
+                intel.get("has_company_secretary").and_then(|v| v.as_i64()).unwrap_or(0),
+                intel.get("accounts_type").and_then(|v| v.as_str()),
+                intel.get("last_accounts_date").and_then(|v| v.as_str()),
+                intel.get("accounts_overdue").and_then(|v| v.as_i64()).unwrap_or(0),
+                intel.get("has_charges").and_then(|v| v.as_i64()).unwrap_or(0),
+                intel.get("has_insolvency_history").and_then(|v| v.as_i64()).unwrap_or(0),
+                intel.get("company_status").and_then(|v| v.as_str()),
+                intel.get("sic_codes").and_then(|v| v.as_str()),
+                intel.get("acquisition_readiness_score").and_then(|v| v.as_i64()).unwrap_or(0),
+                intel.get("acquisition_signals_json").and_then(|v| v.as_str()),
+                intel.get("ownership_structure").and_then(|v| v.as_str()),
+                intel.get("age_source").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                intel.get("ch_fetched_at").and_then(|v| v.as_str()),
+                intel.get("estimated_at").and_then(|v| v.as_str()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get GB companies with ch_company_number that have not been intel-analysed yet.
+    pub fn get_companies_for_intel(&self, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.name, c.country, c.ch_company_number,
+                    c.attributes_json, c.description, c.subcategory, c.company_size
+             FROM companies c
+             LEFT JOIN nightshift_intel ni ON c.id = ni.company_id
+             WHERE c.status NOT IN ('discovered', 'error')
+               AND c.ch_company_number IS NOT NULL
+               AND c.ch_company_number != ''
+               AND ni.company_id IS NULL
+             ORDER BY c.updated_at DESC
+             LIMIT ?1",
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "country": row.get::<_, Option<String>>(2)?,
+                    "ch_company_number": row.get::<_, Option<String>>(3)?,
+                    "attributes_json": row.get::<_, Option<String>>(4)?,
+                    "description": row.get::<_, Option<String>>(5)?,
+                    "subcategory": row.get::<_, Option<String>>(6)?,
+                    "company_size": row.get::<_, Option<String>>(7)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Get non-UK companies without intel that have enrichment data (for Haiku estimation).
+    pub fn get_non_uk_companies_for_intel(&self, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.name, c.country, c.description, c.subcategory,
+                    c.company_size, c.attributes_json, c.contact_name, c.contact_title
+             FROM companies c
+             LEFT JOIN nightshift_intel ni ON c.id = ni.company_id
+             WHERE c.status NOT IN ('discovered', 'error')
+               AND (c.country != 'GB' AND c.country != 'UK')
+               AND c.description IS NOT NULL AND c.description != ''
+               AND ni.company_id IS NULL
+             ORDER BY c.updated_at DESC
+             LIMIT ?1",
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map([limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "country": row.get::<_, Option<String>>(2)?,
+                    "description": row.get::<_, Option<String>>(3)?,
+                    "subcategory": row.get::<_, Option<String>>(4)?,
+                    "company_size": row.get::<_, Option<String>>(5)?,
+                    "attributes_json": row.get::<_, Option<String>>(6)?,
+                    "contact_name": row.get::<_, Option<String>>(7)?,
+                    "contact_title": row.get::<_, Option<String>>(8)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Get intel for a specific company.
+    pub fn get_intel(&self, company_id: &str) -> Result<Option<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT * FROM nightshift_intel WHERE company_id = ?1",
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let row = stmt
+            .query_map([company_id], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .next();
+        Ok(row)
     }
 }
 

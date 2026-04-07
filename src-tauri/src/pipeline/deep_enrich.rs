@@ -181,12 +181,32 @@ async fn run_candidates(app: &tauri::AppHandle, job_id: &str, config: &Value, ca
         .to_string();
     let model = "qwen3.5:27b-q4_K_M";
 
+    let llm_backend = config
+        .get("llm_backend")
+        .and_then(|v| v.as_str())
+        .unwrap_or("haiku")
+        .to_string();
+
+    let anthropic_api_key = config
+        .get("anthropic_api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let deepseek_api_key = config
+        .get("deepseek_api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     let started_at = chrono::Utc::now();
+
+    let display_model = if llm_backend == "haiku" { "claude-haiku-4-5" } else if llm_backend == "deepseek" { "deepseek-chat" } else { model };
 
     super::emit_node(app, json!({
         "node_id": "deep_enrich",
         "status": "running",
-        "model": model,
+        "model": display_model,
         "progress": { "current": 0, "total": total, "rate": null, "current_item": null },
         "concurrency": concurrency,
         "started_at": started_at.to_rfc3339(),
@@ -203,6 +223,9 @@ async fn run_candidates(app: &tauri::AppHandle, job_id: &str, config: &Value, ca
             let job_id = job_id.to_string();
             let ollama_url = ollama_url.clone();
             let model_str = model.to_string();
+            let llm_backend = llm_backend.clone();
+            let anthropic_api_key = anthropic_api_key.clone();
+            let deepseek_api_key = deepseek_api_key.clone();
             let succeeded = Arc::clone(&succeeded);
             let failed = Arc::clone(&failed);
 
@@ -260,19 +283,63 @@ async fn run_candidates(app: &tauri::AppHandle, job_id: &str, config: &Value, ca
 
                 // Step 2: LLM extraction
                 let prompt = build_extraction_prompt(&name, &website, &website_text);
-                let response = match ollama::generate_with_ctx(&ollama_url, &model_str, &prompt, true, 16384).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        log::warn!("LLM extraction failed for {}: {}", name, e);
-                        let db: tauri::State<'_, Database> = app.state();
-                        let _ = db.log_activity(
-                            &job_id,
-                            "deep_enrich",
-                            "warn",
-                            &format!("LLM failed for {}: {}", name, e),
-                        );
-                        failed.fetch_add(1, Ordering::Relaxed);
-                        return None;
+                let response = if llm_backend == "haiku" {
+                    match crate::services::anthropic::chat(
+                        &anthropic_api_key,
+                        None,
+                        &prompt,
+                        true,
+                    ).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            log::warn!("[Anthropic] LLM extraction failed for {}: {}", name, e);
+                            let db: tauri::State<'_, Database> = app.state();
+                            let _ = db.log_activity(
+                                &job_id,
+                                "deep_enrich",
+                                "warn",
+                                &format!("[Anthropic] LLM failed for {}: {}", name, e),
+                            );
+                            failed.fetch_add(1, Ordering::Relaxed);
+                            return None;
+                        }
+                    }
+                } else if llm_backend == "deepseek" {
+                    match crate::services::deepseek::chat(
+                        &deepseek_api_key,
+                        None,
+                        &prompt,
+                        true,
+                    ).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            log::warn!("[DeepSeek] LLM extraction failed for {}: {}", name, e);
+                            let db: tauri::State<'_, Database> = app.state();
+                            let _ = db.log_activity(
+                                &job_id,
+                                "deep_enrich",
+                                "warn",
+                                &format!("[DeepSeek] LLM failed for {}: {}", name, e),
+                            );
+                            failed.fetch_add(1, Ordering::Relaxed);
+                            return None;
+                        }
+                    }
+                } else {
+                    match ollama::generate_with_ctx(&ollama_url, &model_str, &prompt, true, 16384).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            log::warn!("LLM extraction failed for {}: {}", name, e);
+                            let db: tauri::State<'_, Database> = app.state();
+                            let _ = db.log_activity(
+                                &job_id,
+                                "deep_enrich",
+                                "warn",
+                                &format!("LLM failed for {}: {}", name, e),
+                            );
+                            failed.fetch_add(1, Ordering::Relaxed);
+                            return None;
+                        }
                     }
                 };
 

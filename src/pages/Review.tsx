@@ -33,6 +33,8 @@ import {
   Trash2,
   Wrench,
   ChevronDown,
+  Sparkles,
+  Newspaper,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -51,6 +53,9 @@ import {
   removeAllFromMarketplace,
   getCompaniesCount,
   batchUpdateStatus,
+  searchSemantic,
+  getCompanyActivities,
+  type ActivityItem,
 } from "../lib/tauri";
 import { useError } from "../contexts/ErrorContext";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -167,6 +172,9 @@ export default function Review() {
   const [removing, setRemoving] = useState<string | null>(null);
   const [removingAll, setRemovingAll] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [semanticMode, setSemanticMode] = useState(false);
+  const [semanticScores, setSemanticScores] = useState<Record<string, number>>({});
+  const [semanticLoading, setSemanticLoading] = useState(false);
   const [auditing, setAuditing] = useState(false);
   const [auditResult, setAuditResult] = useState<{
     fetched: number;
@@ -192,6 +200,10 @@ export default function Review() {
 
   // Enhancement 11: Detail tabs
   const [detailTab, setDetailTab] = useState<"overview" | "capabilities" | "contact" | "raw">("overview");
+
+  // Activity feed
+  const [activities, setActivities] = useState<ActivityItem[]>([]);
+  const [activitiesLoading, setActivitiesLoading] = useState(false);
 
   // Enhancement 12: Side-by-side comparison
   const [compareMode, setCompareMode] = useState(false);
@@ -234,18 +246,20 @@ export default function Review() {
   }, [page]);
 
   // Debounced search — resets page and fetches (uses filterRef to avoid stale closure)
+  // Semantic mode uses 500ms debounce (calls OpenAI API), LIKE search uses 300ms
   const searchQueryPrev = useRef(searchQuery);
   useEffect(() => {
     if (searchQueryPrev.current === searchQuery) return;
     searchQueryPrev.current = searchQuery;
+    const delay = semanticMode ? 500 : 300;
     const timer = setTimeout(() => {
       setPage(0);
       setSelectedIds(new Set());
       setCompareList([]);
       loadCompanies(filterRef.current);
-    }, 300);
+    }, delay);
     return () => clearTimeout(timer);
-  }, [searchQuery]);
+  }, [searchQuery, semanticMode]);
 
   // Check if pipeline is already running on mount
   useEffect(() => {
@@ -370,6 +384,21 @@ export default function Review() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [selectedIndex, companies, selected, filter, confirmDialog]);
 
+  // Load activities when a company is selected
+  useEffect(() => {
+    if (!selected) {
+      setActivities([]);
+      return;
+    }
+    const companyId = String(selected.id || "");
+    if (!companyId) return;
+    setActivitiesLoading(true);
+    getCompanyActivities(companyId, 10)
+      .then(setActivities)
+      .catch(() => setActivities([]))
+      .finally(() => setActivitiesLoading(false));
+  }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function loadCounts() {
     try {
       const stats = await getStats();
@@ -402,6 +431,41 @@ export default function Review() {
     try {
       const limit = 50;
       const offset = pageRef.current * 50;
+
+      // Semantic search path
+      if (semanticMode && searchQuery.trim()) {
+        setSemanticLoading(true);
+        try {
+          const result = await searchSemantic(
+            searchQuery.trim(),
+            limit,
+            status === "all" ? undefined : status,
+            drillSubcategory || undefined,
+            drillCountry || undefined,
+          );
+          setCompanies(result.companies);
+          setTotalCount(result.total);
+          // Build score map by company id
+          const scoreMap: Record<string, number> = {};
+          result.companies.forEach((c, i) => {
+            scoreMap[String(c.id)] = result.scores[i] ?? 0;
+          });
+          setSemanticScores(scoreMap);
+        } catch (e) {
+          showError(`Semantic search failed: ${e}`);
+          // Fall back to regular search
+          setSemanticScores({});
+        } finally {
+          setSemanticLoading(false);
+        }
+        return;
+      }
+
+      // Clear semantic scores when not in semantic mode
+      if (Object.keys(semanticScores).length > 0) {
+        setSemanticScores({});
+      }
+
       if (hasDrillDown || searchQuery.trim()) {
         const data = await getCompaniesFiltered({
           status: status === "all" ? undefined : status,
@@ -1106,6 +1170,31 @@ export default function Review() {
                   </button>
                 )}
               </div>
+              {/* Semantic search toggle */}
+              <button
+                onClick={() => {
+                  setSemanticMode(!semanticMode);
+                  if (!semanticMode && searchQuery.trim()) {
+                    // Switching to semantic — trigger search
+                    setPage(0);
+                    setTimeout(() => loadCompanies(filter), 0);
+                  } else if (semanticMode) {
+                    // Switching off semantic — revert to LIKE search
+                    setSemanticScores({});
+                    setPage(0);
+                    setTimeout(() => loadCompanies(filter), 0);
+                  }
+                }}
+                title={semanticMode ? "Semantic search ON (AI-powered)" : "Enable semantic search"}
+                className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors shrink-0 ${
+                  semanticMode
+                    ? "bg-purple-100 text-purple-700 border-purple-300"
+                    : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+                }`}
+              >
+                <Sparkles className="w-3 h-3" />
+                {semanticLoading ? "Searching..." : "Semantic"}
+              </button>
               {/* Enhancement 12: Compare toggle */}
               <button
                 onClick={() => {
@@ -1190,6 +1279,21 @@ export default function Review() {
                       >
                         {cStatus}
                       </span>
+                      {/* Semantic match score */}
+                      {semanticScores[companyId] != null && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                            semanticScores[companyId] >= 0.8
+                              ? "bg-green-100 text-green-700"
+                              : semanticScores[companyId] >= 0.6
+                                ? "bg-yellow-100 text-yellow-700"
+                                : "bg-gray-100 text-gray-500"
+                          }`}
+                          title={`Semantic similarity: ${(semanticScores[companyId] * 100).toFixed(1)}%`}
+                        >
+                          {Math.round(semanticScores[companyId] * 100)}%
+                        </span>
+                      )}
                       {company.relevance_score != null &&
                         Number(company.relevance_score) > 0 && (
                           <div className="flex items-center gap-1">
@@ -1491,6 +1595,58 @@ export default function Review() {
                         }
                       />
                     </div>
+                  </div>
+                  {/* Recent Activity */}
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <Newspaper className="w-4 h-4 text-blue-500" />
+                      <h4 className="font-medium text-sm text-gray-700">Recent Activity</h4>
+                    </div>
+                    {activitiesLoading ? (
+                      <div className="flex items-center gap-2 text-xs text-gray-400">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        Loading...
+                      </div>
+                    ) : activities.length === 0 ? (
+                      <p className="text-xs text-gray-400">No recent activity found</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {activities.map((item) => (
+                          <div key={item.id} className="border border-gray-100 rounded-lg p-2">
+                            <div className="flex items-start gap-2">
+                              <span className={`inline-block px-1.5 py-0.5 text-[10px] font-medium rounded-full shrink-0 mt-0.5 ${
+                                item.activity_type === "funding_round" ? "bg-green-100 text-green-700" :
+                                item.activity_type === "contract_win" ? "bg-blue-100 text-blue-700" :
+                                item.activity_type === "expansion" ? "bg-purple-100 text-purple-700" :
+                                item.activity_type === "key_hire" ? "bg-yellow-100 text-yellow-700" :
+                                item.activity_type === "acquisition" ? "bg-red-100 text-red-700" :
+                                "bg-gray-100 text-gray-600"
+                              }`}>
+                                {item.activity_type.replace("_", " ")}
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <a
+                                  href={item.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs font-medium text-blue-600 hover:underline line-clamp-2"
+                                >
+                                  {item.title}
+                                </a>
+                                {item.snippet && (
+                                  <p className="text-[11px] text-gray-500 mt-0.5 line-clamp-2">{item.snippet}</p>
+                                )}
+                                <p className="text-[10px] text-gray-400 mt-0.5">
+                                  {item.published_at
+                                    ? new Date(item.published_at).toLocaleDateString()
+                                    : new Date(item.fetched_at).toLocaleDateString()}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

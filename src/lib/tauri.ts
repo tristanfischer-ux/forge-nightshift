@@ -64,6 +64,20 @@ export async function testResendConnection(apiKey: string) {
   return invoke<boolean>("test_resend_connection", { apiKey });
 }
 
+export async function testAnthropicConnection(apiKey: string) {
+  return invoke<{ connected: boolean; model: string; response: string }>(
+    "test_anthropic_connection",
+    { apiKey }
+  );
+}
+
+export async function testDeepSeekConnection(apiKey: string) {
+  return invoke<{ connected: boolean; model: string; response: string }>(
+    "test_deepseek_connection",
+    { apiKey }
+  );
+}
+
 // Pipeline
 export async function startPipeline(stages: string[]) {
   return invoke<string>("start_pipeline", { stages });
@@ -516,4 +530,45 @@ export interface OutreachReadiness {
 
 export async function getOutreachReadiness() {
   return invoke<OutreachReadiness>("get_outreach_readiness");
+}
+
+// --- Activity Feed (Phase 7) ---
+
+export interface ActivityItem {
+  id: number;
+  company_id: string;
+  title: string;
+  url: string;
+  snippet: string | null;
+  activity_type: string;
+  published_at: string | null;
+  fetched_at: string;
+}
+
+export async function getCompanyActivities(companyId: string, limit?: number) {
+  return invoke<ActivityItem[]>("get_company_activities", { companyId, limit });
+}
+
+// --- Semantic Search (Phase 6) ---
+
+export interface SemanticSearchResult {
+  companies: Record<string, unknown>[];
+  scores: number[];
+  total: number;
+}
+
+export async function searchSemantic(
+  query: string,
+  limit?: number,
+  status?: string,
+  subcategory?: string,
+  country?: string,
+) {
+  return invoke<SemanticSearchResult>("search_semantic", {
+    query,
+    limit,
+    status,
+    subcategory,
+    country,
+  });
 }

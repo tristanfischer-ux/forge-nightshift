@@ -4,6 +4,44 @@ mod pipeline;
 
 use db::Database;
 use tauri::{Emitter, Manager};
+use std::sync::Mutex;
+
+/// Cached embeddings loaded from supplier_embeddings table.
+/// Populated lazily on first semantic search to avoid re-reading 8,699 rows each time.
+struct EmbeddingCache {
+    embeddings: Vec<(String, Vec<f32>)>,
+    loaded: bool,
+}
+
+impl EmbeddingCache {
+    fn new() -> Self {
+        Self {
+            embeddings: Vec::new(),
+            loaded: false,
+        }
+    }
+}
+
+/// Compute cosine similarity between two vectors.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    let mut norm_a = 0.0f32;
+    let mut norm_b = 0.0f32;
+    for i in 0..a.len() {
+        dot += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
+    }
+    let denom = norm_a.sqrt() * norm_b.sqrt();
+    if denom == 0.0 {
+        0.0
+    } else {
+        dot / denom
+    }
+}
 
 #[tauri::command]
 fn get_stats(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
@@ -83,9 +121,10 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "target_countries", "research_model", "enrich_model", "outreach_model",
     "ollama_url", "from_email", "brave_api_key", "resend_api_key",
     "supabase_url", "supabase_service_key", "foundry_id",
-    "companies_house_api_key", "sound_enabled",
+    "companies_house_api_key", "anthropic_api_key", "deepseek_api_key", "openai_api_key", "llm_backend", "sound_enabled",
     "auto_outreach_enabled", "auto_outreach_template_id", "outreach_batch_size",
     "send_window_start", "send_window_end",
+    "schedules",
 ];
 
 #[tauri::command]
@@ -149,6 +188,11 @@ fn set_config(db: tauri::State<'_, Database>, key: String, value: String) -> Res
                 return Err("Must be 'true' or 'false'".to_string());
             }
         }
+        "llm_backend" => {
+            if value != "haiku" && value != "ollama" && value != "deepseek" {
+                return Err("Must be 'haiku', 'ollama', or 'deepseek'".to_string());
+            }
+        }
         _ => {}
     }
 
@@ -179,6 +223,20 @@ async fn test_supabase_connection(url: String, key: String) -> Result<bool, Stri
 #[tauri::command]
 async fn test_resend_connection(api_key: String) -> Result<bool, String> {
     services::resend::test_connection(&api_key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn test_anthropic_connection(api_key: String) -> Result<serde_json::Value, String> {
+    services::anthropic::test_connection(&api_key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn test_deepseek_connection(api_key: String) -> Result<serde_json::Value, String> {
+    services::deepseek::test_connection(&api_key)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1292,6 +1350,176 @@ async fn get_outreach_readiness(
     }))
 }
 
+/// Resolve OpenAI API key from config DB, or fallback to ForgeOS .env.local / Forge-Capital .env
+fn resolve_openai_key(db: &Database) -> Option<String> {
+    // 1. Check config DB
+    if let Ok(config) = db.get_all_config() {
+        if let Some(key) = config.get("openai_api_key").and_then(|v| v.as_str()) {
+            if !key.is_empty() {
+                return Some(key.to_string());
+            }
+        }
+    }
+
+    // 2. Try ForgeOS .env.local
+    let home = std::env::var("HOME").unwrap_or_default();
+    let forgeos_env = format!("{}/Developer/CentaurOS created 260126 1435/.env.local", home);
+    if let Ok(contents) = std::fs::read_to_string(&forgeos_env) {
+        for line in contents.lines() {
+            if let Some(val) = line.strip_prefix("OPENAI_API_KEY=") {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+
+    // 3. Try Forge-Capital .env
+    let fc_env = format!("{}/Developer/Forge-Capital/.env", home);
+    if let Ok(contents) = std::fs::read_to_string(&fc_env) {
+        for line in contents.lines() {
+            if let Some(val) = line.strip_prefix("OPENAI_API_KEY=") {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[tauri::command]
+fn get_company_activities(
+    db: tauri::State<'_, Database>,
+    company_id: String,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let limit = limit.unwrap_or(10).max(1).min(50);
+    db.get_company_activities(&company_id, limit)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn search_semantic(
+    db: tauri::State<'_, Database>,
+    cache: tauri::State<'_, Mutex<EmbeddingCache>>,
+    query: String,
+    limit: Option<usize>,
+    status: Option<String>,
+    subcategory: Option<String>,
+    country: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let query = query.trim().to_string();
+    if query.is_empty() {
+        return Err("Query cannot be empty".to_string());
+    }
+
+    let limit = limit.unwrap_or(50).min(200);
+
+    // Resolve API key
+    let api_key = resolve_openai_key(&db)
+        .ok_or_else(|| "OpenAI API key not configured. Set it in Settings or in ForgeOS .env.local".to_string())?;
+
+    // Embed the query via OpenAI
+    let query_embedding = services::openai::embed_query(&api_key, &query)
+        .await
+        .map_err(|e| format!("Embedding failed: {}", e))?;
+
+    // Load/use cached embeddings
+    let embeddings = {
+        let mut cache_guard = cache.lock().map_err(|e| e.to_string())?;
+        if !cache_guard.loaded {
+            let loaded = db.load_embeddings().map_err(|e| format!("Failed to load embeddings: {}", e))?;
+            log::info!("Loaded {} embeddings into cache", loaded.len());
+            cache_guard.embeddings = loaded;
+            cache_guard.loaded = true;
+        }
+        cache_guard.embeddings.clone()
+    };
+
+    if embeddings.is_empty() {
+        return Ok(serde_json::json!({
+            "companies": [],
+            "scores": [],
+            "total": 0,
+        }));
+    }
+
+    // Compute cosine similarity for all embeddings
+    let threshold = 0.3f32;
+    let mut scored: Vec<(String, f32)> = embeddings
+        .iter()
+        .filter_map(|(id, emb)| {
+            let sim = cosine_similarity(&query_embedding, emb);
+            if sim >= threshold {
+                Some((id.clone(), sim))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Sort by score descending
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Fetch a larger batch first (we'll filter after)
+    let fetch_limit = (limit * 3).min(scored.len());
+    let top_ids: Vec<String> = scored.iter().take(fetch_limit).map(|(id, _)| id.clone()).collect();
+    let score_map: std::collections::HashMap<String, f32> = scored.iter().cloned().collect();
+
+    // Get full company data
+    let all_companies = db.get_companies_by_ids(&top_ids).map_err(|e| format!("DB error: {}", e))?;
+
+    // Apply filters (status, subcategory, country)
+    let filtered: Vec<serde_json::Value> = all_companies
+        .into_iter()
+        .filter(|c| {
+            if let Some(ref s) = status {
+                if let Some(cs) = c.get("status").and_then(|v| v.as_str()) {
+                    if cs != s.as_str() {
+                        return false;
+                    }
+                }
+            }
+            if let Some(ref sc) = subcategory {
+                if let Some(cs) = c.get("subcategory").and_then(|v| v.as_str()) {
+                    if cs != sc.as_str() {
+                        return false;
+                    }
+                }
+            }
+            if let Some(ref co) = country {
+                if let Some(cc) = c.get("country").and_then(|v| v.as_str()) {
+                    if cc != co.as_str() {
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+        .take(limit)
+        .collect();
+
+    let scores: Vec<f32> = filtered
+        .iter()
+        .map(|c| {
+            let id = c.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            *score_map.get(id).unwrap_or(&0.0)
+        })
+        .collect();
+
+    let total = filtered.len();
+
+    Ok(serde_json::json!({
+        "companies": filtered,
+        "scores": scores,
+        "total": total,
+    }))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -1310,6 +1538,7 @@ pub fn run() {
 
             let database = Database::new(&app_dir).expect("Failed to initialize database");
             app.manage(database);
+            app.manage(Mutex::new(EmbeddingCache::new()));
 
             // Auto-check Ollama connection on startup
             let handle = app.handle().clone();
@@ -1354,6 +1583,8 @@ pub fn run() {
             test_brave_connection,
             test_supabase_connection,
             test_resend_connection,
+            test_anthropic_connection,
+            test_deepseek_connection,
             start_pipeline,
             stop_pipeline,
             get_pipeline_status,
@@ -1394,6 +1625,8 @@ pub fn run() {
             seed_experiment,
             get_autopilot_status,
             get_outreach_readiness,
+            search_semantic,
+            get_company_activities,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

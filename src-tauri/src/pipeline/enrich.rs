@@ -20,6 +20,24 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .unwrap_or("qwen3.5:27b-q4_K_M")
         .to_string();
 
+    let llm_backend = config
+        .get("llm_backend")
+        .and_then(|v| v.as_str())
+        .unwrap_or("haiku")
+        .to_string();
+
+    let anthropic_api_key = config
+        .get("anthropic_api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let deepseek_api_key = config
+        .get("deepseek_api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     let ch_api_key = config
         .get("companies_house_api_key")
         .and_then(|v| v.as_str())
@@ -80,8 +98,8 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             "enrich",
             "info",
             &format!(
-                "Starting enrichment drain loop (concurrency={}, batch=50) using model: {} (auto-approve: relevance>={}, quality>={})",
-                concurrency, enrich_model, relevance_threshold, quality_threshold
+                "Starting enrichment drain loop (concurrency={}, batch=50) using backend: {} / model: {} (auto-approve: relevance>={}, quality>={})",
+                concurrency, llm_backend, enrich_model, relevance_threshold, quality_threshold
             ),
         );
     }
@@ -174,6 +192,9 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 let job_id = job_id.to_string();
                 let ollama_url = ollama_url.clone();
                 let enrich_model = enrich_model.clone();
+                let llm_backend = llm_backend.clone();
+                let anthropic_api_key = anthropic_api_key.clone();
+                let deepseek_api_key = deepseek_api_key.clone();
                 let ch_api_key = ch_api_key.clone();
                 let oc_api_key = oc_api_key.clone();
                 let enriched_count = Arc::clone(&enriched_count);
@@ -235,27 +256,77 @@ Return ONLY valid JSON. /no_think"#,
                         snippet
                     );
 
-                    let response = match crate::services::ollama::generate(
-                        &ollama_url,
-                        &enrich_model,
-                        &enrich_prompt,
-                        false,
-                    )
-                    .await
-                    {
-                        Ok(r) => r,
-                        Err(e) => {
-                            let error_msg = format!("Ollama request failed: {}", e);
-                            let db: tauri::State<'_, Database> = app.state();
-                            let _ = db.log_activity(
-                                &job_id,
-                                "enrich",
-                                "error",
-                                &format!("Enrichment failed for {}: {}", name, error_msg),
-                            );
-                            let _ = db.set_company_error(&id, &error_msg);
-                            error_count.fetch_add(1, Ordering::Relaxed);
-                            return;
+                    let response = if llm_backend == "haiku" {
+                        match crate::services::anthropic::chat(
+                            &anthropic_api_key,
+                            None,
+                            &enrich_prompt,
+                            false,
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                let error_msg = format!("Anthropic request failed: {}", e);
+                                let db: tauri::State<'_, Database> = app.state();
+                                let _ = db.log_activity(
+                                    &job_id,
+                                    "enrich",
+                                    "error",
+                                    &format!("Enrichment failed for {}: {}", name, error_msg),
+                                );
+                                let _ = db.set_company_error(&id, &error_msg);
+                                error_count.fetch_add(1, Ordering::Relaxed);
+                                return;
+                            }
+                        }
+                    } else if llm_backend == "deepseek" {
+                        match crate::services::deepseek::chat(
+                            &deepseek_api_key,
+                            None,
+                            &enrich_prompt,
+                            false,
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                let error_msg = format!("DeepSeek request failed: {}", e);
+                                let db: tauri::State<'_, Database> = app.state();
+                                let _ = db.log_activity(
+                                    &job_id,
+                                    "enrich",
+                                    "error",
+                                    &format!("Enrichment failed for {}: {}", name, error_msg),
+                                );
+                                let _ = db.set_company_error(&id, &error_msg);
+                                error_count.fetch_add(1, Ordering::Relaxed);
+                                return;
+                            }
+                        }
+                    } else {
+                        match crate::services::ollama::generate(
+                            &ollama_url,
+                            &enrich_model,
+                            &enrich_prompt,
+                            false,
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                let error_msg = format!("Ollama request failed: {}", e);
+                                let db: tauri::State<'_, Database> = app.state();
+                                let _ = db.log_activity(
+                                    &job_id,
+                                    "enrich",
+                                    "error",
+                                    &format!("Enrichment failed for {}: {}", name, error_msg),
+                                );
+                                let _ = db.set_company_error(&id, &error_msg);
+                                error_count.fetch_add(1, Ordering::Relaxed);
+                                return;
+                            }
                         }
                     };
 

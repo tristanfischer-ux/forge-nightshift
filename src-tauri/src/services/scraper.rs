@@ -263,26 +263,41 @@ fn discover_subpages(html: &str, base_url: &str, page_url: &str) -> Vec<String> 
     scored.into_iter().map(|(url, _)| url).collect()
 }
 
-/// Additional manufacturing-specific subpage keywords for deep enrichment.
-const DEEP_SUBPAGE_KEYWORDS: &[&str] = &[
-    "about", "services", "capabilities", "products", "what-we-do", "quality",
-    "certifications", "manufacturing", "facilities", "equipment", "processes",
-    "materials", "industries", "sectors", "tolerances", "specifications",
-    "machining", "finishing", "treatments", "machine-list", "technology",
-    "precision", "cnc", "additive", "casting", "sheet-metal", "injection",
-    "surface-finish", "iso", "nadcap", "capacity",
+/// Priority tiers for deep scraping page discovery.
+/// Higher score = higher priority. Modeled after Python script 31's 10-tier system.
+struct PriorityTier {
+    keywords: &'static [&'static str],
+    score: usize,
+}
+
+const PRIORITY_TIERS: &[PriorityTier] = &[
+    PriorityTier { keywords: &["team", "people", "leadership", "about-us", "about", "management", "directors", "our-team", "meet-the-team"], score: 100 },
+    PriorityTier { keywords: &["capabilities", "services", "what-we-do", "solutions", "offerings"], score: 90 },
+    PriorityTier { keywords: &["equipment", "facilities", "machinery", "machines", "machine-list", "technology", "plant"], score: 85 },
+    PriorityTier { keywords: &["contact", "contact-us", "get-in-touch", "enquiry", "enquiries"], score: 80 },
+    PriorityTier { keywords: &["certifications", "quality", "accreditations", "compliance", "iso", "nadcap", "approvals"], score: 75 },
+    PriorityTier { keywords: &["case-studies", "portfolio", "projects", "work", "gallery"], score: 70 },
+    PriorityTier { keywords: &["careers", "jobs", "hiring", "vacancies", "join-us", "recruitment"], score: 65 },
+    PriorityTier { keywords: &["news", "blog", "updates", "latest", "press"], score: 60 },
+    PriorityTier { keywords: &["industries", "sectors", "markets", "applications"], score: 55 },
+    PriorityTier { keywords: &["partners", "clients", "customers", "testimonials", "suppliers"], score: 50 },
 ];
 
+/// Maximum consecutive page fetch failures before circuit breaker trips.
+const CIRCUIT_BREAKER_THRESHOLD: usize = 3;
+
 /// Deep-scrape a website for manufacturing technique extraction.
-/// Uses manufacturing-specific subpage keywords, fetches up to 8 subpages,
-/// and returns up to 16,000 chars of content.
+/// Uses 10 priority tiers for page scoring, fetches up to 8 subpages
+/// with 10 concurrent workers, circuit breaker after 3 consecutive failures,
+/// structured signal extraction, and returns up to 16,000 chars of content.
 pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()?;
 
     let root_html = fetch_html(&client, url).await?;
+    let mut all_emails: Vec<String> = extract_emails(&root_html);
     let root_text = html_to_text(&root_html);
 
     let base_url = extract_base_url(url);
@@ -290,7 +305,8 @@ pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
 
     if subpage_urls.is_empty() {
         log::info!("Deep scrape: no scored subpages for {}, using root only", url);
-        let content = format!("--- PAGE: / ---\n{}", root_text);
+        let signals = extract_signals(&root_text, &all_emails);
+        let content = format!("{}\n--- PAGE: / ---\n{}", signals, root_text);
         return Ok(truncate_text(&content, 16000, url));
     }
 
@@ -299,38 +315,79 @@ pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
         subpage_urls.len(), url, subpage_urls.len().min(8)
     );
 
+    // Fetch top 8 subpages with 10 concurrent workers and circuit breaker
     let top_urls: Vec<String> = subpage_urls.into_iter().take(8).collect();
-    let subpage_results: Vec<(String, Option<String>)> = stream::iter(top_urls)
+    let consecutive_failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let circuit_broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let subpage_results: Vec<(String, Option<String>, Vec<String>)> = stream::iter(top_urls)
         .map(|sub_url| {
             let client = client.clone();
+            let consecutive_failures = consecutive_failures.clone();
+            let circuit_broken = circuit_broken.clone();
             async move {
+                // Check circuit breaker before fetching
+                if circuit_broken.load(std::sync::atomic::Ordering::Relaxed) {
+                    log::warn!("Deep scrape: circuit breaker tripped, skipping {}", sub_url);
+                    return (sub_url, None, vec![]);
+                }
+
                 match fetch_html(&client, &sub_url).await {
                     Ok(html) => {
+                        // Reset consecutive failures on success
+                        consecutive_failures.store(0, std::sync::atomic::Ordering::Relaxed);
+                        let emails = extract_emails(&html);
                         let text = html_to_text(&html);
-                        (sub_url, Some(text))
+                        (sub_url, Some(text), emails)
                     }
-                    Err(_) => (sub_url, None),
+                    Err(e) => {
+                        let count = consecutive_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        log::warn!("Deep scrape: failed to fetch {} ({}) — consecutive failures: {}", sub_url, e, count);
+                        if count >= CIRCUIT_BREAKER_THRESHOLD {
+                            circuit_broken.store(true, std::sync::atomic::Ordering::Relaxed);
+                            log::warn!("Deep scrape: circuit breaker tripped after {} consecutive failures on {}", count, extract_base_url(&sub_url));
+                        }
+                        (sub_url, None, vec![])
+                    }
                 }
             }
         })
-        .buffer_unordered(4)
+        .buffer_unordered(10)
         .collect()
         .await;
 
+    // Collect all page text
     let mut combined = format!("--- PAGE: / ---\n{}", root_text);
-    for (sub_url, text) in &subpage_results {
+    let mut all_text = root_text.clone();
+    for (sub_url, text, emails) in &subpage_results {
+        all_emails.extend(emails.iter().cloned());
         if let Some(t) = text {
             if !t.is_empty() {
                 let path = sub_url.strip_prefix(&base_url).unwrap_or(sub_url);
                 combined.push_str(&format!("\n\n--- PAGE: {} ---\n{}", path, t));
+                all_text.push(' ');
+                all_text.push_str(t);
             }
         }
     }
 
+    // Deduplicate emails
+    let unique_emails: Vec<String> = {
+        let mut seen = HashSet::new();
+        all_emails.into_iter().filter(|e| seen.insert(e.clone())).collect()
+    };
+
+    // Extract structured signals from all collected text
+    let signals = extract_signals(&all_text, &unique_emails);
+
+    // Prepend signals header
+    combined = format!("{}\n{}", signals, combined);
+
     Ok(truncate_text(&combined, 16000, url))
 }
 
-/// Discover subpages using manufacturing-specific deep keywords.
+/// Discover subpages using 10 priority tiers for scoring.
+/// Each URL gets the highest matching tier score (not additive).
 fn discover_subpages_deep(html: &str, base_url: &str, page_url: &str) -> Vec<String> {
     let href_re = Regex::new(r#"<a[^>]+href\s*=\s*["']([^"'#]+)["']"#).unwrap();
     let mut seen = HashSet::new();
@@ -383,19 +440,168 @@ fn discover_subpages_deep(html: &str, base_url: &str, page_url: &str) -> Vec<Str
             continue;
         }
 
+        // Score using priority tiers — take highest matching tier score
         let path_lower = path.to_lowercase();
-        let score: usize = DEEP_SUBPAGE_KEYWORDS
-            .iter()
-            .filter(|kw| path_lower.contains(*kw))
-            .count();
+        let score = score_url_by_priority(&path_lower);
 
         if score > 0 {
             scored.push((normalized, score));
         }
     }
 
+    // Sort by score descending (highest priority first)
     scored.sort_by(|a, b| b.1.cmp(&a.1));
     scored.into_iter().map(|(url, _)| url).collect()
+}
+
+/// Score a URL path against the 10 priority tiers.
+/// Returns the highest matching tier score, or 0 if no match.
+fn score_url_by_priority(path_lower: &str) -> usize {
+    let mut best_score = 0;
+    for tier in PRIORITY_TIERS {
+        for keyword in tier.keywords {
+            if path_lower.contains(keyword) {
+                if tier.score > best_score {
+                    best_score = tier.score;
+                }
+                break; // Found a match in this tier, no need to check more keywords in it
+            }
+        }
+    }
+    best_score
+}
+
+/// Extract structured signals from page text.
+/// Finds people names+titles, email addresses, LinkedIn URLs, and hiring indicators.
+fn extract_signals(text: &str, emails: &[String]) -> String {
+    let mut sections: Vec<String> = Vec::new();
+
+    // 1. People names and titles — "Name, Title" or "Name - Title" patterns
+    let people = extract_people(text);
+    if !people.is_empty() {
+        sections.push(format!("PEOPLE FOUND: {}", people.join("; ")));
+    }
+
+    // 2. Email addresses
+    if !emails.is_empty() {
+        sections.push(format!("CONTACT EMAILS FOUND: {}", emails.join(", ")));
+    }
+
+    // 3. LinkedIn profile URLs
+    let linkedin_urls = extract_linkedin_urls(text);
+    if !linkedin_urls.is_empty() {
+        sections.push(format!("LINKEDIN PROFILES: {}", linkedin_urls.join(", ")));
+    }
+
+    // 4. Hiring indicators
+    let hiring_signals = extract_hiring_indicators(text);
+    if !hiring_signals.is_empty() {
+        sections.push(format!("HIRING SIGNALS: {}", hiring_signals.join("; ")));
+    }
+
+    if sections.is_empty() {
+        String::new()
+    } else {
+        format!("--- EXTRACTED SIGNALS ---\n{}\n--- END SIGNALS ---\n", sections.join("\n"))
+    }
+}
+
+/// Extract "Name, Title" patterns from text.
+/// Looks for patterns like "John Smith, Managing Director" or "Jane Doe - CEO".
+fn extract_people(text: &str) -> Vec<String> {
+    let mut people = Vec::new();
+    let mut seen = HashSet::new();
+
+    // Title keywords that indicate a person's role
+    let title_keywords = [
+        "CEO", "CTO", "CFO", "COO", "CMO", "CIO",
+        "Director", "Manager", "President", "Vice President",
+        "Founder", "Co-Founder", "Owner", "Partner",
+        "Head of", "Lead", "Chief", "Managing",
+        "Engineer", "Supervisor", "Foreman",
+        "Sales", "Operations", "Production", "Quality",
+    ];
+
+    // Pattern: "Capitalized Name, Title" or "Capitalized Name - Title"
+    // Match: 2-4 capitalized words followed by comma/dash and a title keyword
+    let people_re = Regex::new(
+        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*(?:,|–|—|-)\s*([A-Z][A-Za-z\s&]{2,50})"
+    ).unwrap();
+
+    for cap in people_re.captures_iter(text) {
+        let name = cap[1].trim().to_string();
+        let title = cap[2].trim().to_string();
+
+        // Verify the title contains a known title keyword
+        let title_lower = title.to_lowercase();
+        let has_title_keyword = title_keywords.iter().any(|kw| title_lower.contains(&kw.to_lowercase()));
+        if !has_title_keyword {
+            continue;
+        }
+
+        let entry = format!("{} ({})", name, title);
+        if seen.insert(entry.clone()) {
+            people.push(entry);
+        }
+    }
+
+    // Cap at 20 to avoid noise
+    people.truncate(20);
+    people
+}
+
+/// Extract LinkedIn profile URLs from text.
+fn extract_linkedin_urls(text: &str) -> Vec<String> {
+    let linkedin_re = Regex::new(
+        r"https?://(?:www\.)?linkedin\.com/in/[a-zA-Z0-9\-_]+/?"
+    ).unwrap();
+
+    let mut urls: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+
+    for m in linkedin_re.find_iter(text) {
+        let url = m.as_str().trim_end_matches('/').to_string();
+        if seen.insert(url.clone()) {
+            urls.push(url);
+        }
+    }
+
+    urls.truncate(30);
+    urls
+}
+
+/// Detect hiring indicators in text.
+fn extract_hiring_indicators(text: &str) -> Vec<String> {
+    let text_lower = text.to_lowercase();
+    let indicators = [
+        ("we're hiring", "Active hiring mentioned"),
+        ("we are hiring", "Active hiring mentioned"),
+        ("join our team", "Team recruitment active"),
+        ("join the team", "Team recruitment active"),
+        ("current vacancies", "Vacancies listed"),
+        ("current openings", "Job openings listed"),
+        ("job openings", "Job openings listed"),
+        ("career opportunities", "Career opportunities listed"),
+        ("apply now", "Active job applications"),
+        ("send your cv", "Accepting CVs"),
+        ("send your resume", "Accepting resumes"),
+        ("positions available", "Positions available"),
+        ("we're looking for", "Actively seeking candidates"),
+        ("we are looking for", "Actively seeking candidates"),
+        ("apprenticeship", "Apprenticeship programme"),
+        ("work with us", "Recruitment page present"),
+    ];
+
+    let mut found = Vec::new();
+    let mut seen_descriptions = HashSet::new();
+
+    for (phrase, description) in &indicators {
+        if text_lower.contains(phrase) && seen_descriptions.insert(description.to_string()) {
+            found.push(description.to_string());
+        }
+    }
+
+    found
 }
 
 /// Truncate text to max_chars with a log message if needed.

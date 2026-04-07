@@ -28,6 +28,23 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .and_then(|v| v.as_str())
         .unwrap_or("qwen3.5:9b");
 
+    let llm_backend = config
+        .get("llm_backend")
+        .and_then(|v| v.as_str())
+        .unwrap_or("haiku");
+
+    let anthropic_api_key = config
+        .get("anthropic_api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let deepseek_api_key = config
+        .get("deepseek_api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     let countries_str = config
         .get("target_countries")
         .and_then(|v| v.as_str())
@@ -220,25 +237,71 @@ Return ONLY valid JSON."#,
                         country, category.name, result.title, result.url, result.description
                     );
 
-                    let llm_response = match crate::services::ollama::generate(
-                        ollama_url,
-                        research_model,
-                        &parse_prompt,
-                        true,
-                    )
-                    .await
-                    {
-                        Ok(r) => r,
-                        Err(e) => {
-                            skipped_llm_error += 1;
-                            let db: tauri::State<'_, Database> = app.state();
-                            let _ = db.log_activity(
-                                job_id,
-                                "research",
-                                "warn",
-                                &format!("LLM parse failed: {}", e),
-                            );
-                            continue;
+                    let llm_response = if llm_backend == "haiku" {
+                        match crate::services::anthropic::chat(
+                            &anthropic_api_key,
+                            None,
+                            &parse_prompt,
+                            true,
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                skipped_llm_error += 1;
+                                let db: tauri::State<'_, Database> = app.state();
+                                let _ = db.log_activity(
+                                    job_id,
+                                    "research",
+                                    "warn",
+                                    &format!("[Anthropic] LLM parse failed: {}", e),
+                                );
+                                continue;
+                            }
+                        }
+                    } else if llm_backend == "deepseek" {
+                        match crate::services::deepseek::chat(
+                            &deepseek_api_key,
+                            None,
+                            &parse_prompt,
+                            true,
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                skipped_llm_error += 1;
+                                let db: tauri::State<'_, Database> = app.state();
+                                let _ = db.log_activity(
+                                    job_id,
+                                    "research",
+                                    "warn",
+                                    &format!("[DeepSeek] LLM parse failed: {}", e),
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        match crate::services::ollama::generate(
+                            ollama_url,
+                            research_model,
+                            &parse_prompt,
+                            true,
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                skipped_llm_error += 1;
+                                let db: tauri::State<'_, Database> = app.state();
+                                let _ = db.log_activity(
+                                    job_id,
+                                    "research",
+                                    "warn",
+                                    &format!("LLM parse failed: {}", e),
+                                );
+                                continue;
+                            }
                         }
                     };
 

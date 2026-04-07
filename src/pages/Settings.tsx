@@ -13,6 +13,8 @@ import {
   getConfig,
   setConfig,
   testOllamaConnection,
+  testAnthropicConnection,
+  testDeepSeekConnection,
   testBraveConnection,
   testSupabaseConnection,
   testResendConnection,
@@ -21,6 +23,7 @@ import {
   getEmailTemplates,
   EmailTemplate,
 } from "../lib/tauri";
+import ScheduleCalendar from "../components/ScheduleCalendar";
 import { useError } from "../contexts/ErrorContext";
 
 type TestStatus = "idle" | "testing" | "success" | "error";
@@ -33,6 +36,10 @@ export default function Settings() {
   const [ollamaStatus, setOllamaStatus] = useState<TestStatus>("idle");
   const [ollamaError, setOllamaError] = useState("");
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [anthropicStatus, setAnthropicStatus] = useState<TestStatus>("idle");
+  const [anthropicError, setAnthropicError] = useState("");
+  const [deepseekStatus, setDeepseekStatus] = useState<TestStatus>("idle");
+  const [deepseekError, setDeepseekError] = useState("");
   const [braveStatus, setBraveStatus] = useState<TestStatus>("idle");
   const [braveError, setBraveError] = useState("");
   const [supabaseStatus, setSupabaseStatus] = useState<TestStatus>("idle");
@@ -124,6 +131,32 @@ export default function Settings() {
     }
   }
 
+  async function handleTestAnthropic() {
+    setAnthropicStatus("testing");
+    setAnthropicError("");
+    try {
+      const result = await testAnthropicConnection(config.anthropic_api_key || "");
+      setAnthropicStatus(result.connected ? "success" : "error");
+      if (!result.connected) setAnthropicError("Connection test returned false");
+    } catch (e) {
+      setAnthropicError(String(e));
+      setAnthropicStatus("error");
+    }
+  }
+
+  async function handleTestDeepSeek() {
+    setDeepseekStatus("testing");
+    setDeepseekError("");
+    try {
+      const result = await testDeepSeekConnection(config.deepseek_api_key || "");
+      setDeepseekStatus(result.connected ? "success" : "error");
+      if (!result.connected) setDeepseekError("Connection test returned false");
+    } catch (e) {
+      setDeepseekError(String(e));
+      setDeepseekStatus("error");
+    }
+  }
+
   async function handleTestBrave() {
     setBraveStatus("testing");
     setBraveError("");
@@ -197,7 +230,7 @@ export default function Settings() {
     }
   }
 
-  const SENSITIVE_KEYS = ["brave_api_key", "supabase_service_key", "resend_api_key", "companies_house_api_key"];
+  const SENSITIVE_KEYS = ["brave_api_key", "supabase_service_key", "resend_api_key", "companies_house_api_key", "anthropic_api_key", "deepseek_api_key", "openai_api_key"];
 
   function handleExportConfig() {
     const exportData = { ...config };
@@ -295,6 +328,101 @@ export default function Settings() {
           {saved ? "Saved" : "Save All"}
         </button>
       </div>
+
+      {/* LLM Backend */}
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+        <h2 className="text-sm font-semibold text-gray-900">LLM Backend</h2>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Active Backend</label>
+          <select
+            value={config.llm_backend || "haiku"}
+            onChange={(e) => updateField("llm_backend", e.target.value)}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
+          >
+            <option value="haiku">Haiku (Cloud)</option>
+            <option value="deepseek">DeepSeek (Cloud)</option>
+            <option value="ollama">Ollama (Local)</option>
+          </select>
+        </div>
+        <p className="text-xs text-gray-400">
+          Controls which LLM is used for research, enrichment, and deep enrichment.
+          Haiku is faster and more reliable. Ollama runs locally but may hang on some hardware.
+        </p>
+      </section>
+
+      {/* Anthropic */}
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-gray-900">Anthropic (Cloud LLM)</h2>
+          <button
+            onClick={handleTestAnthropic}
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
+          >
+            <TestTube className="w-3 h-3" />
+            Test
+            <StatusIcon status={anthropicStatus} />
+          </button>
+        </div>
+        <Input
+          label="API Key"
+          value={config.anthropic_api_key || ""}
+          onChange={(v) => updateField("anthropic_api_key", v)}
+          placeholder="sk-ant-..."
+          type="password"
+          error={validationErrors["anthropic_api_key"]}
+        />
+        {anthropicStatus === "error" && anthropicError && (
+          <p className="text-xs text-red-600">{anthropicError}</p>
+        )}
+        {anthropicStatus === "success" && (
+          <p className="text-xs text-green-600">Connected to Claude Haiku</p>
+        )}
+      </section>
+
+      {/* DeepSeek */}
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-gray-900">DeepSeek (Cloud LLM)</h2>
+          <button
+            onClick={handleTestDeepSeek}
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
+          >
+            <TestTube className="w-3 h-3" />
+            Test
+            <StatusIcon status={deepseekStatus} />
+          </button>
+        </div>
+        <Input
+          label="API Key"
+          value={config.deepseek_api_key || ""}
+          onChange={(v) => updateField("deepseek_api_key", v)}
+          placeholder="sk-..."
+          type="password"
+          error={validationErrors["deepseek_api_key"]}
+        />
+        {deepseekStatus === "error" && deepseekError && (
+          <p className="text-xs text-red-600">{deepseekError}</p>
+        )}
+        {deepseekStatus === "success" && (
+          <p className="text-xs text-green-600">Connected to DeepSeek V4</p>
+        )}
+        <p className="text-xs text-gray-400">
+          DeepSeek V4 is significantly cheaper than Haiku ($0.30/$0.50 per MTok vs $0.80/$4.00).
+        </p>
+      </section>
+
+      {/* OpenAI (Embeddings) */}
+      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+        <h2 className="text-sm font-semibold text-gray-900">OpenAI (Semantic Search)</h2>
+        <p className="text-xs text-gray-500">Used for embedding queries in semantic search. Falls back to ForgeOS .env.local if not set here.</p>
+        <Input
+          label="API Key"
+          value={config.openai_api_key || ""}
+          onChange={(v) => updateField("openai_api_key", v)}
+          placeholder="sk-..."
+          type="password"
+        />
+      </section>
 
       {/* Ollama */}
       <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
@@ -442,13 +570,18 @@ export default function Settings() {
       {/* Pipeline */}
       <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
         <h2 className="text-sm font-semibold text-gray-900">Pipeline</h2>
-        <Input
-          label="Schedule Time"
-          value={config.schedule_time || ""}
-          onChange={(v) => updateField("schedule_time", v)}
-          placeholder="23:00"
-          error={validationErrors["schedule_time"]}
-        />
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Schedules</label>
+          <ScheduleCalendar
+            schedules={(() => { try { return JSON.parse(config.schedules || "[]"); } catch { return []; } })()}
+            templateId={config.auto_outreach_template_id}
+            onChange={async (schedules) => {
+              const json = JSON.stringify(schedules);
+              updateField("schedules", json);
+              try { await setConfig("schedules", json); } catch {}
+            }}
+          />
+        </div>
         <Input
           label="Daily Email Limit"
           value={config.daily_email_limit || ""}
@@ -702,20 +835,33 @@ function Input({
   max?: number;
   error?: string;
 }) {
+  const [showPassword, setShowPassword] = useState(false);
+  const isPassword = type === "password";
   return (
     <div>
       <label className="block text-xs text-gray-500 mb-1">{label}</label>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        min={min}
-        max={max}
-        className={`w-full px-3 py-2 bg-white border rounded-lg text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-forge-500 focus:border-forge-500 transition-colors ${
-          error ? "border-red-300" : "border-gray-300"
-        }`}
-      />
+      <div className="relative">
+        <input
+          type={isPassword && showPassword ? "text" : type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          min={min}
+          max={max}
+          className={`w-full px-3 py-2 bg-white border rounded-lg text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-forge-500 focus:border-forge-500 transition-colors ${
+            isPassword ? "pr-16" : ""
+          } ${error ? "border-red-300" : "border-gray-300"}`}
+        />
+        {isPassword && value && (
+          <button
+            type="button"
+            onClick={() => setShowPassword((p) => !p)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-600 transition-colors px-1.5 py-0.5"
+          >
+            {showPassword ? "Hide" : "Show"}
+          </button>
+        )}
+      </div>
       {error && <p className="text-xs text-red-500 mt-0.5">{error}</p>}
     </div>
   );

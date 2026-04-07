@@ -8,9 +8,13 @@ mod technique_aggregate;
 pub mod template_outreach;
 mod companies_house;
 pub mod outreach_learner;
+mod verify;
+mod synthesize;
+mod director_intel;
+mod activity;
 
 use anyhow::Result;
-use chrono::Timelike;
+use chrono::{Datelike, Timelike};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +36,20 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 static RESEARCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ENRICH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SENDING: AtomicBool = AtomicBool::new(false);
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+struct Schedule {
+    id: String,
+    name: String,
+    enabled: bool,
+    #[serde(rename = "type")]
+    schedule_type: String,
+    interval_hours: Option<u32>,
+    time: Option<String>,
+    days: Option<Vec<u8>>,
+    stages: Vec<String>,
+    last_run_at: Option<String>,
+}
 
 fn node_states() -> &'static Mutex<HashMap<String, Value>> {
     static STATES: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
@@ -376,7 +394,11 @@ async fn run_single_stage(
             let sector = &s["deep_enrich:".len()..];
             deep_enrich::run_sector(app, job_id, config, sector).await
         }
+        "verify" => verify::run(app, job_id, config).await,
+        "synthesize" => synthesize::run(app, job_id, config).await,
+        "activity" => activity::run(app, job_id, config).await,
         "companies_house" => companies_house::run(app, job_id, config).await,
+        "director_intel" => director_intel::run(app, job_id, config).await,
         "learn_outreach" => outreach_learner::run_learning_cycle(app, job_id, config).await,
         s if s.starts_with("template_outreach:") => {
             let template_id = &s["template_outreach:".len()..];
@@ -676,7 +698,6 @@ pub async fn send_batch(app: &tauri::AppHandle) {
 
 /// Automated scheduler — checks trigger file every 5s, drip-sends emails every ~20min during business hours.
 pub async fn start_scheduler(app: tauri::AppHandle) {
-    let mut last_run_date = String::new();
     let mut last_retry_hour: i32 = -1;
     let mut last_drip_send: i64 = 0;
     let mut tick: u64 = 0;
@@ -687,6 +708,56 @@ pub async fn start_scheduler(app: tauri::AppHandle) {
         std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
     )
     .join(".nightshift-trigger");
+
+    // Migrate legacy schedule_time to new schedules format
+    {
+        let db: tauri::State<'_, Database> = app.state();
+        if let Ok(config) = db.get_all_config() {
+            let has_schedules = config.get("schedules")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty() && s != "[]")
+                .unwrap_or(false);
+            let schedule_time = config.get("schedule_time")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if !has_schedules && !schedule_time.is_empty() {
+                let mut stages = vec![
+                    "research".to_string(),
+                    "enrich".to_string(),
+                    "push".to_string(),
+                    "report".to_string(),
+                ];
+                let auto_enabled = config.get("auto_outreach_enabled")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("false") == "true";
+                let auto_template = config.get("auto_outreach_template_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if auto_enabled && !auto_template.is_empty() {
+                    stages.push("learn_outreach".to_string());
+                    stages.push(format!("template_outreach:{}", auto_template));
+                }
+
+                let schedule = Schedule {
+                    id: format!("{:016x}", chrono::Utc::now().timestamp_millis() as u64),
+                    name: format!("Daily at {}", schedule_time),
+                    enabled: true,
+                    schedule_type: "daily".to_string(),
+                    interval_hours: None,
+                    time: Some(schedule_time.to_string()),
+                    days: None,
+                    stages,
+                    last_run_at: None,
+                };
+
+                if let Ok(json) = serde_json::to_string(&vec![schedule]) {
+                    let _ = db.set_config("schedules", &json);
+                    log::info!("[scheduler] Migrated schedule_time={} to new schedules format", schedule_time);
+                }
+            }
+        }
+    }
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -792,24 +863,33 @@ pub async fn start_scheduler(app: tauri::AppHandle) {
 
             let db: tauri::State<'_, Database> = app.state();
             if let Ok(config) = db.get_all_config() {
-                let mut stages = vec![
-                    "research".to_string(),
-                    "enrich".to_string(),
-                    "push".to_string(),
-                    "report".to_string(),
-                ];
-                let auto_enabled = config
-                    .get("auto_outreach_enabled")
+                // Use stages from the first enabled schedule, or default
+                let schedules_json = config.get("schedules")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("false") == "true";
-                let auto_template = config
-                    .get("auto_outreach_template_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if auto_enabled && !auto_template.is_empty() {
-                    stages.push("learn_outreach".to_string());
-                    stages.push(format!("template_outreach:{}", auto_template));
-                }
+                    .unwrap_or("[]");
+                let schedules: Vec<Schedule> = serde_json::from_str(schedules_json).unwrap_or_default();
+                let stages = schedules.iter()
+                    .find(|s| s.enabled)
+                    .map(|s| s.stages.clone())
+                    .unwrap_or_else(|| {
+                        let mut s = vec![
+                            "research".to_string(),
+                            "enrich".to_string(),
+                            "push".to_string(),
+                            "report".to_string(),
+                        ];
+                        let auto_enabled = config.get("auto_outreach_enabled")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("false") == "true";
+                        let auto_template = config.get("auto_outreach_template_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if auto_enabled && !auto_template.is_empty() {
+                            s.push("learn_outreach".to_string());
+                            s.push(format!("template_outreach:{}", auto_template));
+                        }
+                        s
+                    });
                 let app_clone = app.clone();
                 match start_pipeline(app_clone, stages).await {
                     Ok(job_id) => log::info!("[scheduler] Retry pipeline started: {}", job_id),
@@ -853,57 +933,100 @@ pub async fn start_scheduler(app: tauri::AppHandle) {
             Err(_) => continue,
         };
 
-        let schedule_time = config
-            .get("schedule_time")
+        let schedules_json = config
+            .get("schedules")
             .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .unwrap_or("[]");
 
-        if schedule_time.is_empty() {
-            continue;
-        }
+        let mut schedules: Vec<Schedule> = match serde_json::from_str(schedules_json) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
 
         let now = chrono::Local::now();
         let current_time = now.format("%H:%M").to_string();
-        let current_date = now.format("%Y-%m-%d").to_string();
+        let mut triggered_idx: Option<usize> = None;
 
-        // Match HH:MM and haven't run today
-        if current_time == schedule_time && current_date != last_run_date {
-            last_run_date = current_date;
-            log::info!("Scheduler triggered at {}", current_time);
-
-            let mut stages = vec![
-                "research".to_string(),
-                "enrich".to_string(),
-                "push".to_string(),
-                "report".to_string(),
-            ];
-
-            // Autopilot: append template_outreach if enabled and template configured
-            let auto_enabled = config
-                .get("auto_outreach_enabled")
-                .and_then(|v| v.as_str())
-                .unwrap_or("false") == "true";
-            let auto_template = config
-                .get("auto_outreach_template_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            if auto_enabled && !auto_template.is_empty() {
-                stages.push("learn_outreach".to_string());
-                stages.push(format!("template_outreach:{}", auto_template));
-                log::info!("[autopilot] Auto-outreach enabled, appending learn_outreach + template_outreach:{}", auto_template);
+        for (idx, schedule) in schedules.iter().enumerate() {
+            if !schedule.enabled {
+                continue;
             }
 
+            let should_trigger = match schedule.schedule_type.as_str() {
+                "daily" => {
+                    if let Some(ref time) = schedule.time {
+                        let today = now.format("%Y-%m-%d").to_string();
+                        let last_run_date = schedule.last_run_at.as_ref()
+                            .and_then(|ts| ts.get(..10).map(|s| s.to_string()))
+                            .unwrap_or_default();
+                        &current_time == time && last_run_date != today
+                    } else {
+                        false
+                    }
+                }
+                "weekly" => {
+                    if let (Some(ref time), Some(ref days)) = (&schedule.time, &schedule.days) {
+                        let today = now.format("%Y-%m-%d").to_string();
+                        let last_run_date = schedule.last_run_at.as_ref()
+                            .and_then(|ts| ts.get(..10).map(|s| s.to_string()))
+                            .unwrap_or_default();
+                        // chrono: Mon=0..Sun=6, our format: Sun=0..Sat=6
+                        let current_dow = match now.weekday() {
+                            chrono::Weekday::Sun => 0u8,
+                            chrono::Weekday::Mon => 1,
+                            chrono::Weekday::Tue => 2,
+                            chrono::Weekday::Wed => 3,
+                            chrono::Weekday::Thu => 4,
+                            chrono::Weekday::Fri => 5,
+                            chrono::Weekday::Sat => 6,
+                        };
+                        &current_time == time && days.contains(&current_dow) && last_run_date != today
+                    } else {
+                        false
+                    }
+                }
+                "interval" => {
+                    if let Some(hours) = schedule.interval_hours {
+                        let hours = hours.max(1);
+                        let elapsed = schedule.last_run_at.as_ref()
+                            .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                            .map(|last| (now - last.with_timezone(&chrono::Local)).num_seconds())
+                            .unwrap_or(i64::MAX); // Never run before = trigger immediately
+                        elapsed >= (hours as i64) * 3600
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+
+            if should_trigger {
+                triggered_idx = Some(idx);
+                break;
+            }
+        }
+
+        if let Some(idx) = triggered_idx {
+            let schedule = &schedules[idx];
+            log::info!("[scheduler] Schedule '{}' triggered (type={}, stages={:?})",
+                schedule.name, schedule.schedule_type, schedule.stages);
+
+            let stages = schedule.stages.clone();
             let app_clone = app.clone();
             match start_pipeline(app_clone, stages).await {
                 Ok(job_id) => {
-                    log::info!("Scheduled pipeline started: {}", job_id);
+                    log::info!("[scheduler] Schedule '{}' pipeline started: {}", schedule.name, job_id);
+                    // Update last_run_at
+                    schedules[idx].last_run_at = Some(chrono::Utc::now().to_rfc3339());
+                    if let Ok(json) = serde_json::to_string(&schedules) {
+                        let _ = db.set_config("schedules", &json);
+                    }
                     last_run_failed = false;
                 }
                 Err(e) => {
-                    log::error!("Scheduled pipeline failed to start: {}", e);
+                    log::error!("[scheduler] Schedule '{}' pipeline failed: {}", schedule.name, e);
                     last_run_failed = true;
-                    retry_after_tick = tick + 2880; // Retry after 4 hours (2880 × 5s)
+                    retry_after_tick = tick + 2880;
                 }
             }
         }

@@ -23,18 +23,30 @@ pub struct CHCompany {
     pub has_insolvency_history: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Officer {
     pub name: String,
     pub officer_role: Option<String>,
     pub appointed_on: Option<String>,
+    pub resigned_on: Option<String>,
+    pub date_of_birth: Option<DateOfBirth>,
+    pub nationality: Option<String>,
+    pub occupation: Option<String>,
+    pub country_of_residence: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DateOfBirth {
+    pub month: Option<u32>,
+    pub year: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PSC {
     pub name: Option<String>,
     pub natures_of_control: Option<Vec<String>>,
     pub notified_on: Option<String>,
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +101,16 @@ struct OfficerItem {
     officer_role: Option<String>,
     appointed_on: Option<String>,
     resigned_on: Option<String>,
+    date_of_birth: Option<DateOfBirthRaw>,
+    nationality: Option<String>,
+    occupation: Option<String>,
+    country_of_residence: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DateOfBirthRaw {
+    month: Option<u32>,
+    year: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +124,7 @@ struct PSCItem {
     natures_of_control: Option<Vec<String>>,
     notified_on: Option<String>,
     ceased_on: Option<String>,
+    kind: Option<String>,
 }
 
 fn build_client(api_key: &str) -> Result<reqwest::Client> {
@@ -231,11 +254,18 @@ pub async fn get_officers(api_key: &str, company_number: &str) -> Result<Vec<Off
         .items
         .unwrap_or_default()
         .into_iter()
-        .filter(|o| o.resigned_on.is_none()) // Only active officers
         .map(|o| Officer {
             name: o.name,
             officer_role: o.officer_role,
             appointed_on: o.appointed_on,
+            resigned_on: o.resigned_on,
+            date_of_birth: o.date_of_birth.map(|d| DateOfBirth {
+                month: d.month,
+                year: d.year,
+            }),
+            nationality: o.nationality,
+            occupation: o.occupation,
+            country_of_residence: o.country_of_residence,
         })
         .collect();
 
@@ -265,6 +295,7 @@ pub async fn get_psc(api_key: &str, company_number: &str) -> Result<Vec<PSC>> {
             name: p.name,
             natures_of_control: p.natures_of_control,
             notified_on: p.notified_on,
+            kind: p.kind,
         })
         .collect();
 
@@ -317,7 +348,10 @@ pub async fn enrich_company(api_key: &str, company_name: &str) -> Result<Option<
         _ => "",
     };
 
-    let directors_json: Vec<Value> = officers
+    // Filter to active officers for the enrichment JSON (backward compat)
+    let active_officers: Vec<&Officer> = officers.iter().filter(|o| o.resigned_on.is_none()).collect();
+
+    let directors_json: Vec<Value> = active_officers
         .iter()
         .map(|o| {
             json!({
