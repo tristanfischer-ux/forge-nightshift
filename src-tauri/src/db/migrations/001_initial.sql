@@ -142,4 +142,5 @@ INSERT OR IGNORE INTO config (key, value) VALUES
     ('supabase_url', ''),
     ('supabase_service_key', ''),
     ('foundry_id', ''),
-    ('companies_house_api_key', '');
+    ('companies_house_api_key', ''),
+    ('directory_search_enabled', 'true');

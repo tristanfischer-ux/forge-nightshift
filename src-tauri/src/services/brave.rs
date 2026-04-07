@@ -408,7 +408,7 @@ pub async fn search(api_key: &str, query: &str, country: &str, count: u32, offse
     Ok(results)
 }
 
-fn country_names(country: &str) -> Vec<&'static str> {
+pub fn country_names(country: &str) -> Vec<&'static str> {
     match country {
         "DE" => vec!["Germany", "Deutschland"],
         "FR" => vec!["France"],

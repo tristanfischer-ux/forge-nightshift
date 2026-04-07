@@ -70,6 +70,7 @@ impl Database {
             include_str!("migrations/023_activity_feed.sql"),
             include_str!("migrations/024_nightshift_intel.sql"),
             include_str!("migrations/025_search_profiles.sql"),
+            include_str!("migrations/026_directory_search.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -721,9 +722,10 @@ impl Database {
         let name = company.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let name_normalized = normalize_company_name(name);
         let search_profile_id = company.get("search_profile_id").and_then(|v| v.as_str()).unwrap_or("manufacturing");
+        let discovery_source = company.get("discovery_source").and_then(|v| v.as_str()).unwrap_or("brave_search");
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO companies (id, name, website_url, domain, country, city, source, source_url, source_query, raw_snippet, name_normalized, status, search_profile_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'discovered', ?12)",
+            "INSERT INTO companies (id, name, website_url, domain, country, city, source, source_url, source_query, raw_snippet, name_normalized, status, search_profile_id, discovery_source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'discovered', ?12, ?13)",
             rusqlite::params![
                 id,
                 name,
@@ -737,6 +739,7 @@ impl Database {
                 company.get("raw_snippet").and_then(|v| v.as_str()).unwrap_or(""),
                 name_normalized,
                 search_profile_id,
+                discovery_source,
             ],
         )?;
         Ok(id)

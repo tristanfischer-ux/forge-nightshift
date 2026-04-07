@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use tauri::{Emitter, Manager};
 
 use crate::db::Database;
-use crate::services::brave::{CATEGORIES, DynamicSearchCategory};
+use crate::services::brave::{CATEGORIES, DynamicSearchCategory, country_names};
 
 /// Run the research stage using category rotation and Supabase dedup.
 /// Returns discovered company IDs for immediate enrichment.
@@ -149,6 +149,34 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
 
     let mut total_discovered = 0;
     let mut total_queries = 0;
+
+    // Step 1.5: Directory search phase (first pass — before individual search)
+    let directory_search_enabled = config
+        .get("directory_search_enabled")
+        .and_then(|v| v.as_str())
+        .unwrap_or("true")
+        == "true";
+
+    if directory_search_enabled {
+        let dir_discovered = run_directory_search(
+            app,
+            job_id,
+            brave_key,
+            &countries,
+            &dynamic_categories,
+            &active_domain,
+            &active_profile_id,
+            &supabase_domains,
+            &supabase_names,
+            llm_backend,
+            &deepseek_api_key,
+            &anthropic_api_key,
+            ollama_url,
+            research_model,
+        )
+        .await;
+        total_discovered += dir_discovered;
+    }
 
     // Step 2: For each country, pick least-covered categories
     for country in &countries {
@@ -618,4 +646,462 @@ fn pick_dynamic_categories(
     categories.sort_by_key(|cat| coverage_map.get(&cat.id).copied().unwrap_or((0, 0)));
     categories.truncate(count);
     categories
+}
+
+/// Domains that are search engines / aggregators — skip these as directory sources.
+const SKIP_DOMAINS: &[&str] = &[
+    "google.com", "bing.com", "yahoo.com", "duckduckgo.com", "baidu.com",
+    "yandex.com", "ask.com", "aol.com", "wikipedia.org", "amazon.com",
+    "ebay.com", "alibaba.com", "linkedin.com", "facebook.com", "twitter.com",
+    "youtube.com", "reddit.com",
+];
+
+/// Patterns in page text that indicate a paywalled directory.
+const PAYWALL_INDICATORS: &[&str] = &[
+    "sign up to view", "register to see", "create an account to access",
+    "subscribe to view", "login to view", "members only", "premium access",
+    "unlock full list", "sign in to continue",
+];
+
+/// Generate directory-specific search queries for a category and country.
+fn generate_directory_queries(
+    category_name: &str,
+    country: &str,
+    domain: &str,
+) -> Vec<String> {
+    let names = country_names(country);
+    if names.is_empty() {
+        return vec![];
+    }
+    let country_name = names[0];
+
+    let mut queries = vec![
+        format!("{} directory {}", category_name, country_name),
+        format!("{} companies list {}", category_name, country_name),
+        format!("{} supplier directory {}", domain, country_name),
+        format!("list of {} companies {}", category_name, country_name),
+        format!("{} trade association members {}", category_name, country_name),
+    ];
+
+    // Add domain-specific directory keywords
+    let extra = get_domain_directory_keywords(domain);
+    for kw in extra.iter().take(2) {
+        queries.push(format!("{} {}", kw, country_name));
+    }
+
+    queries
+}
+
+/// Domain-aware directory search terms.
+fn get_domain_directory_keywords(domain: &str) -> Vec<&'static str> {
+    match domain {
+        "manufacturing" => vec![
+            "engineering directory", "manufacturing suppliers", "precision engineering companies",
+            "made in", "industrial directory",
+        ],
+        "cleantech" => vec![
+            "renewable energy directory", "cleantech companies", "green business directory",
+            "sustainable companies", "clean energy firms",
+        ],
+        "biotech" => vec![
+            "biotech directory", "life sciences companies", "pharmaceutical directory",
+            "biotech firms list",
+        ],
+        _ => vec![
+            "company directory", "business directory", "industry association members",
+        ],
+    }
+}
+
+/// Check if a URL is a search engine or aggregator that should be skipped.
+fn is_skip_domain(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    SKIP_DOMAINS.iter().any(|d| lower.contains(d))
+}
+
+/// Check if page content indicates a paywalled directory.
+fn is_paywalled(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    PAYWALL_INDICATORS.iter().any(|p| lower.contains(p))
+}
+
+/// Run the directory search phase: search for directories, scrape them, extract companies.
+/// Returns the number of new companies discovered.
+#[allow(clippy::too_many_arguments)]
+async fn run_directory_search(
+    app: &tauri::AppHandle,
+    job_id: &str,
+    brave_key: &str,
+    countries: &[String],
+    categories: &[DynamicSearchCategory],
+    domain: &str,
+    profile_id: &str,
+    supabase_domains: &HashSet<String>,
+    supabase_names: &HashSet<String>,
+    llm_backend: &str,
+    deepseek_api_key: &str,
+    anthropic_api_key: &str,
+    ollama_url: &str,
+    research_model: &str,
+) -> i64 {
+    {
+        let db: tauri::State<'_, Database> = app.state();
+        let _ = db.log_activity(
+            job_id,
+            "research",
+            "info",
+            "[Research:Directory] Starting directory discovery phase",
+        );
+    }
+
+    let mut total_discovered: i64 = 0;
+    let mut directories_scraped: i64 = 0;
+    let max_directories: i64 = 10;
+
+    for country in countries {
+        if super::is_cancelled() || directories_scraped >= max_directories {
+            break;
+        }
+
+        let names = country_names(country);
+        let country_name = if names.is_empty() { country.as_str() } else { names[0] };
+
+        for category in categories {
+            if super::is_cancelled() || directories_scraped >= max_directories {
+                break;
+            }
+
+            let queries = generate_directory_queries(&category.name, country, domain);
+
+            // Take up to 5 queries per category, search each, collect top 3 URLs
+            let mut directory_urls: Vec<String> = Vec::new();
+
+            for query in queries.iter().take(5) {
+                if super::is_cancelled() || directories_scraped >= max_directories {
+                    break;
+                }
+
+                // Skip already-executed directory queries
+                let dir_query_key = format!("[directory] {}", query);
+                {
+                    let db: tauri::State<'_, Database> = app.state();
+                    if db.search_already_done(&dir_query_key).unwrap_or(false) {
+                        continue;
+                    }
+                }
+
+                let results = match crate::services::brave::search(brave_key, query, country, 5, 0).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let db: tauri::State<'_, Database> = app.state();
+                        let _ = db.log_activity(
+                            job_id,
+                            "research",
+                            "warn",
+                            &format!("[Research:Directory] Search failed for '{}': {}", query, e),
+                        );
+                        continue;
+                    }
+                };
+
+                {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.record_search(&dir_query_key, country, results.len() as i64);
+                }
+
+                // Take top 3 results that aren't search engines
+                for result in results.iter().take(3) {
+                    if !is_skip_domain(&result.url) && !directory_urls.contains(&result.url) {
+                        directory_urls.push(result.url.clone());
+                    }
+                }
+
+                // Rate limit between searches
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+
+            // Scrape each directory URL and extract companies
+            for dir_url in &directory_urls {
+                if super::is_cancelled() || directories_scraped >= max_directories {
+                    break;
+                }
+
+                {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(
+                        job_id,
+                        "research",
+                        "info",
+                        &format!("[Research:Directory] Scraping directory: {}", dir_url),
+                    );
+                }
+
+                // Fetch directory page text
+                let page_text = match crate::services::scraper::fetch_website_text(dir_url).await {
+                    Ok(text) => text,
+                    Err(e) => {
+                        let db: tauri::State<'_, Database> = app.state();
+                        let _ = db.log_activity(
+                            job_id,
+                            "research",
+                            "warn",
+                            &format!("[Research:Directory] Failed to scrape {}: {}", dir_url, e),
+                        );
+                        continue;
+                    }
+                };
+
+                // Skip paywalled directories
+                if is_paywalled(&page_text) {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(
+                        job_id,
+                        "research",
+                        "info",
+                        &format!("[Research:Directory] Skipping paywalled directory: {}", dir_url),
+                    );
+                    continue;
+                }
+
+                directories_scraped += 1;
+
+                // Use LLM to extract company listings from the directory page
+                let extract_prompt = format!(
+                    r#"This is a directory/listing page. Extract all company names and their website URLs from the page content below.
+
+Return a JSON array of objects: [{{"name": "Company Name", "website_url": "https://example.com", "city": "City Name", "description": "Brief description"}}]
+
+Rules:
+- Only include companies that are clearly {} businesses in {}
+- Include the company website URL if visible (not the directory page link)
+- Include city/location if mentioned
+- Include a brief description if available
+- Maximum 50 companies
+- If no companies are found, return an empty array: []
+- Return ONLY valid JSON, no other text
+
+Page content:
+{}
+
+Return ONLY the JSON array."#,
+                    domain, country_name, &page_text[..page_text.len().min(6000)]
+                );
+
+                let llm_response = if llm_backend == "deepseek" {
+                    match crate::services::deepseek::chat(
+                        deepseek_api_key,
+                        None,
+                        &extract_prompt,
+                        true,
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let db: tauri::State<'_, Database> = app.state();
+                            let _ = db.log_activity(
+                                job_id,
+                                "research",
+                                "warn",
+                                &format!("[Research:Directory] LLM extraction failed for {}: {}", dir_url, e),
+                            );
+                            continue;
+                        }
+                    }
+                } else if llm_backend == "haiku" {
+                    match crate::services::anthropic::chat(
+                        anthropic_api_key,
+                        None,
+                        &extract_prompt,
+                        true,
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let db: tauri::State<'_, Database> = app.state();
+                            let _ = db.log_activity(
+                                job_id,
+                                "research",
+                                "warn",
+                                &format!("[Research:Directory] LLM extraction failed for {}: {}", dir_url, e),
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    match crate::services::ollama::generate(
+                        ollama_url,
+                        research_model,
+                        &extract_prompt,
+                        true,
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let db: tauri::State<'_, Database> = app.state();
+                            let _ = db.log_activity(
+                                job_id,
+                                "research",
+                                "warn",
+                                &format!("[Research:Directory] LLM extraction failed for {}: {}", dir_url, e),
+                            );
+                            continue;
+                        }
+                    }
+                };
+
+                // Parse the LLM response as a JSON array of companies
+                let companies: Vec<Value> = match serde_json::from_str(&llm_response) {
+                    Ok(Value::Array(arr)) => arr,
+                    _ => {
+                        let db: tauri::State<'_, Database> = app.state();
+                        let _ = db.log_activity(
+                            job_id,
+                            "research",
+                            "warn",
+                            &format!("[Research:Directory] Failed to parse LLM response as array for {}", dir_url),
+                        );
+                        continue;
+                    }
+                };
+
+                let mut dir_new = 0i64;
+
+                for entry in companies.iter().take(50) {
+                    if super::is_cancelled() {
+                        break;
+                    }
+
+                    let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    if name.is_empty() {
+                        continue;
+                    }
+
+                    // Extract domain from website_url if present
+                    let website_url = entry.get("website_url").and_then(|v| v.as_str()).unwrap_or("");
+                    let extracted_domain = extract_domain_from_url(website_url);
+
+                    // Dedup: check domain against Supabase + local DB
+                    if !extracted_domain.is_empty() {
+                        let normalized_domain = extracted_domain.to_lowercase();
+                        let stripped = normalized_domain.strip_prefix("www.").unwrap_or(&normalized_domain);
+                        if supabase_domains.contains(stripped) {
+                            continue;
+                        }
+                        let db: tauri::State<'_, Database> = app.state();
+                        if db.domain_exists(&extracted_domain).unwrap_or(false) {
+                            continue;
+                        }
+                    }
+
+                    // Dedup: check name against Supabase + local DB
+                    {
+                        let name_lower = name.to_lowercase().trim().to_string();
+                        let mut n = name_lower.clone();
+                        for suffix in &[
+                            " ltd", " limited", " gmbh", " sas", " bv", " ag", " sa", " srl",
+                            " nv", " inc", " llc", " co.", " corp", " corporation", " plc",
+                            " s.r.l.", " s.a.", " e.k.", " ohg", " kg", " ug",
+                        ] {
+                            if n.ends_with(suffix) {
+                                n = n[..n.len() - suffix.len()].to_string();
+                            }
+                        }
+                        let normalized_name = n.trim().to_string();
+                        if supabase_names.contains(&normalized_name) {
+                            continue;
+                        }
+                        let db: tauri::State<'_, Database> = app.state();
+                        if db.name_exists_normalized(name).unwrap_or(false) {
+                            continue;
+                        }
+                    }
+
+                    // Build company record
+                    let discovery_source_val = format!("directory:{}", dir_url);
+                    let company = json!({
+                        "name": name,
+                        "website_url": website_url,
+                        "domain": extracted_domain,
+                        "country": country,
+                        "city": entry.get("city").and_then(|v| v.as_str()).unwrap_or(""),
+                        "source": "directory",
+                        "source_url": dir_url,
+                        "source_query": format!("[directory] {}", category.name),
+                        "raw_snippet": entry.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+                        "search_profile_id": profile_id,
+                        "discovery_source": discovery_source_val,
+                    });
+
+                    let db: tauri::State<'_, Database> = app.state();
+                    match db.insert_company(&company) {
+                        Ok(_) => {
+                            dir_new += 1;
+                            total_discovered += 1;
+                        }
+                        Err(e) => {
+                            let _ = db.log_activity(
+                                job_id,
+                                "research",
+                                "warn",
+                                &format!("[Research:Directory] Failed to store {}: {}", name, e),
+                            );
+                        }
+                    }
+                }
+
+                {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(
+                        job_id,
+                        "research",
+                        "info",
+                        &format!(
+                            "[Research:Directory] Directory {} yielded {} new companies",
+                            dir_url, dir_new
+                        ),
+                    );
+                }
+
+                // Rate limit between directory scrapes (be polite)
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+    }
+
+    {
+        let db: tauri::State<'_, Database> = app.state();
+        let _ = db.log_activity(
+            job_id,
+            "research",
+            "info",
+            &format!(
+                "[Research:Directory] Directory phase complete: {} directories scraped, {} new companies",
+                directories_scraped, total_discovered
+            ),
+        );
+    }
+
+    total_discovered
+}
+
+/// Extract the domain from a URL (e.g., "https://www.example.com/page" -> "example.com").
+fn extract_domain_from_url(url: &str) -> String {
+    if url.is_empty() {
+        return String::new();
+    }
+    // Strip scheme
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    // Take host part (before first /)
+    let host = without_scheme.split('/').next().unwrap_or("");
+    // Strip port
+    let host = host.split(':').next().unwrap_or(host);
+    // Strip www. prefix
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    host.to_lowercase()
 }
