@@ -127,6 +127,41 @@ impl Database {
         }))
     }
 
+    pub fn get_extended_stats(&self) -> Result<Value> {
+        let conn = self.conn.lock().unwrap();
+
+        let verified: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM companies WHERE verified_v2_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        let synthesized: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM companies WHERE synthesis_public_json IS NOT NULL AND synthesis_public_json != ''",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        let intel_records: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nightshift_intel",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        let activities: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM activity_feed",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        Ok(json!({
+            "verified": verified,
+            "synthesized": synthesized,
+            "intel_records": intel_records,
+            "activities": activities,
+        }))
+    }
+
     pub fn get_companies(&self, status: Option<&str>, limit: i64, offset: i64) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
         let (query, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(s) = status {
@@ -2791,6 +2826,25 @@ impl Database {
             })?
             .filter_map(|r| r.ok())
             .next();
+        Ok(row)
+    }
+
+    /// Get verification data for a specific company.
+    pub fn get_company_verification(&self, company_id: &str) -> Result<Value> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT verified_v2_at, verification_changes_json, fractional_signals_json \
+             FROM companies WHERE id = ?1",
+        )?;
+
+        let row = stmt.query_row([company_id], |row| {
+            Ok(json!({
+                "verified_v2_at": row.get::<_, Option<String>>(0)?,
+                "verification_changes_json": row.get::<_, Option<String>>(1)?,
+                "fractional_signals_json": row.get::<_, Option<String>>(2)?,
+            }))
+        })?;
+
         Ok(row)
     }
 }

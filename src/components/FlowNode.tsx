@@ -74,11 +74,17 @@ export default function FlowNode({ nodeId, label, state, x, y }: FlowNodeProps) 
       {state?.model && (
         <p className="text-[10px] text-gray-400 mb-1 truncate">{state.model}</p>
       )}
-      {!state?.model && nodeId === "push_techniques" && (
+      {!state?.model && nodeId === "push" && (
         <p className="text-[10px] text-gray-400 mb-1">Supabase</p>
       )}
-      {!state?.model && nodeId === "auto_approve" && (
-        <p className="text-[10px] text-gray-400 mb-1">Rule-based</p>
+      {!state?.model && nodeId === "verify" && (
+        <p className="text-[10px] text-gray-400 mb-1">Website scrape</p>
+      )}
+      {!state?.model && nodeId === "outreach" && (
+        <p className="text-[10px] text-gray-400 mb-1">Resend</p>
+      )}
+      {!state?.model && nodeId === "activity" && (
+        <p className="text-[10px] text-gray-400 mb-1">Brave Search</p>
       )}
 
       {status === "running" && progress && (

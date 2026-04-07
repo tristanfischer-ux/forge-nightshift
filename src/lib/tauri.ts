@@ -209,6 +209,18 @@ export async function geocodeCompanies() {
   );
 }
 
+// Extended stats (verification, synthesis, intel, activity counts)
+export interface ExtendedStats {
+  verified: number;
+  synthesized: number;
+  intel_records: number;
+  activities: number;
+}
+
+export async function getExtendedStats() {
+  return invoke<ExtendedStats>("get_extended_stats");
+}
+
 // Event listeners
 export function onPipelineStatus(
   callback: (payload: Record<string, unknown>) => void
@@ -547,6 +559,20 @@ export interface ActivityItem {
 
 export async function getCompanyActivities(companyId: string, limit?: number) {
   return invoke<ActivityItem[]>("get_company_activities", { companyId, limit });
+}
+
+// --- Intel & Verification ---
+
+export async function getCompanyIntel(companyId: string) {
+  return invoke<Record<string, unknown> | null>("get_company_intel", {
+    companyId,
+  });
+}
+
+export async function getCompanyVerification(companyId: string) {
+  return invoke<Record<string, unknown>>("get_company_verification", {
+    companyId,
+  });
 }
 
 // --- Semantic Search (Phase 6) ---

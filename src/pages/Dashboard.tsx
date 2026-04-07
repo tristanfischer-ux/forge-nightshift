@@ -23,8 +23,9 @@ import {
   onPipelineStatus,
   onPipelineProgress,
   getStatsHistory,
+  getExtendedStats,
 } from "../lib/tauri";
-import type { AnalyticsData, StatsHistoryEntry } from "../lib/tauri";
+import type { AnalyticsData, StatsHistoryEntry, ExtendedStats } from "../lib/tauri";
 import { playSound } from "../lib/sounds";
 
 interface PipelineState {
@@ -43,6 +44,7 @@ export default function Dashboard() {
   const [logs, setLogs] = useState<Record<string, unknown>[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [statsHistory, setStatsHistory] = useState<StatsHistoryEntry[]>([]);
+  const [extStats, setExtStats] = useState<ExtendedStats>({ verified: 0, synthesized: 0, intel_records: 0, activities: 0 });
   const [logStageFilter, setLogStageFilter] = useState("all");
   const [logLevelFilter, setLogLevelFilter] = useState("all");
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -90,12 +92,13 @@ export default function Dashboard() {
 
   async function loadData() {
     try {
-      const [s, p, l, a, h] = await Promise.all([
+      const [s, p, l, a, h, ext] = await Promise.all([
         getStats(),
         getPipelineStatus(),
         getRunLog(undefined, 20),
         getAnalytics(),
         getStatsHistory(),
+        getExtendedStats(),
       ]);
       setStats(s);
       setPipeline(p);
@@ -103,6 +106,7 @@ export default function Dashboard() {
       setLogs(l);
       setAnalytics(a);
       setStatsHistory(h);
+      setExtStats(ext);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -111,16 +115,18 @@ export default function Dashboard() {
 
   async function refreshStats() {
     try {
-      const [s, l, a, h] = await Promise.all([
+      const [s, l, a, h, ext] = await Promise.all([
         getStats(),
         getRunLog(undefined, 20),
         getAnalytics(),
         getStatsHistory(),
+        getExtendedStats(),
       ]);
       setStats(s);
       setLogs(l);
       setAnalytics(a);
       setStatsHistory(h);
+      setExtStats(ext);
     } catch (e) {
       console.warn("Failed to refresh stats:", e);
     }
@@ -220,7 +226,7 @@ export default function Dashboard() {
       )}
 
       {/* Stats cards */}
-      <div className="grid grid-cols-5 gap-4">
+      <div className="grid grid-cols-4 gap-4">
         <StatCard
           label="Companies Found"
           value={getStatCount(companiesData)}
@@ -240,12 +246,23 @@ export default function Dashboard() {
           trend={statsHistory.map((h) => h.enriched)}
         />
         <StatCard
-          label="Approved"
-          value={
-            getStatCount(companiesData, "approved") +
-            getStatCount(companiesData, "pushed")
-          }
+          label="Verified"
+          value={extStats.verified}
           icon={CheckCircle}
+          color="text-teal-600"
+        />
+        <StatCard
+          label="Synthesized"
+          value={extStats.synthesized}
+          icon={Activity}
+          color="text-indigo-600"
+        />
+      </div>
+      <div className="grid grid-cols-4 gap-4">
+        <StatCard
+          label="Intel Records"
+          value={extStats.intel_records}
+          icon={Search}
           color="text-yellow-600"
         />
         <StatCard
@@ -261,6 +278,7 @@ export default function Dashboard() {
           icon={Mail}
           color="text-orange-600"
         />
+        <div />
       </div>
 
       {/* Charts row 1: Pipeline Funnel + Country Distribution */}
@@ -332,8 +350,12 @@ export default function Dashboard() {
               <option value="research">Research</option>
               <option value="enrich">Enrich</option>
               <option value="deep_enrich">Deep Enrich</option>
+              <option value="verify">Verify</option>
+              <option value="synthesize">Synthesize</option>
+              <option value="director_intel">Director Intel</option>
               <option value="push">Push</option>
               <option value="outreach">Outreach</option>
+              <option value="activity">Activity</option>
             </select>
             <select
               value={logLevelFilter}

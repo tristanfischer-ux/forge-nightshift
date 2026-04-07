@@ -49,6 +49,11 @@ fn get_stats(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String
 }
 
 #[tauri::command]
+fn get_extended_stats(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
+    db.get_extended_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_companies(
     db: tauri::State<'_, Database>,
     status: Option<String>,
@@ -1403,6 +1408,23 @@ fn get_company_activities(
 }
 
 #[tauri::command]
+fn get_company_intel(
+    db: tauri::State<'_, Database>,
+    company_id: String,
+) -> Result<Option<serde_json::Value>, String> {
+    db.get_intel(&company_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_company_verification(
+    db: tauri::State<'_, Database>,
+    company_id: String,
+) -> Result<serde_json::Value, String> {
+    db.get_company_verification(&company_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn search_semantic(
     db: tauri::State<'_, Database>,
     cache: tauri::State<'_, Mutex<EmbeddingCache>>,
@@ -1572,6 +1594,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_stats,
+            get_extended_stats,
             get_companies,
             get_company,
             update_company_status,
@@ -1627,6 +1650,8 @@ pub fn run() {
             get_outreach_readiness,
             search_semantic,
             get_company_activities,
+            get_company_intel,
+            get_company_verification,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

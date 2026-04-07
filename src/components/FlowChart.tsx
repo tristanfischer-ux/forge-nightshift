@@ -6,15 +6,22 @@ interface FlowChartProps {
   nodes: Record<string, PipelineNodeEvent | null>;
 }
 
-// Layout: positioned nodes with fixed coordinates
-// research(left) + enrich(right) -> deep_enrich -> auto_approve -> aggregate -> push_techniques
+// Layout: 9-node pipeline flow
+// research → enrich → deep_enrich → verify → synthesize → director_intel → push → outreach → activity
+//
+// Row 1 (y=20):  research, enrich, deep_enrich
+// Row 2 (y=140): verify, synthesize, director_intel
+// Row 3 (y=260): push, outreach, activity
 const NODE_DEFS = [
-  { id: "research", label: "Research", x: 30, y: 20 },
-  { id: "enrich", label: "Enrich", x: 230, y: 20 },
-  { id: "deep_enrich", label: "Deep Enrich", x: 130, y: 140 },
-  { id: "auto_approve", label: "Auto-Approve", x: 130, y: 260 },
-  { id: "aggregate_techniques", label: "Aggregate Tech.", x: 130, y: 380 },
-  { id: "push_techniques", label: "Push Techniques", x: 130, y: 500 },
+  { id: "research",       label: "Research",       x: 30,  y: 20 },
+  { id: "enrich",         label: "Enrich",         x: 230, y: 20 },
+  { id: "deep_enrich",    label: "Deep Enrich",    x: 430, y: 20 },
+  { id: "verify",         label: "Verify",         x: 30,  y: 140 },
+  { id: "synthesize",     label: "Synthesize",     x: 230, y: 140 },
+  { id: "director_intel", label: "Director Intel",  x: 430, y: 140 },
+  { id: "push",           label: "Push",           x: 30,  y: 260 },
+  { id: "outreach",       label: "Outreach",       x: 230, y: 260 },
+  { id: "activity",       label: "Activity",       x: 430, y: 260 },
 ];
 
 // Node dimensions for connector math
@@ -22,11 +29,14 @@ const NODE_W = 192; // w-48 = 12rem = 192px
 const NODE_H = 80;  // approximate height
 
 const CONNECTORS = [
-  { from: "research", to: "deep_enrich" },
+  { from: "research", to: "enrich" },
   { from: "enrich", to: "deep_enrich" },
-  { from: "deep_enrich", to: "auto_approve" },
-  { from: "auto_approve", to: "aggregate_techniques" },
-  { from: "aggregate_techniques", to: "push_techniques" },
+  { from: "deep_enrich", to: "verify" },
+  { from: "verify", to: "synthesize" },
+  { from: "synthesize", to: "director_intel" },
+  { from: "director_intel", to: "push" },
+  { from: "push", to: "outreach" },
+  { from: "outreach", to: "activity" },
 ];
 
 function getNodePos(id: string) {
@@ -35,7 +45,7 @@ function getNodePos(id: string) {
 
 export default function FlowChart({ nodes }: FlowChartProps) {
   return (
-    <div className="relative bg-white rounded-xl border border-gray-200 shadow-sm min-h-[400px]" style={{ height: "calc(100vh - 280px)" }}>
+    <div className="relative bg-white rounded-xl border border-gray-200 shadow-sm min-h-[420px]" style={{ height: "calc(100vh - 280px)" }}>
       <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 0 }}>
         {CONNECTORS.map((conn) => {
           const from = getNodePos(conn.from);

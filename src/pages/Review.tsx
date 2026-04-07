@@ -35,6 +35,14 @@ import {
   ChevronDown,
   Sparkles,
   Newspaper,
+  Brain,
+  FileSearch,
+  Lock,
+  Eye,
+  Users,
+  Crown,
+  TrendingUp,
+  Target,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -56,6 +64,8 @@ import {
   searchSemantic,
   getCompanyActivities,
   type ActivityItem,
+  getCompanyIntel,
+  getCompanyVerification,
 } from "../lib/tauri";
 import { useError } from "../contexts/ErrorContext";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -199,11 +209,19 @@ export default function Review() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Enhancement 11: Detail tabs
-  const [detailTab, setDetailTab] = useState<"overview" | "capabilities" | "contact" | "raw">("overview");
+  const [detailTab, setDetailTab] = useState<"overview" | "capabilities" | "intelligence" | "synthesis" | "verification" | "contact" | "raw">("overview");
 
   // Activity feed
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [activitiesLoading, setActivitiesLoading] = useState(false);
+
+  // Intel tab data
+  const [intelData, setIntelData] = useState<Record<string, unknown> | null>(null);
+  const [intelLoading, setIntelLoading] = useState(false);
+
+  // Verification tab data
+  const [verificationData, setVerificationData] = useState<Record<string, unknown> | null>(null);
+  const [verificationLoading, setVerificationLoading] = useState(false);
 
   // Enhancement 12: Side-by-side comparison
   const [compareMode, setCompareMode] = useState(false);
@@ -791,7 +809,31 @@ export default function Review() {
     setExpandedExcerpts(new Set());
     setDetailTab("overview");
     setProcessCapOpen(true);
+    setIntelData(null);
+    setVerificationData(null);
   }, [selectedId]);
+
+  // Load intel data on tab click
+  useEffect(() => {
+    if (detailTab !== "intelligence" || !selectedId) return;
+    if (intelData) return; // already loaded
+    setIntelLoading(true);
+    getCompanyIntel(selectedId)
+      .then((data) => setIntelData(data))
+      .catch(() => setIntelData(null))
+      .finally(() => setIntelLoading(false));
+  }, [detailTab, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load verification data on tab click
+  useEffect(() => {
+    if (detailTab !== "verification" || !selectedId) return;
+    if (verificationData) return; // already loaded
+    setVerificationLoading(true);
+    getCompanyVerification(selectedId)
+      .then((data) => setVerificationData(data))
+      .catch(() => setVerificationData(null))
+      .finally(() => setVerificationLoading(false));
+  }, [detailTab, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-6">
@@ -1403,8 +1445,8 @@ export default function Review() {
               </div>
 
               {/* Enhancement 11: Detail tabs */}
-              <div className="flex gap-1 border-b border-gray-100 pb-2">
-                {(["overview", "capabilities", "contact", "raw"] as const).map((tab) => (
+              <div className="flex gap-1 border-b border-gray-100 pb-2 flex-wrap">
+                {(["overview", "capabilities", "intelligence", "synthesis", "verification", "contact", "raw"] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setDetailTab(tab)}
@@ -1909,6 +1951,598 @@ export default function Review() {
                         </div>
                       )}
                     </div>
+                  )}
+                </div>
+              )}
+
+              {/* === INTELLIGENCE TAB === */}
+              {detailTab === "intelligence" && (
+                <div className="space-y-5">
+                  {intelLoading ? (
+                    <div className="flex items-center gap-2 text-xs text-gray-400 py-4">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Loading intelligence...
+                    </div>
+                  ) : !intelData ? (
+                    <div className="p-4 text-center text-gray-400 text-sm">
+                      No intelligence data available. Run the Intel pipeline stage first.
+                    </div>
+                  ) : (
+                    <>
+                      {/* Acquisition Readiness Score */}
+                      {intelData.acquisition_readiness_score != null && (
+                        <div className="text-center">
+                          <div
+                            className={`text-4xl font-bold ${
+                              Number(intelData.acquisition_readiness_score) > 70
+                                ? "text-green-600"
+                                : Number(intelData.acquisition_readiness_score) >= 40
+                                  ? "text-yellow-600"
+                                  : "text-red-600"
+                            }`}
+                          >
+                            {String(intelData.acquisition_readiness_score)}
+                          </div>
+                          <div className="text-xs text-gray-400 mt-1">Acquisition Readiness Score</div>
+                        </div>
+                      )}
+
+                      {/* Directors */}
+                      {intelData.directors_json && (() => {
+                        try {
+                          const directors = JSON.parse(String(intelData.directors_json));
+                          if (!Array.isArray(directors) || directors.length === 0) return null;
+                          return (
+                            <div>
+                              <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                                <Users className="w-3 h-3" /> Directors
+                                <span className="ml-1 px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 text-[10px] font-medium">
+                                  {directors.length}
+                                </span>
+                              </h4>
+                              <div className="space-y-1.5">
+                                {directors.map((d: Record<string, unknown>, i: number) => (
+                                  <div key={i} className="flex items-center gap-2 text-sm">
+                                    {String(d.name || "") === String(intelData.founder_director_name || "") ? (
+                                      <span title="Founder Director"><Crown className="w-3 h-3 text-yellow-500 shrink-0" /></span>
+                                    ) : (
+                                      <User className="w-3 h-3 text-gray-300 shrink-0" />
+                                    )}
+                                    <span className="font-medium text-gray-900">{String(d.name || "")}</span>
+                                    {!!d.role && <span className="text-xs text-gray-500">{String(d.role)}</span>}
+                                    {d.age != null && (
+                                      <span className="text-xs text-gray-400">Age {String(d.age)}</span>
+                                    )}
+                                    {!!d.nationality && (
+                                      <span className="text-[10px] text-gray-400">{String(d.nationality)}</span>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        } catch { return null; }
+                      })()}
+
+                      {/* Ownership Structure */}
+                      {intelData.ownership_structure && (
+                        <div>
+                          <h4 className="text-xs text-gray-400 uppercase mb-1 flex items-center gap-1">
+                            <Building2 className="w-3 h-3" /> Ownership Structure
+                          </h4>
+                          <span className="inline-block px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">
+                            {String(intelData.ownership_structure).replace(/_/g, " ")}
+                          </span>
+                          {intelData.single_owner === 1 && (
+                            <p className="text-xs text-gray-500 mt-1">Single owner controls the company</p>
+                          )}
+                          {intelData.owner_is_director === 1 && (
+                            <p className="text-xs text-gray-500">Owner is also a director</p>
+                          )}
+                        </div>
+                      )}
+
+                      {/* PSC (Persons of Significant Control) */}
+                      {intelData.psc_json && (() => {
+                        try {
+                          const pscs = JSON.parse(String(intelData.psc_json));
+                          if (!Array.isArray(pscs) || pscs.length === 0) return null;
+                          return (
+                            <div>
+                              <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                                <Lock className="w-3 h-3" /> Persons of Significant Control
+                                <span className="ml-1 px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 text-[10px] font-medium">
+                                  {pscs.length}
+                                </span>
+                              </h4>
+                              <div className="space-y-1.5">
+                                {pscs.map((psc: Record<string, unknown>, i: number) => (
+                                  <div key={i} className="rounded-lg border border-gray-100 bg-gray-50 p-2">
+                                    <p className="text-sm font-medium text-gray-900">{String(psc.name || "")}</p>
+                                    {!!psc.natures_of_control && Array.isArray(psc.natures_of_control) && (
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {(psc.natures_of_control as string[]).map((nature, j) => (
+                                          <span key={j} className="px-1.5 py-0.5 rounded text-[10px] bg-purple-50 text-purple-600">
+                                            {nature}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        } catch { return null; }
+                      })()}
+
+                      {/* Succession Signals */}
+                      {(intelData.no_young_directors === 1 ||
+                        intelData.recent_director_changes === 1 ||
+                        intelData.has_company_secretary === 1 ||
+                        intelData.years_trading != null) && (
+                        <div>
+                          <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                            <TrendingUp className="w-3 h-3" /> Succession Signals
+                          </h4>
+                          <div className="space-y-1 text-xs">
+                            {intelData.no_young_directors === 1 && (
+                              <div className="flex items-center gap-1.5 text-amber-700">
+                                <AlertTriangle className="w-3 h-3" />
+                                No young directors in pipeline
+                              </div>
+                            )}
+                            {intelData.recent_director_changes === 1 && (
+                              <div className="flex items-center gap-1.5 text-blue-700">
+                                <RefreshCw className="w-3 h-3" />
+                                Recent director changes detected
+                              </div>
+                            )}
+                            {intelData.has_company_secretary === 1 && (
+                              <div className="flex items-center gap-1.5 text-gray-600">
+                                <ShieldCheck className="w-3 h-3" />
+                                Has company secretary
+                              </div>
+                            )}
+                            {intelData.years_trading != null && (
+                              <div className="flex items-center gap-1.5 text-gray-600">
+                                <Clock className="w-3 h-3" />
+                                {String(intelData.years_trading)} years trading
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Financial Health */}
+                      {(intelData.company_status || intelData.accounts_type || intelData.has_insolvency_history === 1) && (
+                        <div>
+                          <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                            <HeartPulse className="w-3 h-3" /> Financial Health
+                          </h4>
+                          <div className="grid grid-cols-2 gap-3 text-xs">
+                            <DetailField label="Company Status" value={intelData.company_status as string} />
+                            <DetailField label="Accounts Type" value={intelData.accounts_type as string} />
+                            <DetailField label="Last Accounts" value={intelData.last_accounts_date as string} />
+                          </div>
+                          <div className="mt-2 space-y-1 text-xs">
+                            {intelData.has_insolvency_history === 1 && (
+                              <div className="flex items-center gap-1 text-red-600">
+                                <AlertTriangle className="w-3 h-3" />
+                                Insolvency history
+                              </div>
+                            )}
+                            {intelData.has_charges === 1 && (
+                              <div className="flex items-center gap-1 text-amber-600">
+                                <AlertTriangle className="w-3 h-3" />
+                                Has secured charges
+                              </div>
+                            )}
+                            {intelData.accounts_overdue === 1 && (
+                              <div className="flex items-center gap-1 text-red-600">
+                                <AlertTriangle className="w-3 h-3" />
+                                Accounts overdue
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Acquisition Signals */}
+                      {intelData.acquisition_signals_json && (() => {
+                        try {
+                          const signals = JSON.parse(String(intelData.acquisition_signals_json));
+                          if (!Array.isArray(signals) || signals.length === 0) return null;
+                          return (
+                            <div>
+                              <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                                <Target className="w-3 h-3" /> Acquisition Signals
+                              </h4>
+                              <div className="space-y-1">
+                                {signals.map((signal: string, i: number) => (
+                                  <div key={i} className="flex items-start gap-1.5 text-xs text-gray-700">
+                                    <span className="text-forge-500 mt-0.5 shrink-0">&bull;</span>
+                                    {signal}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        } catch { return null; }
+                      })()}
+
+                      {/* Source info */}
+                      {!!(intelData.age_source || intelData.ch_fetched_at) && (
+                        <div className="text-[10px] text-gray-400 pt-2 border-t border-gray-100">
+                          {!!intelData.age_source && <span>Age source: {String(intelData.age_source)}</span>}
+                          {!!intelData.ch_fetched_at && <span className="ml-3">CH fetched: {String(intelData.ch_fetched_at)}</span>}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* === SYNTHESIS TAB === */}
+              {detailTab === "synthesis" && (
+                <div className="space-y-5">
+                  {/* Public Synthesis */}
+                  {(() => {
+                    const publicRaw = selected.synthesis_public_json;
+                    if (!publicRaw) return (
+                      <div className="p-4 text-center text-gray-400 text-sm">
+                        No synthesis data available. Run the Synthesis pipeline stage first.
+                      </div>
+                    );
+                    try {
+                      const pub_ = JSON.parse(String(publicRaw)) as Record<string, unknown>;
+                      return (
+                        <>
+                          {/* Public section */}
+                          <div className="rounded-lg border-2 border-blue-200 bg-blue-50/50 p-4 space-y-4">
+                            <h4 className="text-xs font-semibold text-blue-700 uppercase flex items-center gap-1">
+                              <Eye className="w-3 h-3" /> Public Synthesis
+                            </h4>
+
+                            {/* Capability summary */}
+                            {!!pub_.capability_summary && (
+                              <div>
+                                <p className="text-xs text-gray-400 mb-0.5">Capability Summary</p>
+                                <p className="text-sm text-gray-700">{String(pub_.capability_summary)}</p>
+                              </div>
+                            )}
+
+                            {/* Marketplace tags */}
+                            {Array.isArray(pub_.marketplace_tags) && (pub_.marketplace_tags as unknown[]).length > 0 && (
+                              <div>
+                                <p className="text-xs text-gray-400 mb-1">Marketplace Tags</p>
+                                <TagPills items={pub_.marketplace_tags as string[]} color="bg-blue-100 text-blue-700" />
+                              </div>
+                            )}
+
+                            {/* Competitive positioning */}
+                            {!!pub_.competitive_positioning && typeof pub_.competitive_positioning === "object" && (
+                              <div>
+                                <p className="text-xs text-gray-400 mb-1">Competitive Positioning</p>
+                                <div className="grid grid-cols-2 gap-2 text-xs">
+                                  {Object.entries(pub_.competitive_positioning as Record<string, unknown>).map(([k, v]) => (
+                                    <DetailField key={k} label={k.replace(/_/g, " ")} value={String(v)} />
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Search keywords */}
+                            {Array.isArray(pub_.search_keywords) && (pub_.search_keywords as unknown[]).length > 0 && (
+                              <div>
+                                <p className="text-xs text-gray-400 mb-1">Search Keywords</p>
+                                <TagPills items={pub_.search_keywords as string[]} color="bg-gray-100 text-gray-600" />
+                              </div>
+                            )}
+
+                            {/* Ideal buyer profile */}
+                            {!!pub_.ideal_buyer_profile && (
+                              <div>
+                                <p className="text-xs text-gray-400 mb-0.5">Ideal Buyer Profile</p>
+                                <p className="text-sm text-gray-700">{String(pub_.ideal_buyer_profile)}</p>
+                              </div>
+                            )}
+
+                            {/* Data quality assessment */}
+                            {!!pub_.data_quality_grade && (
+                              <div>
+                                <p className="text-xs text-gray-400 mb-0.5">Data Quality</p>
+                                <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
+                                  String(pub_.data_quality_grade).toUpperCase().startsWith("A") ? "bg-green-100 text-green-700" :
+                                  String(pub_.data_quality_grade).toUpperCase().startsWith("B") ? "bg-yellow-100 text-yellow-700" :
+                                  "bg-red-100 text-red-700"
+                                }`}>
+                                  {String(pub_.data_quality_grade)}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Private Intelligence */}
+                          {!!selected.synthesis_private_json && (() => {
+                            try {
+                              const priv = JSON.parse(String(selected.synthesis_private_json)) as Record<string, unknown>;
+                              return (
+                                <div className="rounded-lg border-2 border-red-200 bg-red-50/50 p-4 space-y-4">
+                                  <div className="flex items-center gap-2">
+                                    <h4 className="text-xs font-semibold text-red-700 uppercase flex items-center gap-1">
+                                      <Lock className="w-3 h-3" /> Private Intelligence
+                                    </h4>
+                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-200 text-red-800 tracking-wider">
+                                      CONFIDENTIAL
+                                    </span>
+                                  </div>
+
+                                  {!!priv.growth_trajectory && (
+                                    <div>
+                                      <p className="text-xs text-gray-400 mb-0.5">Growth Trajectory</p>
+                                      <p className="text-sm text-gray-700">{String(priv.growth_trajectory)}</p>
+                                    </div>
+                                  )}
+
+                                  {!!priv.fractional_executive_needs && (
+                                    <div>
+                                      <p className="text-xs text-gray-400 mb-0.5">Fractional Executive Needs</p>
+                                      <p className="text-sm text-gray-700">{String(priv.fractional_executive_needs)}</p>
+                                    </div>
+                                  )}
+
+                                  {!!priv.acquisition_fit_analysis && (
+                                    <div>
+                                      <p className="text-xs text-gray-400 mb-0.5">Acquisition Fit Analysis</p>
+                                      <p className="text-sm text-gray-700">{String(priv.acquisition_fit_analysis)}</p>
+                                    </div>
+                                  )}
+
+                                  {!!priv.approach_strategy && (
+                                    <div>
+                                      <p className="text-xs text-gray-400 mb-0.5">Approach Strategy</p>
+                                      <p className="text-sm text-gray-700">{String(priv.approach_strategy)}</p>
+                                    </div>
+                                  )}
+
+                                  {/* Show any other string fields not covered above */}
+                                  {Object.entries(priv)
+                                    .filter(([k]) => !["growth_trajectory", "fractional_executive_needs", "acquisition_fit_analysis", "approach_strategy"].includes(k))
+                                    .filter(([, v]) => typeof v === "string" && v)
+                                    .map(([k, v]) => (
+                                      <div key={k}>
+                                        <p className="text-xs text-gray-400 mb-0.5">{k.replace(/_/g, " ")}</p>
+                                        <p className="text-sm text-gray-700">{String(v)}</p>
+                                      </div>
+                                    ))}
+                                </div>
+                              );
+                            } catch { return null; }
+                          })()}
+                        </>
+                      );
+                    } catch {
+                      return (
+                        <div className="p-4 text-center text-red-400 text-sm">
+                          Failed to parse synthesis data.
+                        </div>
+                      );
+                    }
+                  })()}
+                </div>
+              )}
+
+              {/* === VERIFICATION TAB === */}
+              {detailTab === "verification" && (
+                <div className="space-y-5">
+                  {verificationLoading ? (
+                    <div className="flex items-center gap-2 text-xs text-gray-400 py-4">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Loading verification data...
+                    </div>
+                  ) : !verificationData ? (
+                    <div className="p-4 text-center text-gray-400 text-sm">
+                      No verification data available.
+                    </div>
+                  ) : (
+                    <>
+                      {/* Verified at */}
+                      {verificationData.verified_v2_at ? (
+                        <div className="flex items-center gap-2">
+                          <ShieldCheck className="w-4 h-4 text-green-600" />
+                          <span className="text-sm font-medium text-green-700">Verified</span>
+                          <span className="text-xs text-gray-400">
+                            {new Date(String(verificationData.verified_v2_at)).toLocaleString()}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-gray-400" />
+                          <span className="text-sm text-gray-500">Not yet verified</span>
+                        </div>
+                      )}
+
+                      {/* Corrections Applied */}
+                      {verificationData.verification_changes_json && (() => {
+                        try {
+                          const changes = JSON.parse(String(verificationData.verification_changes_json));
+                          if (!changes || (Array.isArray(changes) && changes.length === 0)) return null;
+                          const changeList = Array.isArray(changes) ? changes : typeof changes === "object" ? Object.entries(changes) : [];
+                          if (changeList.length === 0) return null;
+                          return (
+                            <div>
+                              <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                                <FileSearch className="w-3 h-3" /> Corrections Applied
+                              </h4>
+                              <div className="space-y-1.5">
+                                {Array.isArray(changes) ? (
+                                  changes.map((change: Record<string, unknown>, i: number) => (
+                                    <div key={i} className="rounded-lg border border-gray-100 bg-gray-50 p-2 text-xs">
+                                      <span className="font-medium text-gray-700">{String(change.field || change.key || "")}: </span>
+                                      {change.old != null && (
+                                        <span className="text-red-500 line-through mr-1">{String(change.old)}</span>
+                                      )}
+                                      {change.new != null && (
+                                        <span className="text-green-600">{String(change.new)}</span>
+                                      )}
+                                      {!!change.reason && (
+                                        <p className="text-[10px] text-gray-400 mt-0.5">{String(change.reason)}</p>
+                                      )}
+                                    </div>
+                                  ))
+                                ) : (
+                                  Object.entries(changes as Record<string, unknown>).map(([field, val]) => (
+                                    <div key={field} className="rounded-lg border border-gray-100 bg-gray-50 p-2 text-xs">
+                                      <span className="font-medium text-gray-700">{field}: </span>
+                                      <span className="text-green-600">{String(val)}</span>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          );
+                        } catch { return null; }
+                      })()}
+
+                      {/* Fractional Signals */}
+                      {!!verificationData.fractional_signals_json && (() => {
+                        try {
+                          const signals = JSON.parse(String(verificationData.fractional_signals_json));
+                          if (!signals || typeof signals !== "object") return null;
+                          return (
+                            <div>
+                              <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                                <Brain className="w-3 h-3" /> Fractional Signals
+                              </h4>
+                              <div className="space-y-3">
+                                {/* Ownership analysis */}
+                                {!!signals.ownership_analysis && (
+                                  <div>
+                                    <p className="text-xs text-gray-400 mb-0.5">Ownership Analysis</p>
+                                    <p className="text-sm text-gray-700">{String(signals.ownership_analysis)}</p>
+                                  </div>
+                                )}
+
+                                {/* Missing roles */}
+                                {Array.isArray(signals.missing_roles) && (signals.missing_roles as unknown[]).length > 0 && (
+                                  <div>
+                                    <p className="text-xs text-gray-400 mb-1">Missing Roles</p>
+                                    <TagPills items={signals.missing_roles as string[]} color="bg-amber-50 text-amber-700" />
+                                  </div>
+                                )}
+
+                                {/* Needs assessment */}
+                                {!!signals.needs_assessment && (
+                                  <div>
+                                    <p className="text-xs text-gray-400 mb-0.5">Needs Assessment</p>
+                                    <p className="text-sm text-gray-700">{String(signals.needs_assessment)}</p>
+                                  </div>
+                                )}
+
+                                {/* Extracted people */}
+                                {Array.isArray(signals.extracted_people) && (signals.extracted_people as unknown[]).length > 0 && (
+                                  <div>
+                                    <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                                      <Users className="w-3 h-3" /> Extracted People
+                                    </h4>
+                                    <div className="space-y-1">
+                                      {(signals.extracted_people as { name: string; title?: string }[]).map((person, i) => (
+                                        <div key={i} className="flex items-center gap-2 text-sm">
+                                          <User className="w-3 h-3 text-gray-300 shrink-0" />
+                                          <span className="font-medium text-gray-900">{person.name}</span>
+                                          {person.title && <span className="text-xs text-gray-500">{person.title}</span>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Equipment mentioned */}
+                                {Array.isArray(signals.equipment_mentioned) && (signals.equipment_mentioned as unknown[]).length > 0 && (
+                                  <div>
+                                    <p className="text-xs text-gray-400 mb-1">Equipment Mentioned</p>
+                                    <TagPills items={signals.equipment_mentioned as string[]} color="bg-teal-50 text-teal-700" />
+                                  </div>
+                                )}
+
+                                {/* Case studies */}
+                                {Array.isArray(signals.case_studies) && (signals.case_studies as unknown[]).length > 0 && (
+                                  <div>
+                                    <p className="text-xs text-gray-400 mb-1">Case Studies</p>
+                                    <div className="space-y-1.5">
+                                      {(signals.case_studies as Record<string, unknown>[]).map((cs, i) => (
+                                        <div key={i} className="rounded-lg border border-gray-100 bg-gray-50 p-2">
+                                          <p className="text-xs font-medium text-gray-900">{String(cs.title || cs.name || "")}</p>
+                                          {!!cs.description && (
+                                            <p className="text-[11px] text-gray-500 mt-0.5">{String(cs.description)}</p>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Named clients */}
+                                {Array.isArray(signals.named_clients) && (signals.named_clients as unknown[]).length > 0 && (
+                                  <div>
+                                    <p className="text-xs text-gray-400 mb-1">Named Clients</p>
+                                    <TagPills items={signals.named_clients as string[]} color="bg-purple-50 text-purple-700" />
+                                  </div>
+                                )}
+
+                                {/* Confidence scores */}
+                                {!!signals.confidence_scores && typeof signals.confidence_scores === "object" && (
+                                  <div>
+                                    <p className="text-xs text-gray-400 mb-2">Confidence Scores</p>
+                                    <div className="space-y-2">
+                                      {Object.entries(signals.confidence_scores as Record<string, number>).map(([field, score]) => (
+                                        <div key={field}>
+                                          <div className="flex justify-between text-[10px] text-gray-500 mb-0.5">
+                                            <span>{field.replace(/_/g, " ")}</span>
+                                            <span>{typeof score === "number" ? Math.round(score * 100) : score}%</span>
+                                          </div>
+                                          <div className="w-full bg-gray-100 rounded-full h-1.5">
+                                            <div
+                                              className={`h-1.5 rounded-full ${
+                                                (typeof score === "number" ? score : 0) >= 0.8 ? "bg-green-500" :
+                                                (typeof score === "number" ? score : 0) >= 0.5 ? "bg-yellow-500" :
+                                                "bg-red-500"
+                                              }`}
+                                              style={{ width: `${typeof score === "number" ? Math.min(100, score * 100) : 0}%` }}
+                                            />
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Show any other string fields */}
+                                {Object.entries(signals as Record<string, unknown>)
+                                  .filter(([k]) => !["ownership_analysis", "missing_roles", "needs_assessment", "extracted_people", "equipment_mentioned", "case_studies", "named_clients", "confidence_scores"].includes(k))
+                                  .filter(([, v]) => typeof v === "string" && v)
+                                  .map(([k, v]) => (
+                                    <div key={k}>
+                                      <p className="text-xs text-gray-400 mb-0.5">{k.replace(/_/g, " ")}</p>
+                                      <p className="text-sm text-gray-700">{String(v)}</p>
+                                    </div>
+                                  ))}
+                              </div>
+                            </div>
+                          );
+                        } catch { return null; }
+                      })()}
+
+                      {/* If no data at all */}
+                      {!verificationData.verified_v2_at &&
+                        !verificationData.verification_changes_json &&
+                        !verificationData.fractional_signals_json && (
+                        <div className="p-4 text-center text-gray-400 text-sm">
+                          No verification data available. Run the Verification pipeline stage first.
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               )}

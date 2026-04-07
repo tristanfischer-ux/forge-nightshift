@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { Play, Square, RefreshCw, Search, Activity, Zap, Clock, ChevronDown, ChevronRight, Building2 } from "lucide-react";
+import { Play, Square, Search, Activity, Zap, Clock, ChevronDown, ChevronRight, Shield, Send, Rss } from "lucide-react";
 import FlowChart from "../components/FlowChart";
 import {
   startPipeline,
@@ -11,8 +11,9 @@ import {
   getStats,
   getRunHistory,
   getConfig,
+  getExtendedStats,
 } from "../lib/tauri";
-import type { PipelineNodeEvent, RunHistoryEntry } from "../lib/tauri";
+import type { PipelineNodeEvent, RunHistoryEntry, ExtendedStats } from "../lib/tauri";
 
 // activityCounter moved to useRef inside component
 
@@ -24,36 +25,43 @@ interface ActivityEntry {
   item: string | null;
 }
 
-const PRESETS: { label: string; stages: string[]; icon: React.ReactNode; description: string }[] = [
+const PRESETS: { label: string; stages: string[]; icon: React.ReactNode; description: string; primary?: boolean }[] = [
   {
     label: "Full Pipeline",
-    stages: ["research", "enrich", "deep_enrich_all", "aggregate_techniques", "push_techniques"],
+    stages: ["research", "enrich", "deep_enrich_drain", "verify", "synthesize", "director_intel", "push"],
     icon: <Play className="w-3.5 h-3.5" />,
-    description: "Find new + backfill all",
+    description: "End-to-end: discover, enrich, verify, synthesize, push",
+    primary: true,
   },
   {
-    label: "Full + Deep",
-    stages: ["research", "enrich", "deep_enrich_drain"],
+    label: "Intelligence",
+    stages: ["verify", "synthesize", "director_intel"],
+    icon: <Shield className="w-3.5 h-3.5" />,
+    description: "Verify + synthesize + director analysis",
+  },
+  {
+    label: "Enrich + Verify",
+    stages: ["enrich", "deep_enrich_drain", "verify", "synthesize"],
     icon: <Zap className="w-3.5 h-3.5" />,
-    description: "Find + enrich + deep enrich concurrently",
-  },
-  {
-    label: "Backfill Only",
-    stages: ["deep_enrich_all", "aggregate_techniques", "push_techniques"],
-    icon: <RefreshCw className="w-3.5 h-3.5" />,
-    description: "Process existing companies",
+    description: "Enrich, deep enrich, verify, and synthesize",
   },
   {
     label: "Discovery Only",
-    stages: ["research", "enrich", "push"],
+    stages: ["research", "enrich"],
     icon: <Search className="w-3.5 h-3.5" />,
-    description: "Find + enrich + deep enrich + push",
+    description: "Find new companies and basic enrichment",
   },
   {
-    label: "CH Verify",
-    stages: ["companies_house"],
-    icon: <Building2 className="w-3.5 h-3.5" />,
-    description: "Cross-check all GB companies against Companies House",
+    label: "Push + Outreach",
+    stages: ["push", "outreach", "activity"],
+    icon: <Send className="w-3.5 h-3.5" />,
+    description: "Push to ForgeOS, send outreach, fetch activity",
+  },
+  {
+    label: "Activity Feed",
+    stages: ["activity"],
+    icon: <Rss className="w-3.5 h-3.5" />,
+    description: "Fetch latest activity for tracked companies",
   },
 ];
 
@@ -64,11 +72,11 @@ export default function Pipeline() {
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const activityCounterRef = useRef(0);
   const [stats, setStats] = useState<Record<string, unknown>>({});
+  const [extStats, setExtStats] = useState<ExtendedStats>({ verified: 0, synthesized: 0, intel_records: 0, activities: 0 });
   const activityRef = useRef<HTMLDivElement>(null);
   const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
-  const [scheduleTime, setScheduleTime] = useState<string | null>(null);
   const [nextRunText, setNextRunText] = useState("");
 
   useEffect(() => {
@@ -76,10 +84,13 @@ export default function Pipeline() {
     getPipelineStatus().then((s) => setRunning(s.running)).catch(() => {});
     getPipelineNodes().then((n) => setNodes(n as Record<string, PipelineNodeEvent | null>)).catch(() => {});
     getStats().then(setStats).catch(() => {});
+    getExtendedStats().then(setExtStats).catch(() => {});
     getRunHistory(10).then(setRunHistory).catch(() => {});
     getConfig().then((c) => {
-      const t = c.schedule_time;
-      if (t) setScheduleTime(t);
+      try {
+        const schedules = JSON.parse(c.schedules || "[]") as { enabled: boolean; name: string; type: string; interval_hours?: number; time?: string; last_run_at?: string }[];
+        updateNextRunFromSchedules(schedules);
+      } catch {}
     }).catch(() => {});
 
     // Subscribe to events
@@ -102,6 +113,7 @@ export default function Pipeline() {
       setRunning(status === "running");
       if (status === "completed" || status === "failed") {
         getStats().then(setStats).catch(() => {});
+        getExtendedStats().then(setExtStats).catch(() => {});
         getRunHistory(10).then(setRunHistory).catch(() => {});
       }
     });
@@ -112,25 +124,73 @@ export default function Pipeline() {
     };
   }, []);
 
-  // Schedule next-run countdown
-  useEffect(() => {
-    if (!scheduleTime) return;
-    function updateNextRun() {
-      const [hh, mm] = scheduleTime!.split(":").map(Number);
-      if (isNaN(hh) || isNaN(mm)) return;
-      const now = new Date();
-      const next = new Date(now);
-      next.setHours(hh, mm, 0, 0);
-      if (next <= now) next.setDate(next.getDate() + 1);
-      const diffMs = next.getTime() - now.getTime();
-      const diffH = Math.floor(diffMs / 3600000);
-      const diffM = Math.floor((diffMs % 3600000) / 60000);
-      setNextRunText(`Next run at ${scheduleTime} (in ${diffH}h ${diffM}m)`);
+  function updateNextRunFromSchedules(schedules: { enabled: boolean; name: string; type: string; interval_hours?: number; time?: string; days?: number[]; last_run_at?: string }[]) {
+    const now = Date.now();
+    let soonestMs = Infinity;
+    let soonestName = "";
+
+    for (const s of schedules) {
+      if (!s.enabled) continue;
+      let nextMs = Infinity;
+      if (s.type === "daily" && s.time) {
+        const [hh, mm] = s.time.split(":").map(Number);
+        if (isNaN(hh) || isNaN(mm)) continue;
+        const next = new Date();
+        next.setHours(hh, mm, 0, 0);
+        if (next.getTime() <= now) next.setDate(next.getDate() + 1);
+        nextMs = next.getTime();
+      } else if (s.type === "weekly" && s.time && s.days && s.days.length > 0) {
+        const [hh, mm] = s.time.split(":").map(Number);
+        if (isNaN(hh) || isNaN(mm)) continue;
+        // Find next matching day-of-week (0=Sun..6=Sat)
+        const today = new Date();
+        for (let offset = 0; offset < 8; offset++) {
+          const candidate = new Date(today);
+          candidate.setDate(candidate.getDate() + offset);
+          candidate.setHours(hh, mm, 0, 0);
+          const dow = candidate.getDay();
+          if (s.days.includes(dow) && candidate.getTime() > now) {
+            nextMs = candidate.getTime();
+            break;
+          }
+        }
+      } else if (s.type === "interval" && s.interval_hours) {
+        const hours = Math.max(1, s.interval_hours);
+        const lastRun = s.last_run_at ? new Date(s.last_run_at).getTime() : 0;
+        nextMs = lastRun + hours * 3600000;
+        if (nextMs <= now) nextMs = now; // overdue, will fire next tick
+      }
+      if (nextMs < soonestMs) {
+        soonestMs = nextMs;
+        soonestName = s.name;
+      }
     }
-    updateNextRun();
-    const interval = setInterval(updateNextRun, 60000);
+
+    if (soonestMs === Infinity) {
+      setNextRunText("");
+      return;
+    }
+
+    const diffMs = Math.max(0, soonestMs - now);
+    const diffH = Math.floor(diffMs / 3600000);
+    const diffM = Math.floor((diffMs % 3600000) / 60000);
+    const timeStr = diffMs <= 0 ? "imminent" : `in ${diffH}h ${diffM}m`;
+    setNextRunText(`Next: "${soonestName}" ${timeStr}`);
+  }
+
+  // Refresh countdown every 60s
+  useEffect(() => {
+    if (!nextRunText) return;
+    const interval = setInterval(() => {
+      getConfig().then((c) => {
+        try {
+          const schedules = JSON.parse(c.schedules || "[]");
+          updateNextRunFromSchedules(schedules);
+        } catch {}
+      }).catch(() => {});
+    }, 60000);
     return () => clearInterval(interval);
-  }, [scheduleTime]);
+  }, [nextRunText]);
 
   const handleStart = async (stages: string[]) => {
     if (starting) return;
@@ -164,11 +224,6 @@ export default function Pipeline() {
   const deepEnriched = deepEnrichNode?.status === "completed"
     ? (deepEnrichNode.progress?.total ?? deepEnrichNode.progress?.current ?? 0)
     : (deepEnrichNode?.progress?.current ?? 0);
-  // Technique articles from aggregate node
-  const aggregateNode = nodes.aggregate_techniques;
-  const techniques = aggregateNode?.status === "completed"
-    ? (aggregateNode.progress?.total ?? aggregateNode.progress?.current ?? 0)
-    : (aggregateNode?.progress?.current ?? 0);
 
   return (
     <div className="space-y-6">
@@ -180,7 +235,7 @@ export default function Pipeline() {
             Real-time view of the Nightshift enrichment pipeline
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap justify-end">
           {running ? (
             <button
               onClick={handleStop}
@@ -195,7 +250,11 @@ export default function Pipeline() {
                 key={preset.label}
                 onClick={() => handleStart(preset.stages)}
                 disabled={starting}
-                className="flex items-center gap-2 px-3 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors"
+                className={`flex items-center gap-2 px-3 py-2 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors ${
+                  preset.primary
+                    ? "bg-forge-600 hover:bg-forge-700"
+                    : "bg-gray-600 hover:bg-gray-700"
+                }`}
                 title={preset.description}
               >
                 {preset.icon}
@@ -207,18 +266,34 @@ export default function Pipeline() {
       </div>
 
       {/* Stats bar */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-7 gap-3">
         <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase tracking-wide">Companies</p>
-          <p className="text-xl font-bold text-gray-900">{totalCompanies.toLocaleString()}</p>
+          <p className="text-[10px] text-gray-500 uppercase tracking-wide">Companies</p>
+          <p className="text-lg font-bold text-gray-900">{totalCompanies.toLocaleString()}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase tracking-wide">Deep Enriched</p>
-          <p className="text-xl font-bold text-gray-900">{deepEnriched.toLocaleString()}</p>
+          <p className="text-[10px] text-gray-500 uppercase tracking-wide">Deep Enriched</p>
+          <p className="text-lg font-bold text-gray-900">{deepEnriched.toLocaleString()}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase tracking-wide">Technique Articles</p>
-          <p className="text-xl font-bold text-gray-900">{techniques.toLocaleString()}</p>
+          <p className="text-[10px] text-gray-500 uppercase tracking-wide">Verified</p>
+          <p className="text-lg font-bold text-gray-900">{extStats.verified.toLocaleString()}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
+          <p className="text-[10px] text-gray-500 uppercase tracking-wide">Synthesized</p>
+          <p className="text-lg font-bold text-gray-900">{extStats.synthesized.toLocaleString()}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
+          <p className="text-[10px] text-gray-500 uppercase tracking-wide">Intel Records</p>
+          <p className="text-lg font-bold text-gray-900">{extStats.intel_records.toLocaleString()}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
+          <p className="text-[10px] text-gray-500 uppercase tracking-wide">Activities</p>
+          <p className="text-lg font-bold text-gray-900">{extStats.activities.toLocaleString()}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
+          <p className="text-[10px] text-gray-500 uppercase tracking-wide">Pushed</p>
+          <p className="text-lg font-bold text-gray-900">{companyCounts.find(c => c.status === "pushed")?.count?.toLocaleString() ?? "0"}</p>
         </div>
       </div>
 
