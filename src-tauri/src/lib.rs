@@ -995,7 +995,8 @@ fn delete_email_template(db: tauri::State<'_, Database>, id: String) -> Result<(
 
 #[tauri::command]
 fn get_campaign_eligible_count(db: tauri::State<'_, Database>) -> Result<i64, String> {
-    db.get_campaign_eligible_count().map_err(|e| e.to_string())
+    let profile_id = db.get_active_profile_id();
+    db.get_campaign_eligible_count(Some(&profile_id)).map_err(|e| e.to_string())
 }
 
 // --- Campaigns ---
@@ -1012,6 +1013,7 @@ fn get_outreach_companies(
 ) -> Result<serde_json::Value, String> {
     let limit = limit.unwrap_or(50).max(1).min(200);
     let offset = offset.unwrap_or(0).max(0);
+    let profile_id = db.get_active_profile_id();
     let (rows, total) = db
         .get_outreach_companies(
             outreach_status.as_deref(),
@@ -1020,6 +1022,7 @@ fn get_outreach_companies(
             search.as_deref(),
             limit,
             offset,
+            Some(&profile_id),
         )
         .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "companies": rows, "total": total }))
@@ -1027,7 +1030,8 @@ fn get_outreach_companies(
 
 #[tauri::command]
 fn get_outreach_stats(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
-    db.get_outreach_stats().map_err(|e| e.to_string())
+    let profile_id = db.get_active_profile_id();
+    db.get_outreach_stats(Some(&profile_id)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1345,7 +1349,8 @@ async fn get_outreach_readiness(
     let autopilot_configured = autopilot_enabled && !autopilot_template.is_empty();
 
     // Check eligible companies
-    let eligible = db.get_campaign_eligible_count().unwrap_or(0);
+    let profile_id = db.get_active_profile_id();
+    let eligible = db.get_campaign_eligible_count(Some(&profile_id)).unwrap_or(0);
 
     Ok(serde_json::json!({
         "resend_key": has_resend_key,

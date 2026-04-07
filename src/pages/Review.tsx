@@ -68,6 +68,7 @@ import {
   getCompanyVerification,
   getSearchProfiles,
   getActiveProfile,
+  getExtendedStats,
 } from "../lib/tauri";
 import type { SearchProfile } from "../lib/tauri";
 import { useError } from "../contexts/ErrorContext";
@@ -82,12 +83,14 @@ const COUNTRIES: Record<string, string> = {
   GB: "United Kingdom",
 };
 
-type StatusFilter = "all" | "discovered" | "enriched" | "approved" | "pushed" | "error";
+type StatusFilter = "all" | "discovered" | "enriched" | "verified" | "synthesized" | "approved" | "pushed" | "error";
 
 const STATUS_BADGE: Record<string, string> = {
   discovered: "bg-blue-100 text-blue-700",
   enriching: "bg-forge-100 text-forge-700 animate-pulse",
   enriched: "bg-green-100 text-green-700",
+  verified: "bg-teal-100 text-teal-700",
+  synthesized: "bg-indigo-100 text-indigo-700",
   approved: "bg-yellow-100 text-yellow-700",
   rejected: "bg-gray-100 text-gray-500",
   error: "bg-red-100 text-red-700",
@@ -159,6 +162,8 @@ export default function Review() {
     all: 0,
     discovered: 0,
     enriched: 0,
+    verified: 0,
+    synthesized: 0,
     approved: 0,
     pushed: 0,
     error: 0,
@@ -434,9 +439,9 @@ export default function Review() {
 
   async function loadCounts() {
     try {
-      const stats = await getStats();
+      const [stats, extStats] = await Promise.all([getStats(), getExtendedStats()]);
       const rows = (stats.companies as { status: string; count: number }[]) || [];
-      const c: Record<StatusFilter, number> = { all: 0, discovered: 0, enriched: 0, approved: 0, pushed: 0, error: 0 };
+      const c: Record<StatusFilter, number> = { all: 0, discovered: 0, enriched: 0, verified: 0, synthesized: 0, approved: 0, pushed: 0, error: 0 };
       for (const row of rows) {
         c.all += Number(row.count) || 0;
         if (row.status === "discovered") c.discovered += Number(row.count) || 0;
@@ -445,6 +450,10 @@ export default function Review() {
         else if (row.status === "pushed") c.pushed += Number(row.count) || 0;
         else if (row.status === "error") c.error += Number(row.count) || 0;
       }
+      // Verified = enriched + verified_v2_at but no synthesis
+      // Synthesized = has synthesis_public_json but not yet approved/pushed
+      c.verified = Number(extStats.verified) || 0;
+      c.synthesized = Number(extStats.synthesized) || 0;
       setCounts(c);
       // Only update totalCount from stats when no drill-down/search is active
       // (drill-down totalCount is set by loadCompanies from getCompaniesCount)
@@ -458,6 +467,23 @@ export default function Review() {
     } catch (e) {
       showError(`Failed to load counts: ${e}`);
     }
+  }
+
+  function filterByVirtualStage(data: Record<string, unknown>[], stage: StatusFilter): Record<string, unknown>[] {
+    if (stage === "verified") {
+      // Verified: has verified_v2_at but no synthesis_public_json
+      return data.filter(c =>
+        c.verified_v2_at != null && c.verified_v2_at !== "" &&
+        (c.synthesis_public_json == null || c.synthesis_public_json === "")
+      );
+    }
+    if (stage === "synthesized") {
+      // Synthesized: has synthesis_public_json
+      return data.filter(c =>
+        c.synthesis_public_json != null && c.synthesis_public_json !== ""
+      );
+    }
+    return data;
   }
 
   async function loadCompanies(status: StatusFilter) {
@@ -499,27 +525,45 @@ export default function Review() {
         setSemanticScores({});
       }
 
+      // Verified/Synthesized are sub-stages of "enriched" — fetch enriched and filter client-side
+      const isVirtualStage = status === "verified" || status === "synthesized";
+      const dbStatus = isVirtualStage ? "enriched" : status;
+
       if (hasDrillDown || searchQuery.trim()) {
         const data = await getCompaniesFiltered({
-          status: status === "all" ? undefined : status,
+          status: dbStatus === "all" ? undefined : dbStatus,
           subcategory: drillSubcategory || undefined,
           country: drillCountry || undefined,
           search: searchQuery.trim() || drillSearch || undefined,
-          limit,
-          offset,
+          limit: isVirtualStage ? 1000 : limit,
+          offset: isVirtualStage ? 0 : offset,
         });
-        setCompanies(data);
+        if (isVirtualStage) {
+          const filtered = filterByVirtualStage(data, status);
+          setCompanies(filtered.slice(offset, offset + limit));
+          setTotalCount(filtered.length);
+        } else {
+          setCompanies(data);
+        }
       } else {
-        const s = status === "all" ? undefined : status;
-        const data = await getCompanies(s, limit, offset);
-        setCompanies(data);
+        const s = dbStatus === "all" ? undefined : dbStatus;
+        const data = await getCompanies(s, isVirtualStage ? 1000 : limit, isVirtualStage ? 0 : offset);
+        if (isVirtualStage) {
+          const filtered = filterByVirtualStage(data, status);
+          setCompanies(filtered.slice(offset, offset + limit));
+          setTotalCount(filtered.length);
+        } else {
+          setCompanies(data);
+        }
       }
-      // Fetch total count for pagination
-      try {
-        const count = await getCompaniesCount(status === "all" ? undefined : status);
-        setTotalCount(count);
-      } catch {
-        // getCompaniesCount may not be available yet
+      // Fetch total count for pagination (skip for virtual stages — already set above)
+      if (!isVirtualStage) {
+        try {
+          const count = await getCompaniesCount(dbStatus === "all" ? undefined : dbStatus);
+          setTotalCount(count);
+        } catch {
+          // getCompaniesCount may not be available yet
+        }
       }
     } catch (e) {
       showError(`Failed to load companies: ${e}`);
@@ -729,6 +773,8 @@ export default function Review() {
     { key: "all", label: "All" },
     { key: "discovered", label: "Discovered" },
     { key: "enriched", label: "Enriched" },
+    { key: "verified", label: "Verified" },
+    { key: "synthesized", label: "Synthesized" },
     { key: "approved", label: "Approved" },
     { key: "pushed", label: "Pushed" },
     { key: "error", label: "Error" },

@@ -1997,21 +1997,38 @@ impl Database {
         Ok(rows)
     }
 
-    pub fn get_campaign_eligible_count(&self) -> Result<i64> {
+    pub fn get_campaign_eligible_count(&self, profile_id: Option<&str>) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM companies c \
-             WHERE c.status = 'pushed' \
-             AND c.contact_email IS NOT NULL AND c.contact_email != '' \
-             AND c.supabase_listing_id IS NOT NULL AND c.supabase_listing_id != '' \
-             AND c.id NOT IN ( \
-                 SELECT e.company_id FROM emails e \
-                 WHERE e.template_id IS NOT NULL \
-                 AND e.status NOT IN ('failed', 'bounced') \
-             )",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 = if let Some(pid) = profile_id {
+            conn.query_row(
+                "SELECT COUNT(*) FROM companies c \
+                 WHERE c.status = 'pushed' \
+                 AND c.search_profile_id = ?1 \
+                 AND c.contact_email IS NOT NULL AND c.contact_email != '' \
+                 AND c.supabase_listing_id IS NOT NULL AND c.supabase_listing_id != '' \
+                 AND c.id NOT IN ( \
+                     SELECT e.company_id FROM emails e \
+                     WHERE e.template_id IS NOT NULL \
+                     AND e.status NOT IN ('failed', 'bounced') \
+                 )",
+                [pid],
+                |row| row.get(0),
+            )?
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM companies c \
+                 WHERE c.status = 'pushed' \
+                 AND c.contact_email IS NOT NULL AND c.contact_email != '' \
+                 AND c.supabase_listing_id IS NOT NULL AND c.supabase_listing_id != '' \
+                 AND c.id NOT IN ( \
+                     SELECT e.company_id FROM emails e \
+                     WHERE e.template_id IS NOT NULL \
+                     AND e.status NOT IN ('failed', 'bounced') \
+                 )",
+                [],
+                |row| row.get(0),
+            )?
+        };
         Ok(count)
     }
 
@@ -2068,6 +2085,7 @@ impl Database {
         search: Option<&str>,
         limit: i64,
         offset: i64,
+        profile_id: Option<&str>,
     ) -> Result<(Vec<Value>, i64)> {
         let conn = self.conn.lock().unwrap();
 
@@ -2087,6 +2105,12 @@ impl Database {
         let mut conditions = Vec::new();
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut param_idx = 1;
+
+        if let Some(pid) = profile_id {
+            conditions.push(format!("c.search_profile_id = ?{}", param_idx));
+            params.push(Box::new(pid.to_string()));
+            param_idx += 1;
+        }
 
         if let Some(os) = outreach_status {
             if os == "not_contacted" {
@@ -2176,37 +2200,54 @@ impl Database {
     }
 
     /// Get aggregate outreach stats including A/B breakdown.
-    pub fn get_outreach_stats(&self) -> Result<Value> {
+    pub fn get_outreach_stats(&self, profile_id: Option<&str>) -> Result<Value> {
         let conn = self.conn.lock().unwrap();
 
-        let total_sent: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM emails WHERE status IN ('sent', 'opened', 'replied', 'bounced')",
-            [], |row| row.get(0),
-        )?;
-        let total_opened: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM emails WHERE status IN ('opened', 'replied')",
-            [], |row| row.get(0),
-        )?;
-        let total_bounced: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM emails WHERE status = 'bounced'",
-            [], |row| row.get(0),
-        )?;
-        let total_claimed: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM emails WHERE claim_status = 'claimed'",
-            [], |row| row.get(0),
-        )?;
-        let total_drafted: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM emails WHERE status = 'draft'",
-            [], |row| row.get(0),
-        )?;
-        let total_approved: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM emails WHERE status = 'approved'",
-            [], |row| row.get(0),
-        )?;
-        let total_failed: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM emails WHERE status = 'failed'",
-            [], |row| row.get(0),
-        )?;
+        let profile_join = if profile_id.is_some() {
+            " JOIN companies c ON e.company_id = c.id AND c.search_profile_id = ?1"
+        } else {
+            ""
+        };
+
+        let q = |condition: &str| -> String {
+            format!("SELECT COUNT(*) FROM emails e{} WHERE {}", profile_join, condition)
+        };
+
+        let total_sent: i64 = if let Some(pid) = profile_id {
+            conn.query_row(&q("e.status IN ('sent', 'opened', 'replied', 'bounced')"), [pid], |row| row.get(0))?
+        } else {
+            conn.query_row(&q("e.status IN ('sent', 'opened', 'replied', 'bounced')"), [], |row| row.get(0))?
+        };
+        let total_opened: i64 = if let Some(pid) = profile_id {
+            conn.query_row(&q("e.status IN ('opened', 'replied')"), [pid], |row| row.get(0))?
+        } else {
+            conn.query_row(&q("e.status IN ('opened', 'replied')"), [], |row| row.get(0))?
+        };
+        let total_bounced: i64 = if let Some(pid) = profile_id {
+            conn.query_row(&q("e.status = 'bounced'"), [pid], |row| row.get(0))?
+        } else {
+            conn.query_row(&q("e.status = 'bounced'"), [], |row| row.get(0))?
+        };
+        let total_claimed: i64 = if let Some(pid) = profile_id {
+            conn.query_row(&q("e.claim_status = 'claimed'"), [pid], |row| row.get(0))?
+        } else {
+            conn.query_row(&q("e.claim_status = 'claimed'"), [], |row| row.get(0))?
+        };
+        let total_drafted: i64 = if let Some(pid) = profile_id {
+            conn.query_row(&q("e.status = 'draft'"), [pid], |row| row.get(0))?
+        } else {
+            conn.query_row(&q("e.status = 'draft'"), [], |row| row.get(0))?
+        };
+        let total_approved: i64 = if let Some(pid) = profile_id {
+            conn.query_row(&q("e.status = 'approved'"), [pid], |row| row.get(0))?
+        } else {
+            conn.query_row(&q("e.status = 'approved'"), [], |row| row.get(0))?
+        };
+        let total_failed: i64 = if let Some(pid) = profile_id {
+            conn.query_row(&q("e.status = 'failed'"), [pid], |row| row.get(0))?
+        } else {
+            conn.query_row(&q("e.status = 'failed'"), [], |row| row.get(0))?
+        };
 
         let open_rate = if total_sent > 0 {
             (total_opened as f64 / total_sent as f64) * 100.0
@@ -2225,16 +2266,33 @@ impl Database {
         };
 
         // A/B breakdown (SQLite doesn't support FILTER — use CASE)
-        let mut ab_stmt = conn.prepare(
+        let ab_sql = if profile_id.is_some() {
+            "SELECT e.ab_variant, \
+                    SUM(CASE WHEN e.status IN ('sent','opened','replied','bounced') THEN 1 ELSE 0 END) as sent, \
+                    SUM(CASE WHEN e.status IN ('opened','replied') THEN 1 ELSE 0 END) as opened \
+             FROM emails e \
+             JOIN companies c ON e.company_id = c.id AND c.search_profile_id = ?1 \
+             WHERE e.ab_variant IS NOT NULL \
+             GROUP BY e.ab_variant"
+        } else {
             "SELECT ab_variant, \
                     SUM(CASE WHEN status IN ('sent','opened','replied','bounced') THEN 1 ELSE 0 END) as sent, \
                     SUM(CASE WHEN status IN ('opened','replied') THEN 1 ELSE 0 END) as opened \
              FROM emails \
              WHERE ab_variant IS NOT NULL \
              GROUP BY ab_variant"
-        )?;
-        let ab_rows: Vec<Value> = ab_stmt
-            .query_map([], |row| {
+        };
+        let mut ab_stmt = conn.prepare(ab_sql)?;
+        let ab_rows: Vec<Value> = if let Some(pid) = profile_id {
+            ab_stmt.query_map([pid], |row| {
+                let variant: String = row.get(0)?;
+                let sent: i64 = row.get(1)?;
+                let opened: i64 = row.get(2)?;
+                let rate = if sent > 0 { (opened as f64 / sent as f64) * 100.0 } else { 0.0 };
+                Ok(json!({ "variant": variant, "sent": sent, "opened": opened, "open_rate": (rate * 10.0).round() / 10.0 }))
+            })?.filter_map(|r| r.ok()).collect()
+        } else {
+            ab_stmt.query_map([], |row| {
                 let variant: String = row.get(0)?;
                 let sent: i64 = row.get(1)?;
                 let opened: i64 = row.get(2)?;
@@ -2251,7 +2309,8 @@ impl Database {
                 }))
             })?
             .filter_map(|r| r.ok())
-            .collect();
+            .collect()
+        };
 
         Ok(json!({
             "total_sent": total_sent,

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet.heat";
-import { getCompaniesForMap, geocodeCompanies, type MapCompany } from "../lib/tauri";
+import { getCompaniesForMap, geocodeCompanies, getSearchProfiles, getActiveProfile, type MapCompany, type SearchProfile } from "../lib/tauri";
 import { MapPin, RefreshCw, Filter, X } from "lucide-react";
 import { useError } from "../contexts/ErrorContext";
 
@@ -172,9 +172,17 @@ export default function MapPage() {
   const [minRelevance, setMinRelevance] = useState(0);
   const [mapMode, setMapMode] = useState<"markers" | "heatmap">("markers");
   const [showBoundaries, setShowBoundaries] = useState(false);
+  const [activeProfileName, setActiveProfileName] = useState<string>("");
 
   useEffect(() => {
     loadCompanies();
+    // Load active profile name
+    Promise.all([getSearchProfiles(), getActiveProfile()])
+      .then(([profiles, activeId]) => {
+        const active = profiles.find((p: SearchProfile) => p.id === activeId);
+        if (active) setActiveProfileName(active.name);
+      })
+      .catch(() => {});
   }, []);
 
   async function loadCompanies() {
@@ -243,6 +251,9 @@ export default function MapPage() {
         <div className="flex items-center gap-2">
           <MapPin className="w-4 h-4 text-forge-600" />
           <h1 className="text-sm font-semibold text-gray-900">Map</h1>
+          {activeProfileName && (
+            <span className="text-xs text-forge-600 font-medium">{activeProfileName}</span>
+          )}
           <span className="text-xs text-gray-500">
             {filtered.length} companies with coordinates
           </span>

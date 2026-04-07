@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Search, Globe, RefreshCw } from "lucide-react";
-import { getCompanies, getConfig, setConfig, startPipeline } from "../lib/tauri";
+import { getCompanies, getConfig, setConfig, startPipeline, getSearchProfiles, getActiveProfile } from "../lib/tauri";
+import type { SearchProfile } from "../lib/tauri";
 import { useError } from "../contexts/ErrorContext";
 
 const STATUS_BADGE: Record<string, string> = {
@@ -28,10 +29,18 @@ export default function Research() {
   const [enabledCountries, setEnabledCountries] = useState<Set<string>>(
     new Set(Object.keys(COUNTRIES))
   );
+  const [activeProfileName, setActiveProfileName] = useState<string>("");
 
   useEffect(() => {
     loadCompanies();
     loadCountryConfig();
+    // Load active profile name
+    Promise.all([getSearchProfiles(), getActiveProfile()])
+      .then(([profiles, activeId]) => {
+        const active = profiles.find((p: SearchProfile) => p.id === activeId);
+        if (active) setActiveProfileName(active.name);
+      })
+      .catch(() => {});
   }, []);
 
   async function loadCountryConfig() {
@@ -83,8 +92,13 @@ export default function Research() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Research</h1>
+          {activeProfileName && (
+            <p className="text-sm text-forge-600 font-medium mt-0.5">{activeProfileName}</p>
+          )}
           <p className="text-sm text-gray-500 mt-1">
-            Company discovery across European markets
+            Company discovery across {enabledCountries.size > 0
+              ? Array.from(enabledCountries).map(c => COUNTRIES[c]).filter(Boolean).join(", ")
+              : "European markets"}
           </p>
         </div>
 

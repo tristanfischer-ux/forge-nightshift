@@ -1611,7 +1611,7 @@ function EmailQueueTab({ showError }: { showError: (msg: string) => void }) {
 
 const DEFAULT_TEMPLATE_BODY = `<p>Hi {contact_name},</p>
 
-<p>I came across <strong>{company_name}</strong> and was impressed by your manufacturing capabilities.</p>
+<p>I came across <strong>{company_name}</strong> and was impressed by your capabilities.</p>
 
 <p>We're building <strong>ForgeOS</strong> — a marketplace that connects manufacturers with engineers who need production partners. Companies on our platform get:</p>
 
@@ -2195,7 +2195,7 @@ function TemplatesTab({ showError }: { showError: (msg: string) => void }) {
                         <span className="text-xs text-gray-400">&lt;tristan@fractionalforge.app&gt;</span>
                       </div>
                       <p className="text-xs text-gray-500 mt-0.5">
-                        to hans.mueller@acme-manufacturing.de
+                        to hans.mueller@acme-company.de
                       </p>
                     </div>
                   </div>

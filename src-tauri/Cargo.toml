@@ -1,6 +1,6 @@
 [package]
 name = "forge-nightshift"
-version = "0.30.1"
+version = "0.31.0"
 description = "Overnight company discovery & outreach for ForgeOS"
 authors = ["Fractional Forge"]
 edition = "2021"
