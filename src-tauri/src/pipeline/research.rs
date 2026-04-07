@@ -31,7 +31,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     let llm_backend = config
         .get("llm_backend")
         .and_then(|v| v.as_str())
-        .unwrap_or("haiku");
+        .unwrap_or("deepseek");
 
     let anthropic_api_key = config
         .get("anthropic_api_key")

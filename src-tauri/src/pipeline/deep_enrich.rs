@@ -184,7 +184,7 @@ async fn run_candidates(app: &tauri::AppHandle, job_id: &str, config: &Value, ca
     let llm_backend = config
         .get("llm_backend")
         .and_then(|v| v.as_str())
-        .unwrap_or("haiku")
+        .unwrap_or("deepseek")
         .to_string();
 
     let anthropic_api_key = config
