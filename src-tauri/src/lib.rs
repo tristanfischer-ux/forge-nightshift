@@ -45,12 +45,14 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
 #[tauri::command]
 fn get_stats(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
-    db.get_stats().map_err(|e| e.to_string())
+    let profile_id = db.get_active_profile_id();
+    db.get_stats(Some(&profile_id)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_extended_stats(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
-    db.get_extended_stats().map_err(|e| e.to_string())
+    let profile_id = db.get_active_profile_id();
+    db.get_extended_stats(Some(&profile_id)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -62,7 +64,8 @@ fn get_companies(
 ) -> Result<Vec<serde_json::Value>, String> {
     let limit = limit.unwrap_or(50).max(0).min(1000);
     let offset = offset.unwrap_or(0).max(0);
-    db.get_companies(status.as_deref(), limit, offset)
+    let profile_id = db.get_active_profile_id();
+    db.get_companies(status.as_deref(), limit, offset, Some(&profile_id))
         .map_err(|e| e.to_string())
 }
 
@@ -286,7 +289,8 @@ fn reenrich_all(db: tauri::State<'_, Database>) -> Result<i64, String> {
 
 #[tauri::command]
 fn get_analytics(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
-    db.get_analytics().map_err(|e| e.to_string())
+    let profile_id = db.get_active_profile_id();
+    db.get_analytics(Some(&profile_id)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -301,6 +305,7 @@ fn get_companies_filtered(
 ) -> Result<Vec<serde_json::Value>, String> {
     let limit = limit.unwrap_or(50).max(0).min(1000);
     let offset = offset.unwrap_or(0).max(0);
+    let profile_id = db.get_active_profile_id();
     db.get_companies_filtered(
         status.as_deref(),
         subcategory.as_deref(),
@@ -308,6 +313,7 @@ fn get_companies_filtered(
         search.as_deref(),
         limit,
         offset,
+        Some(&profile_id),
     )
     .map_err(|e| e.to_string())
 }
@@ -735,7 +741,8 @@ async fn remove_from_marketplace(
 
 #[tauri::command]
 fn get_companies_for_map(db: tauri::State<'_, Database>) -> Result<Vec<serde_json::Value>, String> {
-    db.get_companies_for_map().map_err(|e| e.to_string())
+    let profile_id = db.get_active_profile_id();
+    db.get_companies_for_map(Some(&profile_id)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -916,7 +923,8 @@ fn get_companies_count(
     db: tauri::State<'_, Database>,
     status: Option<String>,
 ) -> Result<i64, String> {
-    db.get_companies_count(status.as_deref()).map_err(|e| e.to_string())
+    let profile_id = db.get_active_profile_id();
+    db.get_companies_count(status.as_deref(), Some(&profile_id)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

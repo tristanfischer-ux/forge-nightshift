@@ -7,7 +7,7 @@ use crate::db::Database;
 pub async fn run(app: &tauri::AppHandle, job_id: &str, _config: &Value) -> Result<Value> {
     let db: tauri::State<'_, Database> = app.state();
 
-    let stats = db.get_stats()?;
+    let stats = db.get_stats(None)?;
     let logs = db.get_run_log(Some(job_id), 50)?;
 
     let error_count = logs

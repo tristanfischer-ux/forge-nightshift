@@ -53,7 +53,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     loop {
         let batch = {
             let db: tauri::State<'_, Database> = app.state();
-            db.get_companies(Some("approved"), batch_size, offset)?
+            db.get_companies(Some("approved"), batch_size, offset, None)?
         };
 
         if batch.is_empty() {

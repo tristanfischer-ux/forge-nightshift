@@ -167,30 +167,56 @@ impl Database {
         );
     }
 
-    pub fn get_stats(&self) -> Result<Value> {
+    pub fn get_stats(&self, profile_id: Option<&str>) -> Result<Value> {
         let conn = self.conn.lock().unwrap();
 
-        let mut stmt = conn.prepare("SELECT status, COUNT(*) as count FROM companies GROUP BY status")?;
-        let companies: Vec<Value> = stmt
-            .query_map([], |row| {
+        let company_query = if profile_id.is_some() {
+            "SELECT status, COUNT(*) as count FROM companies WHERE search_profile_id = ?1 GROUP BY status"
+        } else {
+            "SELECT status, COUNT(*) as count FROM companies GROUP BY status"
+        };
+        let mut stmt = conn.prepare(company_query)?;
+        let companies: Vec<Value> = if let Some(pid) = profile_id {
+            let result = stmt.query_map([pid], |row| {
                 Ok(json!({
                     "status": row.get::<_, String>(0)?,
                     "count": row.get::<_, i64>(1)?,
                 }))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+            })?.filter_map(|r| r.ok()).collect();
+            result
+        } else {
+            let result = stmt.query_map([], |row| {
+                Ok(json!({
+                    "status": row.get::<_, String>(0)?,
+                    "count": row.get::<_, i64>(1)?,
+                }))
+            })?.filter_map(|r| r.ok()).collect();
+            result
+        };
 
-        let mut stmt = conn.prepare("SELECT status, COUNT(*) as count FROM emails GROUP BY status")?;
-        let emails: Vec<Value> = stmt
-            .query_map([], |row| {
+        let email_query = if profile_id.is_some() {
+            "SELECT e.status, COUNT(*) as count FROM emails e JOIN companies c ON e.company_id = c.id WHERE c.search_profile_id = ?1 GROUP BY e.status"
+        } else {
+            "SELECT status, COUNT(*) as count FROM emails GROUP BY status"
+        };
+        let mut stmt = conn.prepare(email_query)?;
+        let emails: Vec<Value> = if let Some(pid) = profile_id {
+            let result = stmt.query_map([pid], |row| {
                 Ok(json!({
                     "status": row.get::<_, String>(0)?,
                     "count": row.get::<_, i64>(1)?,
                 }))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+            })?.filter_map(|r| r.ok()).collect();
+            result
+        } else {
+            let result = stmt.query_map([], |row| {
+                Ok(json!({
+                    "status": row.get::<_, String>(0)?,
+                    "count": row.get::<_, i64>(1)?,
+                }))
+            })?.filter_map(|r| r.ok()).collect();
+            result
+        };
 
         let mut stmt = conn.prepare("SELECT id, stages, status, summary, started_at, completed_at FROM jobs ORDER BY created_at DESC LIMIT 1")?;
         let latest_job: Option<Value> = stmt
@@ -214,26 +240,50 @@ impl Database {
         }))
     }
 
-    pub fn get_extended_stats(&self) -> Result<Value> {
+    pub fn get_extended_stats(&self, profile_id: Option<&str>) -> Result<Value> {
         let conn = self.conn.lock().unwrap();
 
-        let verified: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM companies WHERE verified_v2_at IS NOT NULL",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let verified: i64 = if let Some(pid) = profile_id {
+            conn.query_row(
+                "SELECT COUNT(*) FROM companies WHERE verified_v2_at IS NOT NULL AND search_profile_id = ?1",
+                [pid],
+                |row| row.get(0),
+            ).unwrap_or(0)
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM companies WHERE verified_v2_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            ).unwrap_or(0)
+        };
 
-        let synthesized: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM companies WHERE synthesis_public_json IS NOT NULL AND synthesis_public_json != ''",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let synthesized: i64 = if let Some(pid) = profile_id {
+            conn.query_row(
+                "SELECT COUNT(*) FROM companies WHERE synthesis_public_json IS NOT NULL AND synthesis_public_json != '' AND search_profile_id = ?1",
+                [pid],
+                |row| row.get(0),
+            ).unwrap_or(0)
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM companies WHERE synthesis_public_json IS NOT NULL AND synthesis_public_json != ''",
+                [],
+                |row| row.get(0),
+            ).unwrap_or(0)
+        };
 
-        let intel_records: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM nightshift_intel",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let intel_records: i64 = if let Some(pid) = profile_id {
+            conn.query_row(
+                "SELECT COUNT(*) FROM nightshift_intel ni JOIN companies c ON ni.company_id = c.id WHERE c.search_profile_id = ?1",
+                [pid],
+                |row| row.get(0),
+            ).unwrap_or(0)
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM nightshift_intel",
+                [],
+                |row| row.get(0),
+            ).unwrap_or(0)
+        };
 
         let activities: i64 = conn.query_row(
             "SELECT COUNT(*) FROM activity_feed",
@@ -249,21 +299,38 @@ impl Database {
         }))
     }
 
-    pub fn get_companies(&self, status: Option<&str>, limit: i64, offset: i64) -> Result<Vec<Value>> {
+    pub fn get_companies(&self, status: Option<&str>, limit: i64, offset: i64, profile_id: Option<&str>) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
-        let (query, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(s) = status {
-            (
-                "SELECT * FROM companies WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
-                vec![Box::new(s.to_string()), Box::new(limit), Box::new(offset)],
-            )
+
+        let mut conditions = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut idx = 1;
+
+        if let Some(s) = status {
+            conditions.push(format!("status = ?{}", idx));
+            params.push(Box::new(s.to_string()));
+            idx += 1;
+        }
+        if let Some(pid) = profile_id {
+            conditions.push(format!("search_profile_id = ?{}", idx));
+            params.push(Box::new(pid.to_string()));
+            idx += 1;
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
         } else {
-            (
-                "SELECT * FROM companies ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
-                vec![Box::new(limit), Box::new(offset)],
-            )
+            format!("WHERE {}", conditions.join(" AND "))
         };
 
-        let mut stmt = conn.prepare(query)?;
+        let query = format!(
+            "SELECT * FROM companies {} ORDER BY created_at DESC LIMIT ?{} OFFSET ?{}",
+            where_clause, idx, idx + 1
+        );
+        params.push(Box::new(limit));
+        params.push(Box::new(offset));
+
+        let mut stmt = conn.prepare(&query)?;
         let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
         let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
@@ -1012,46 +1079,75 @@ impl Database {
     }
 
     /// Get analytics data for dashboard charts
-    pub fn get_analytics(&self) -> Result<Value> {
+    pub fn get_analytics(&self, profile_id: Option<&str>) -> Result<Value> {
         let conn = self.conn.lock().unwrap();
 
-        let mut stmt = conn.prepare(
-            "SELECT subcategory, COUNT(*) as count FROM companies WHERE subcategory IS NOT NULL AND subcategory != '' GROUP BY subcategory ORDER BY count DESC LIMIT 20"
-        )?;
-        let by_subcategory: Vec<Value> = stmt
-            .query_map([], |row| {
-                Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+        let profile_filter = if profile_id.is_some() { " AND search_profile_id = ?1" } else { "" };
+        let profile_filter_where = if profile_id.is_some() { " WHERE search_profile_id = ?1" } else { "" };
 
-        let mut stmt = conn.prepare(
-            "SELECT country, COUNT(*) as count FROM companies WHERE country IS NOT NULL AND country != '' GROUP BY country ORDER BY count DESC"
-        )?;
-        let by_country: Vec<Value> = stmt
-            .query_map([], |row| {
-                Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+        let by_subcategory: Vec<Value> = {
+            let q = format!(
+                "SELECT subcategory, COUNT(*) as count FROM companies WHERE subcategory IS NOT NULL AND subcategory != ''{} GROUP BY subcategory ORDER BY count DESC LIMIT 20",
+                profile_filter
+            );
+            let mut stmt = conn.prepare(&q)?;
+            if let Some(pid) = profile_id {
+                stmt.query_map([pid], |row| {
+                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+                })?.filter_map(|r| r.ok()).collect()
+            } else {
+                stmt.query_map([], |row| {
+                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+                })?.filter_map(|r| r.ok()).collect()
+            }
+        };
 
-        let mut stmt = conn.prepare(
-            "SELECT status, COUNT(*) as count FROM companies GROUP BY status ORDER BY count DESC"
-        )?;
-        let pipeline_funnel: Vec<Value> = stmt
-            .query_map([], |row| {
-                Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+        let by_country: Vec<Value> = {
+            let q = format!(
+                "SELECT country, COUNT(*) as count FROM companies WHERE country IS NOT NULL AND country != ''{} GROUP BY country ORDER BY count DESC",
+                profile_filter
+            );
+            let mut stmt = conn.prepare(&q)?;
+            if let Some(pid) = profile_id {
+                stmt.query_map([pid], |row| {
+                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+                })?.filter_map(|r| r.ok()).collect()
+            } else {
+                stmt.query_map([], |row| {
+                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+                })?.filter_map(|r| r.ok()).collect()
+            }
+        };
 
-        let mut stmt = conn.prepare(
-            "SELECT attributes_json FROM companies WHERE attributes_json IS NOT NULL AND attributes_json != ''"
-        )?;
-        let attr_rows: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+        let pipeline_funnel: Vec<Value> = {
+            let q = format!(
+                "SELECT status, COUNT(*) as count FROM companies{} GROUP BY status ORDER BY count DESC",
+                profile_filter_where
+            );
+            let mut stmt = conn.prepare(&q)?;
+            if let Some(pid) = profile_id {
+                stmt.query_map([pid], |row| {
+                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+                })?.filter_map(|r| r.ok()).collect()
+            } else {
+                stmt.query_map([], |row| {
+                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+                })?.filter_map(|r| r.ok()).collect()
+            }
+        };
+
+        let attr_rows: Vec<String> = {
+            let q = format!(
+                "SELECT attributes_json FROM companies WHERE attributes_json IS NOT NULL AND attributes_json != ''{}",
+                profile_filter
+            );
+            let mut stmt = conn.prepare(&q)?;
+            if let Some(pid) = profile_id {
+                stmt.query_map([pid], |row| row.get::<_, String>(0))?.filter_map(|r| r.ok()).collect()
+            } else {
+                stmt.query_map([], |row| row.get::<_, String>(0))?.filter_map(|r| r.ok()).collect()
+            }
+        };
 
         let mut equipment_counts: HashMap<String, i64> = HashMap::new();
         let mut material_counts: HashMap<String, i64> = HashMap::new();
@@ -1125,6 +1221,7 @@ impl Database {
         search: Option<&str>,
         limit: i64,
         offset: i64,
+        profile_id: Option<&str>,
     ) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
 
@@ -1132,6 +1229,11 @@ impl Database {
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut idx = 1;
 
+        if let Some(pid) = profile_id {
+            conditions.push(format!("search_profile_id = ?{}", idx));
+            params.push(Box::new(pid.to_string()));
+            idx += 1;
+        }
         if let Some(s) = status {
             conditions.push(format!("status = ?{}", idx));
             params.push(Box::new(s.to_string()));
@@ -1271,16 +1373,29 @@ impl Database {
         Ok(conn.changes() as i64)
     }
 
-    pub fn get_companies_count(&self, status: Option<&str>) -> Result<i64> {
+    pub fn get_companies_count(&self, status: Option<&str>, profile_id: Option<&str>) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
-        let count: i64 = if let Some(s) = status {
-            conn.query_row(
+        let count: i64 = match (status, profile_id) {
+            (Some(s), Some(pid)) => conn.query_row(
+                "SELECT COUNT(*) FROM companies WHERE status = ?1 AND search_profile_id = ?2",
+                [s, pid],
+                |row| row.get(0),
+            )?,
+            (Some(s), None) => conn.query_row(
                 "SELECT COUNT(*) FROM companies WHERE status = ?1",
                 [s],
                 |row| row.get(0),
-            )?
-        } else {
-            conn.query_row("SELECT COUNT(*) FROM companies", [], |row| row.get(0))?
+            )?,
+            (None, Some(pid)) => conn.query_row(
+                "SELECT COUNT(*) FROM companies WHERE search_profile_id = ?1",
+                [pid],
+                |row| row.get(0),
+            )?,
+            (None, None) => conn.query_row(
+                "SELECT COUNT(*) FROM companies",
+                [],
+                |row| row.get(0),
+            )?,
         };
         Ok(count)
     }
@@ -1381,15 +1496,18 @@ impl Database {
     }
 
     /// Get companies with lat/lng for the map view. Lightweight payload.
-    pub fn get_companies_for_map(&self) -> Result<Vec<Value>> {
+    pub fn get_companies_for_map(&self, profile_id: Option<&str>) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let profile_filter = if profile_id.is_some() { " AND search_profile_id = ?1" } else { "" };
+        let q = format!(
             "SELECT id, name, latitude, longitude, subcategory, city, country, relevance_score, website_url \
              FROM companies \
-             WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
-        )?;
-        let rows: Vec<Value> = stmt
-            .query_map([], |row| {
+             WHERE latitude IS NOT NULL AND longitude IS NOT NULL{}",
+            profile_filter
+        );
+        let mut stmt = conn.prepare(&q)?;
+        let rows: Vec<Value> = if let Some(pid) = profile_id {
+            stmt.query_map([pid], |row| {
                 Ok(json!({
                     "id": row.get::<_, String>(0)?,
                     "name": row.get::<_, String>(1)?,
@@ -1401,9 +1519,22 @@ impl Database {
                     "relevance_score": row.get::<_, Option<i64>>(7)?,
                     "website_url": row.get::<_, Option<String>>(8)?,
                 }))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+            })?.filter_map(|r| r.ok()).collect()
+        } else {
+            stmt.query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "latitude": row.get::<_, f64>(2)?,
+                    "longitude": row.get::<_, f64>(3)?,
+                    "subcategory": row.get::<_, Option<String>>(4)?,
+                    "city": row.get::<_, Option<String>>(5)?,
+                    "country": row.get::<_, Option<String>>(6)?,
+                    "relevance_score": row.get::<_, Option<i64>>(7)?,
+                    "website_url": row.get::<_, Option<String>>(8)?,
+                }))
+            })?.filter_map(|r| r.ok()).collect()
+        };
         Ok(rows)
     }
 
