@@ -26,6 +26,13 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .unwrap_or("deepseek")
         .to_string();
 
+    // Display the actual model being used, not the Ollama model name
+    let display_model = match llm_backend.as_str() {
+        "deepseek" => "deepseek-chat".to_string(),
+        "haiku" => "claude-haiku-4.5".to_string(),
+        _ => enrich_model.clone(),
+    };
+
     let anthropic_api_key = config
         .get("anthropic_api_key")
         .and_then(|v| v.as_str())
@@ -119,7 +126,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     super::emit_node(app, json!({
         "node_id": "enrich",
         "status": "running",
-        "model": &enrich_model,
+        "model": &display_model,
         "progress": { "current": 0, "total": null, "rate": null, "current_item": null },
         "concurrency": concurrency,
         "started_at": started_at.to_rfc3339(),
@@ -172,7 +179,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                         "phase": "waiting",
                         "enriched": cur_enriched,
                         "errors": cur_errors,
-                        "model": enrich_model,
+                        "model": display_model,
                     }),
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
@@ -202,6 +209,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 let job_id = job_id.to_string();
                 let ollama_url = ollama_url.clone();
                 let enrich_model = enrich_model.clone();
+                let display_model = display_model.clone();
                 let llm_backend = llm_backend.clone();
                 let anthropic_api_key = anthropic_api_key.clone();
                 let deepseek_api_key = deepseek_api_key.clone();
@@ -241,7 +249,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                             "current_company": name,
                             "enriched": cur_enriched,
                             "errors": cur_errors,
-                            "model": enrich_model,
+                            "model": display_model,
                         }),
                     );
 
@@ -643,7 +651,7 @@ Return ONLY valid JSON. /no_think"#,
                             "current_company": name,
                             "enriched": cur_enriched,
                             "errors": cur_errors,
-                            "model": enrich_model,
+                            "model": display_model,
                         }),
                     );
 
@@ -653,7 +661,7 @@ Return ONLY valid JSON. /no_think"#,
                         super::emit_node(&app, json!({
                             "node_id": "enrich",
                             "status": "running",
-                            "model": &enrich_model,
+                            "model": &display_model,
                             "progress": { "current": cur_enriched, "total": null, "rate": rate, "current_item": &name },
                             "concurrency": concurrency,
                             "started_at": started_at.to_rfc3339(),
@@ -676,7 +684,7 @@ Return ONLY valid JSON. /no_think"#,
     super::emit_node(app, json!({
         "node_id": "enrich",
         "status": "completed",
-        "model": &enrich_model,
+        "model": &display_model,
         "progress": { "current": final_enriched, "total": final_enriched, "rate": null, "current_item": null },
         "concurrency": concurrency,
         "started_at": started_at.to_rfc3339(),

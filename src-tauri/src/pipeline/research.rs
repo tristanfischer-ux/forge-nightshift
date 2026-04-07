@@ -33,6 +33,13 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .and_then(|v| v.as_str())
         .unwrap_or("deepseek");
 
+    // Display the actual model being used, not the Ollama model name
+    let display_model = match llm_backend {
+        "deepseek" => "deepseek-chat",
+        "haiku" => "claude-haiku-4.5",
+        _ => research_model,
+    };
+
     let anthropic_api_key = config
         .get("anthropic_api_key")
         .and_then(|v| v.as_str())
@@ -108,7 +115,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     super::emit_node(app, json!({
         "node_id": "research",
         "status": "running",
-        "model": research_model,
+        "model": display_model,
         "progress": { "current": 0, "total": null, "rate": null, "current_item": null },
         "concurrency": 1,
         "started_at": chrono::Utc::now().to_rfc3339(),
@@ -454,7 +461,7 @@ Return ONLY valid JSON."#,
                                 super::emit_node(app, json!({
                                     "node_id": "research",
                                     "status": "running",
-                                    "model": research_model,
+                                    "model": display_model,
                                     "progress": { "current": total_discovered, "total": null, "rate": null, "current_item": category.name },
                                     "concurrency": 1,
                                     "started_at": null,
@@ -573,7 +580,7 @@ Return ONLY valid JSON."#,
                                         super::emit_node(app, json!({
                                             "node_id": "research",
                                             "status": "running",
-                                            "model": research_model,
+                                            "model": display_model,
                                             "progress": { "current": total_discovered, "total": null, "rate": null, "current_item": category.name },
                                             "concurrency": 1,
                                             "started_at": null,
@@ -613,7 +620,7 @@ Return ONLY valid JSON."#,
     super::emit_node(app, json!({
         "node_id": "research",
         "status": "completed",
-        "model": research_model,
+        "model": display_model,
         "progress": { "current": total_discovered, "total": total_discovered, "rate": null, "current_item": null },
         "concurrency": 1,
         "started_at": null,
