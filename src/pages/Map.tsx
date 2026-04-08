@@ -7,22 +7,16 @@ import { getCompaniesForMap, geocodeCompanies, getSearchProfiles, getActiveProfi
 import { MapPin, RefreshCw, Filter, X } from "lucide-react";
 import { useError } from "../contexts/ErrorContext";
 
-// Subcategory color map
-const SUBCATEGORY_COLORS: Record<string, string> = {
-  "CNC Machining": "#2563eb",
-  "CNC Machining - Aerospace": "#1d4ed8",
-  "Sheet Metal Fabrication": "#16a34a",
-  "Injection Molding & Plastics": "#9333ea",
-  "Casting & Forging": "#dc2626",
-  "3D Printing & Additive Mfg": "#f59e0b",
-  "Electronics Manufacturing": "#06b6d4",
-  "Composites & Advanced Materials": "#ec4899",
-  "Welding & Structural Steel": "#78716c",
-  "Toolmaking & Mould Making": "#ea580c",
-  "Medical Device Manufacturing": "#0891b2",
-  "Precision Grinding & Lapping": "#65a30d",
-  "Waterjet & Laser Cutting": "#e11d48",
-};
+// Generate a consistent color for any subcategory string using a hash
+function getSubcategoryColor(name: string): string {
+  const colors = [
+    "#2563eb", "#16a34a", "#9333ea", "#dc2626", "#d97706", "#0891b2",
+    "#4f46e5", "#059669", "#be185d", "#f59e0b", "#7c3aed", "#14b8a6",
+  ];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return colors[Math.abs(hash) % colors.length];
+}
 
 const DEFAULT_COLOR = "#6b7280";
 
@@ -316,7 +310,7 @@ export default function MapPage() {
           </div>
           <div className="flex flex-wrap gap-1">
             {subcategories.map((cat) => {
-              const color = SUBCATEGORY_COLORS[cat] || DEFAULT_COLOR;
+              const color = cat ? getSubcategoryColor(cat) : DEFAULT_COLOR;
               const selected = selectedCategories.has(cat);
               return (
                 <button
@@ -390,7 +384,7 @@ export default function MapPage() {
             ) : clusters.map((cluster, i) => {
               if (cluster.companies.length === 1) {
                 const c = cluster.companies[0];
-                const color = SUBCATEGORY_COLORS[c.subcategory ?? ""] || DEFAULT_COLOR;
+                const color = c.subcategory ? getSubcategoryColor(c.subcategory) : DEFAULT_COLOR;
                 return (
                   <Marker
                     key={c.id}

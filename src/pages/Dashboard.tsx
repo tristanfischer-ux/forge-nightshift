@@ -255,7 +255,7 @@ export default function Dashboard() {
           color="text-indigo-600"
         />
       </div>
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-3 gap-4">
         <StatCard
           label="Intel Records"
           value={extStats.intel_records}
@@ -275,7 +275,6 @@ export default function Dashboard() {
           icon={Mail}
           color="text-orange-600"
         />
-        <div />
       </div>
 
       {/* Charts row 1: Pipeline Funnel + Country Distribution */}
@@ -295,7 +294,7 @@ export default function Dashboard() {
       {/* Charts row 2: Manufacturing Techniques + Certifications */}
       <div className="grid grid-cols-2 gap-4">
         <ChartCard
-          title="Manufacturing Techniques"
+          title="Categories"
           data={analytics?.by_subcategory ?? []}
           onSegmentClick={(name) => drillDown("subcategory", name)}
         />
@@ -327,7 +326,6 @@ export default function Dashboard() {
           data={analytics?.by_industry ?? []}
           onSegmentClick={(name) => drillDown("search", name)}
         />
-        <div />
       </div>
 
       {/* Recent activity */}

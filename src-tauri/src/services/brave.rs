@@ -52,7 +52,6 @@ pub fn get_role_words_for_domain(domain: &str) -> Vec<&'static str> {
 }
 
 /// Generate search queries for a dynamic (DB-loaded) category.
-/// Same strategy as generate_queries_for_category but works with owned strings.
 pub fn generate_queries_for_dynamic_category(country: &str, category: &DynamicSearchCategory, domain: &str) -> Vec<(String, String)> {
     let names = country_names(country);
     if names.is_empty() {
@@ -337,10 +336,6 @@ const ROLE_WORDS: &[&str] = &[
     "maker", "shop", "subcontractor",
 ];
 
-/// Generic templates for query building. Each appends a role word + location.
-const GENERIC_TEMPLATES: &[&str] = &[
-    "manufacturer", "supplier", "company", "factory", "producer",
-];
 
 /// UK manufacturing hub locations for regional queries.
 const UK_REGIONS: &[&str] = &[
@@ -463,99 +458,3 @@ fn keyword_has_role_suffix(keyword: &str) -> bool {
     ROLE_WORDS.iter().any(|role| lower.ends_with(role))
 }
 
-/// Generate search queries for a given country and category.
-/// Returns Vec<(query_string, category_id)>.
-///
-/// Strategy:
-/// - Primary keywords (0-2): get all 5 generic templates
-/// - Secondary keywords (3-6): get 2 templates (manufacturer, supplier)
-/// - Tertiary keywords (7-9): get 1 template (manufacturer)
-/// - GB-specific: "keyword ltd location" for primary keywords
-/// - UK regional queries: top 3 keywords × 14 UK regions
-/// - Native-language queries for non-English countries
-/// - Alternate country name queries
-pub fn generate_queries_for_category(country: &str, category: &SearchCategory) -> Vec<(String, String)> {
-    let names = country_names(country);
-    if names.is_empty() {
-        return vec![];
-    }
-
-    let mut queries = Vec::new();
-    let cat_id = category.id.to_string();
-    let primary = names[0];
-
-    for (i, keyword) in category.keywords.iter().enumerate() {
-        let has_role = keyword_has_role_suffix(keyword);
-
-        // Determine how many templates based on keyword tier
-        let templates_to_use: &[&str] = if i < 3 {
-            GENERIC_TEMPLATES // all 5
-        } else if i < 7 {
-            &GENERIC_TEMPLATES[..2] // manufacturer, supplier
-        } else {
-            &GENERIC_TEMPLATES[..1] // manufacturer only
-        };
-
-        for template_role in templates_to_use {
-            let query = if has_role {
-                // Keyword already has a role word — just append location
-                format!("{} {}", keyword, primary)
-            } else {
-                format!("{} {} {}", keyword, template_role, primary)
-            };
-            queries.push((query, cat_id.clone()));
-        }
-
-        // GB-specific: "keyword ltd location" for primary keywords
-        if (country == "GB" || country == "UK") && i < 3 {
-            queries.push((
-                format!("{} ltd {}", keyword, primary),
-                cat_id.clone(),
-            ));
-        }
-    }
-
-    // Alternate country name queries (1 per alt name, using first keyword)
-    for alt in names.iter().skip(1) {
-        let keyword = category.keywords[0];
-        if keyword_has_role_suffix(keyword) {
-            queries.push((format!("{} {}", keyword, alt), cat_id.clone()));
-        } else {
-            queries.push((format!("{} company {}", keyword, alt), cat_id.clone()));
-        }
-    }
-
-    // UK regional queries: top 3 keywords × 14 UK regions
-    if country == "GB" || country == "UK" {
-        let regional_keywords = category.keywords.iter().take(3);
-        for keyword in regional_keywords {
-            for region in UK_REGIONS {
-                let query = if keyword_has_role_suffix(keyword) {
-                    format!("{} {}", keyword, region)
-                } else {
-                    format!("{} manufacturer {}", keyword, region)
-                };
-                queries.push((query, cat_id.clone()));
-            }
-        }
-    }
-
-    // Native-language queries for non-English countries (1-2 per category)
-    let terms = native_terms(country);
-    if let Some(native_name) = native_country_name(country) {
-        if !terms.is_empty() {
-            queries.push((
-                format!("{} {} {}", category.keywords[0], terms[0], native_name),
-                cat_id.clone(),
-            ));
-            if terms.len() > 1 {
-                queries.push((
-                    format!("{} {} {}", category.keywords[0], terms[1], native_name),
-                    cat_id.clone(),
-                ));
-            }
-        }
-    }
-
-    queries
-}

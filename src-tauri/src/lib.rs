@@ -135,6 +135,9 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "schedules",
     "active_profile_id",
     "pipeline_batch_size",
+    "verify_concurrency",
+    "synthesize_concurrency",
+    "directory_search_enabled",
 ];
 
 #[tauri::command]
