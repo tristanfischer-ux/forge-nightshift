@@ -12,6 +12,7 @@ mod verify;
 mod synthesize;
 mod director_intel;
 mod activity;
+mod embeddings;
 
 use anyhow::Result;
 use chrono::{Datelike, Timelike};
@@ -222,6 +223,13 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
             let _ = app.emit("pipeline:stage", json!({"stage": "director_intel", "status": "running"}));
             let _ = director_intel::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "director_intel", "status": "completed"}));
+        }
+
+        // Step 7: Generate embeddings for semantic search
+        if !is_cancelled() {
+            let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "running"}));
+            let _ = embeddings::run(app, job_id, &wave_config).await;
+            let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "completed"}));
         }
 
         // Count remaining discovered (un-enriched) companies for this profile
@@ -537,6 +545,7 @@ async fn run_single_stage(
         "activity" => activity::run(app, job_id, config).await,
         "companies_house" => companies_house::run(app, job_id, config).await,
         "director_intel" => director_intel::run(app, job_id, config).await,
+        "embeddings" => embeddings::run(app, job_id, config).await,
         "learn_outreach" => outreach_learner::run_learning_cycle(app, job_id, config).await,
         s if s.starts_with("template_outreach:") => {
             let template_id = &s["template_outreach:".len()..];

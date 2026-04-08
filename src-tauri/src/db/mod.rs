@@ -1324,6 +1324,86 @@ impl Database {
         Ok(rows)
     }
 
+    /// Get enriched companies that don't have embeddings yet.
+    pub fn get_companies_needing_embeddings(&self, profile_id: &str, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+
+        // Check if supplier_embeddings table exists
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='supplier_embeddings'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        let query = if table_exists {
+            "SELECT c.id, c.name, c.description, c.category, c.subcategory, c.country, c.city, \
+                    c.specialties, c.certifications, c.industries, c.materials, c.synthesis_public_json \
+             FROM companies c \
+             LEFT JOIN supplier_embeddings se ON c.id = se.company_id \
+             WHERE c.status IN ('enriched', 'approved', 'pushed') \
+             AND c.search_profile_id = ?1 \
+             AND se.company_id IS NULL \
+             LIMIT ?2"
+        } else {
+            "SELECT id, name, description, category, subcategory, country, city, \
+                    specialties, certifications, industries, materials, synthesis_public_json \
+             FROM companies \
+             WHERE status IN ('enriched', 'approved', 'pushed') \
+             AND search_profile_id = ?1 \
+             LIMIT ?2"
+        };
+
+        let mut stmt = conn.prepare(query)?;
+        let rows: Vec<Value> = stmt
+            .query_map(rusqlite::params![profile_id, limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, Option<String>>(1)?,
+                    "description": row.get::<_, Option<String>>(2)?,
+                    "category": row.get::<_, Option<String>>(3)?,
+                    "subcategory": row.get::<_, Option<String>>(4)?,
+                    "country": row.get::<_, Option<String>>(5)?,
+                    "city": row.get::<_, Option<String>>(6)?,
+                    "specialties": row.get::<_, Option<String>>(7)?,
+                    "certifications": row.get::<_, Option<String>>(8)?,
+                    "industries": row.get::<_, Option<String>>(9)?,
+                    "materials": row.get::<_, Option<String>>(10)?,
+                    "synthesis_public_json": row.get::<_, Option<String>>(11)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Save an embedding for a company.
+    pub fn save_embedding(&self, company_id: &str, embedding_json: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        // Ensure table exists
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS supplier_embeddings (
+                company_id TEXT PRIMARY KEY,
+                embedding TEXT NOT NULL,
+                source_text_hash TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT 'text-embedding-3-small',
+                dims INTEGER NOT NULL DEFAULT 1536,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"
+        )?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO supplier_embeddings (company_id, embedding, model, dims, updated_at) \
+             VALUES (?1, ?2, 'text-embedding-3-small', 1536, datetime('now'))",
+            rusqlite::params![company_id, embedding_json],
+        )?;
+        Ok(())
+    }
+
     /// Get companies by a list of IDs, preserving the order of the input.
     pub fn get_companies_by_ids(&self, ids: &[String]) -> Result<Vec<Value>> {
         if ids.is_empty() {

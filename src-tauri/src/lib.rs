@@ -1377,7 +1377,7 @@ async fn get_outreach_readiness(
 }
 
 /// Resolve OpenAI API key from config DB, or fallback to ForgeOS .env.local / Forge-Capital .env
-fn resolve_openai_key(db: &Database) -> Option<String> {
+pub fn resolve_openai_key(db: &Database) -> Option<String> {
     // 1. Check config DB
     if let Ok(config) = db.get_all_config() {
         if let Some(key) = config.get("openai_api_key").and_then(|v| v.as_str()) {
