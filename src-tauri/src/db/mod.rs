@@ -71,6 +71,7 @@ impl Database {
             include_str!("migrations/024_nightshift_intel.sql"),
             include_str!("migrations/025_search_profiles.sql"),
             include_str!("migrations/026_directory_search.sql"),
+            include_str!("migrations/027_push_to_forgeos.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();

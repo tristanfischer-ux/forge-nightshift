@@ -32,6 +32,32 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .unwrap_or(60);
 
     let started_at = chrono::Utc::now();
+
+    // Only push companies from profiles that have push_to_forgeos enabled
+    let pushable_profile_ids: Vec<String> = {
+        let db: tauri::State<'_, Database> = app.state();
+        let profiles = db.get_search_profiles().unwrap_or_default();
+        profiles.iter()
+            .filter(|p| p.get("push_to_forgeos").and_then(|v| v.as_i64()).unwrap_or(0) == 1)
+            .filter_map(|p| p.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .collect()
+    };
+
+    if pushable_profile_ids.is_empty() {
+        log::info!("[Push] No profiles have push_to_forgeos enabled. Skipping push.");
+        {
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(job_id, "push", "info", "No profiles configured for ForgeOS push. Only 'Manufacturing Suppliers' pushes to the marketplace.");
+        }
+        return Ok(json!({
+            "companies_pushed": 0,
+            "skipped_no_push_profile": true,
+            "message": "No profiles have push_to_forgeos enabled"
+        }));
+    }
+
+    log::info!("[Push] Pushing companies from profiles: {:?}", pushable_profile_ids);
+
     super::emit_node(app, json!({
         "node_id": "push",
         "status": "running",
@@ -45,6 +71,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
     let mut pushed_count = 0;
     let mut skipped_threshold = 0;
     let mut skipped_domain = 0;
+    let mut skipped_profile = 0;
     let mut error_count = 0;
 
     let batch_size: i64 = 200;
@@ -71,6 +98,14 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
 
         let id = company.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let name = company.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let company_profile = company.get("search_profile_id").and_then(|v| v.as_str()).unwrap_or("manufacturing");
+
+        // Skip companies from profiles that don't push to ForgeOS
+        if !pushable_profile_ids.iter().any(|p| p == company_profile) {
+            skipped_profile += 1;
+            continue;
+        }
+
         let score = company
             .get("relevance_score")
             .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
@@ -204,6 +239,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         "companies_pushed": pushed_count,
         "skipped_below_threshold": skipped_threshold,
         "skipped_duplicate_domain": skipped_domain,
+        "skipped_wrong_profile": skipped_profile,
         "errors": error_count,
     }))
 }
