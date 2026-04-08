@@ -141,6 +141,136 @@ pub fn is_cancelled() -> bool {
     CANCEL.load(Ordering::SeqCst)
 }
 
+/// Batch pipeline mode: processes companies in waves of N.
+/// Each wave runs research (capped) → enrich → deep_enrich → verify → synthesize → director_intel sequentially.
+/// Stops when research finds nothing new or pipeline is cancelled.
+async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result<Value> {
+    let batch_size: usize = config
+        .get("pipeline_batch_size")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+
+    let mut wave = 1u32;
+    let mut total_processed: usize = 0;
+
+    loop {
+        if is_cancelled() {
+            break;
+        }
+
+        log::info!("[Pipeline] Wave {} — batch size {}", wave, batch_size);
+        emit_node(app, json!({
+            "node_id": "batch",
+            "status": "running",
+            "wave": wave,
+            "batch_size": batch_size,
+            "total_processed": total_processed
+        }));
+
+        {
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(job_id, "batch", "info",
+                &format!("Starting wave {} (batch size {})", wave, batch_size));
+        }
+
+        // Inject batch_size into config so research respects it
+        let mut wave_config = config.clone();
+        wave_config["pipeline_batch_size"] = json!(batch_size.to_string());
+
+        // Step 1: Research (capped at batch_size)
+        if !is_cancelled() {
+            let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "running"}));
+            let res = research::run(app, job_id, &wave_config).await;
+            let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "completed"}));
+            if let Err(e) = &res {
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, "batch", "warn", &format!("Research error in wave {}: {}", wave, e));
+            }
+        }
+
+        // Step 2: Enrich discovered companies
+        if !is_cancelled() {
+            let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "running"}));
+            let _ = enrich::run(app, job_id, &wave_config).await;
+            let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "completed"}));
+        }
+
+        // Step 3: Deep enrich (all mode since enrich is done for this batch)
+        if !is_cancelled() {
+            let _ = app.emit("pipeline:stage", json!({"stage": "deep_enrich_all", "status": "running"}));
+            let _ = deep_enrich::run_all(app, job_id, &wave_config).await;
+            let _ = app.emit("pipeline:stage", json!({"stage": "deep_enrich_all", "status": "completed"}));
+        }
+
+        // Step 4: Verify
+        if !is_cancelled() {
+            let _ = app.emit("pipeline:stage", json!({"stage": "verify", "status": "running"}));
+            let _ = verify::run(app, job_id, &wave_config).await;
+            let _ = app.emit("pipeline:stage", json!({"stage": "verify", "status": "completed"}));
+        }
+
+        // Step 5: Synthesize
+        if !is_cancelled() {
+            let _ = app.emit("pipeline:stage", json!({"stage": "synthesize", "status": "running"}));
+            let _ = synthesize::run(app, job_id, &wave_config).await;
+            let _ = app.emit("pipeline:stage", json!({"stage": "synthesize", "status": "completed"}));
+        }
+
+        // Step 6: Director intel
+        if !is_cancelled() {
+            let _ = app.emit("pipeline:stage", json!({"stage": "director_intel", "status": "running"}));
+            let _ = director_intel::run(app, job_id, &wave_config).await;
+            let _ = app.emit("pipeline:stage", json!({"stage": "director_intel", "status": "completed"}));
+        }
+
+        // Count remaining discovered (un-enriched) companies for this profile
+        let discovered_remaining = {
+            let db: tauri::State<'_, Database> = app.state();
+            let profile_id = db.get_active_profile_id();
+            db.get_companies_count(Some("discovered"), Some(&profile_id))
+                .unwrap_or(0)
+        };
+
+        total_processed += batch_size;
+
+        {
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(job_id, "batch", "info",
+                &format!("Wave {} complete. Discovered remaining: {}, total processed: ~{}", wave, discovered_remaining, total_processed));
+        }
+
+        emit_node(app, json!({
+            "node_id": "batch",
+            "status": "running",
+            "wave": wave,
+            "batch_size": batch_size,
+            "total_processed": total_processed,
+            "discovered_remaining": discovered_remaining
+        }));
+
+        wave += 1;
+
+        // If research found nothing new (no discovered companies left), stop
+        if discovered_remaining == 0 || is_cancelled() {
+            break;
+        }
+    }
+
+    emit_node(app, json!({
+        "node_id": "batch",
+        "status": "completed",
+        "waves_completed": wave - 1,
+        "total_processed": total_processed
+    }));
+
+    Ok(json!({
+        "waves_completed": wave - 1,
+        "total_processed": total_processed,
+        "cancelled": is_cancelled()
+    }))
+}
+
 async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> Result<Value> {
     let mut summary = json!({});
 
@@ -194,6 +324,14 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
 
     let db: tauri::State<'_, Database> = app.state();
     let config = db.get_all_config()?;
+
+    // Batch mode: if stages contains "batch", run batch_pipeline instead of normal flow
+    if stages.iter().any(|s| s == "batch") {
+        log::info!("[pipeline] Batch mode activated");
+        let db: tauri::State<'_, Database> = app.state();
+        let _ = db.log_activity(job_id, "pipeline", "info", "Running in batch mode");
+        return batch_pipeline(app, job_id, &config).await;
+    }
 
     // Auto-inject deep_enrich_drain if enrich is requested but no deep enrich variant is present.
     // This ensures deep enrichment always runs concurrently with enrich for new companies.

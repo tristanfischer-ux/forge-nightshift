@@ -154,6 +154,12 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         (HashSet::new(), HashSet::new())
     };
 
+    let batch_limit: i64 = config
+        .get("pipeline_batch_size")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0); // 0 = no limit
+
     let mut total_discovered = 0;
     let mut total_queries = 0;
 
@@ -183,6 +189,25 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         )
         .await;
         total_discovered += dir_discovered;
+    }
+
+    // Check batch limit after directory search
+    if batch_limit > 0 && total_discovered >= batch_limit {
+        log::info!("[Research] Reached batch limit of {} after directory search", batch_limit);
+        super::emit_node(app, json!({
+            "node_id": "research",
+            "status": "completed",
+            "model": display_model,
+            "progress": { "current": total_discovered, "total": total_discovered, "rate": null, "current_item": null },
+            "concurrency": 1,
+            "started_at": null,
+            "elapsed_secs": null
+        }));
+        return Ok(json!({
+            "queries_run": total_queries,
+            "companies_discovered": total_discovered,
+            "batch_limited": true,
+        }));
     }
 
     // Step 2: For each country, pick least-covered categories
@@ -605,15 +630,27 @@ Return ONLY valid JSON."#,
                     "research",
                     "info",
                     &format!(
-                        "[{}] {} — {} results: {} new, {} skip, {} parse-err, {} no-name, {} domain-supabase, {} domain-local, {} name-supabase, {} name-local, {} llm-error",
+                        "[{}] {} — {} results: {} new, {} skip, {} parse-err, {} no-name, {} domain-supabase, {} domain-local, {} name-supabase, {} name-local, {} llm-error{}",
                         country, category.name, batch_results, batch_discovered,
                         skipped_llm_skip, skipped_parse, skipped_no_name,
                         skipped_domain_supabase, skipped_domain_local,
                         skipped_name_supabase, skipped_name_local,
                         skipped_llm_error,
+                        if batch_limit > 0 { format!(", batch {}/{}", total_discovered, batch_limit) } else { String::new() },
                     ),
                 );
             }
+
+            // Check batch limit after each category
+            if batch_limit > 0 && total_discovered >= batch_limit {
+                log::info!("[Research] Reached batch limit of {} during category search", batch_limit);
+                break;
+            }
+        }
+
+        // Check batch limit after each country
+        if batch_limit > 0 && total_discovered >= batch_limit {
+            break;
         }
     }
 

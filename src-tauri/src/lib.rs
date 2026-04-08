@@ -134,6 +134,7 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "send_window_start", "send_window_end",
     "schedules",
     "active_profile_id",
+    "pipeline_batch_size",
 ];
 
 #[tauri::command]
@@ -165,6 +166,12 @@ fn set_config(db: tauri::State<'_, Database>, key: String, value: String) -> Res
             let v: i64 = value.parse().map_err(|_| "Must be a number".to_string())?;
             if !(1..=37).contains(&v) {
                 return Err("Must be between 1 and 37".to_string());
+            }
+        }
+        "pipeline_batch_size" => {
+            let v: i64 = value.parse().map_err(|_| "Must be a number".to_string())?;
+            if !(1..=10000).contains(&v) {
+                return Err("Must be between 1 and 10000".to_string());
             }
         }
         "daily_email_limit" => {

@@ -862,6 +862,15 @@ export default function Settings() {
           max={37}
         />
         <Input
+          label="Pipeline Batch Size"
+          value={config.pipeline_batch_size || ""}
+          onChange={(v) => updateField("pipeline_batch_size", v)}
+          placeholder="100"
+          type="number"
+          min={1}
+          max={10000}
+        />
+        <Input
           label="Enrich Concurrency (1-10)"
           value={config.enrich_concurrency || ""}
           onChange={(v) => updateField("enrich_concurrency", v)}

@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { Play, Square, Search, Activity, Zap, Clock, ChevronDown, ChevronRight, Shield, Send, Rss } from "lucide-react";
+import { Play, Square, Search, Activity, Zap, Clock, ChevronDown, ChevronRight, Shield, Send, Rss, Layers } from "lucide-react";
 import FlowChart from "../components/FlowChart";
 import {
   startPipeline,
@@ -27,11 +27,17 @@ interface ActivityEntry {
 
 const PRESETS: { label: string; stages: string[]; icon: React.ReactNode; description: string; primary?: boolean }[] = [
   {
+    label: "Batch Pipeline",
+    stages: ["batch"],
+    icon: <Layers className="w-3.5 h-3.5" />,
+    description: "Research → Enrich → Verify → Synthesize → Intel in waves of N",
+    primary: true,
+  },
+  {
     label: "Full Pipeline",
     stages: ["research", "enrich", "deep_enrich_drain", "verify", "synthesize", "director_intel", "push"],
     icon: <Play className="w-3.5 h-3.5" />,
-    description: "End-to-end: discover, enrich, verify, synthesize, push",
-    primary: true,
+    description: "End-to-end: discover, enrich, verify, synthesize, push (parallel)",
   },
   {
     label: "Intelligence",
