@@ -16,7 +16,6 @@ import ChartCard from "../components/ChartCard";
 import {
   getStats,
   getPipelineStatus,
-  startPipeline,
   stopPipeline,
   getRunLog,
   getAnalytics,
@@ -142,20 +141,6 @@ export default function Dashboard() {
     }
   }
 
-  const [starting, setStarting] = useState(false);
-
-  async function handleStartPipeline() {
-    if (starting) return;
-    setStarting(true);
-    try {
-      await startPipeline(["research", "enrich", "push"]);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setStarting(false);
-    }
-  }
-
   async function handleStopPipeline() {
     setPipeline((prev) => ({ ...prev, cancelling: true }));
     try {
@@ -211,12 +196,11 @@ export default function Dashboard() {
             </button>
           ) : (
             <button
-              onClick={handleStartPipeline}
-              disabled={starting}
-              className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
+              onClick={() => navigate("/pipeline")}
+              className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 rounded-lg text-sm font-medium text-white transition-colors"
             >
               <Play className="w-4 h-4" />
-              Start Pipeline
+              Go to Pipeline
             </button>
           )}
         </div>

@@ -710,15 +710,23 @@ export default function Review() {
     }
   }
 
-  async function handleResetErrors() {
-    try {
-      await resetErrorCompanies();
-      loadCompanies(filter);
-      loadCounts();
-      setSelected(null);
-    } catch (e) {
-      showError(`Failed to reset errors: ${e}`);
-    }
+  function handleResetErrors() {
+    setConfirmDialog({
+      title: "Retry All Errors",
+      message: `Reset ${counts.error} error companies back to "discovered" so they can be re-processed by the pipeline?`,
+      confirmLabel: "Retry All",
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        try {
+          await resetErrorCompanies();
+          loadCompanies(filter);
+          loadCounts();
+          setSelected(null);
+        } catch (e) {
+          showError(`Failed to reset errors: ${e}`);
+        }
+      },
+    });
   }
 
   async function handleBulkApprove() {
@@ -986,7 +994,7 @@ export default function Review() {
               className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 rounded-lg text-sm font-medium text-white transition-colors"
             >
               <RotateCcw className="w-4 h-4" />
-              Reset All Errors
+              Retry All Errors
             </button>
           )}
           {filter === "enriched" && companies.length > 0 && (

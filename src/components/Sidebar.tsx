@@ -68,9 +68,10 @@ export default function Sidebar() {
         .then((s) => {
           const rows = (s.companies as { status: string; count: number }[]) || [];
           const enriched = rows.find((r) => r.status === "enriched")?.count || 0;
+          const errors = rows.find((r) => r.status === "error")?.count || 0;
           const emails = (s.emails as { status: string; count: number }[]) || [];
           const drafts = emails.find((r) => r.status === "draft")?.count || 0;
-          setBadges({ "/review": enriched, "/outreach": drafts });
+          setBadges({ "/review": enriched, "/review:errors": errors, "/outreach": drafts });
         })
         .catch(() => {});
     }
@@ -160,10 +161,25 @@ export default function Sidebar() {
           >
             <item.icon className="w-4 h-4" />
             <span className="flex-1">{item.label}</span>
-            {badges[item.path] != null && badges[item.path] > 0 && (
-              <span className="bg-forge-100 text-forge-700 text-xs px-1.5 rounded-full">
-                {badges[item.path]}
+            {item.path === "/review" ? (
+              <span className="flex items-center gap-1">
+                {badges["/review"] > 0 && (
+                  <span className="bg-forge-100 text-forge-700 text-xs px-1.5 rounded-full">
+                    {badges["/review"]}
+                  </span>
+                )}
+                {badges["/review:errors"] > 0 && (
+                  <span className="bg-red-100 text-red-700 text-xs px-1.5 rounded-full">
+                    {badges["/review:errors"]}
+                  </span>
+                )}
               </span>
+            ) : (
+              badges[item.path] != null && badges[item.path] > 0 && (
+                <span className="bg-forge-100 text-forge-700 text-xs px-1.5 rounded-full">
+                  {badges[item.path]}
+                </span>
+              )
             )}
           </NavLink>
         ))}

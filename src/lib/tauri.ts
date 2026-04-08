@@ -78,6 +78,26 @@ export async function testDeepSeekConnection(apiKey: string) {
   );
 }
 
+// Category suggestion via DeepSeek
+export interface SuggestedCategory {
+  id: string;
+  name: string;
+  keywords: string[];
+}
+
+export async function suggestCategories(
+  profileName: string,
+  domain: string,
+  description: string
+): Promise<SuggestedCategory[]> {
+  const result = await invoke<SuggestedCategory[]>("suggest_categories", {
+    profileName,
+    domain,
+    description,
+  });
+  return Array.isArray(result) ? result : [];
+}
+
 // Pipeline
 export async function startPipeline(stages: string[]) {
   return invoke<string>("start_pipeline", { stages });

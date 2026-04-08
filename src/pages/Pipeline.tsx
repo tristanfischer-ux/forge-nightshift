@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
-import { Play, Square, Search, Activity, Zap, Clock, ChevronDown, ChevronRight, Shield, Send, Rss, Layers } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Play, Square, Search, Activity, Zap, Clock, ChevronDown, ChevronRight, Shield, Send, AlertTriangle, Settings2 } from "lucide-react";
 import FlowChart from "../components/FlowChart";
 import {
   startPipeline,
@@ -25,20 +26,14 @@ interface ActivityEntry {
   item: string | null;
 }
 
-const PRESETS: { label: string; stages: string[]; icon: React.ReactNode; description: string; primary?: boolean }[] = [
-  {
-    label: "Batch Pipeline",
-    stages: ["batch"],
-    icon: <Layers className="w-3.5 h-3.5" />,
-    description: "Research → Enrich → Verify → Synthesize → Intel in waves of N",
-    primary: true,
-  },
-  {
-    label: "Full Pipeline",
-    stages: ["research", "enrich", "deep_enrich_drain", "verify", "synthesize", "director_intel", "push"],
-    icon: <Play className="w-3.5 h-3.5" />,
-    description: "End-to-end: discover, enrich, verify, synthesize, push (parallel)",
-  },
+interface ConfirmState {
+  open: boolean;
+  label: string;
+  stages: string[];
+  stageDescription: string;
+}
+
+const ADVANCED_PRESETS: { label: string; stages: string[]; icon: React.ReactNode; description: string }[] = [
   {
     label: "Intelligence",
     stages: ["verify", "synthesize", "director_intel"],
@@ -63,15 +58,22 @@ const PRESETS: { label: string; stages: string[]; icon: React.ReactNode; descrip
     icon: <Send className="w-3.5 h-3.5" />,
     description: "Push to ForgeOS, send outreach, fetch activity",
   },
-  {
-    label: "Activity Feed",
-    stages: ["activity"],
-    icon: <Rss className="w-3.5 h-3.5" />,
-    description: "Fetch latest activity for tracked companies",
-  },
 ];
 
+function stagesToDescription(stages: string[]): string {
+  if (stages.length === 1 && stages[0] === "batch") {
+    return "Research \u2192 Enrich \u2192 Deep Enrich \u2192 Verify \u2192 Synthesize \u2192 Director Intel \u2192 Embeddings";
+  }
+  return stages.map((s) => s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())).join(" \u2192 ");
+}
+
+function stagesToMode(stages: string[]): string {
+  if (stages.length === 1 && stages[0] === "batch") return "Batch (waves of 100)";
+  return "Custom";
+}
+
 export default function Pipeline() {
+  const navigate = useNavigate();
   const [nodes, setNodes] = useState<Record<string, PipelineNodeEvent | null>>({});
   const [running, setRunning] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -84,6 +86,8 @@ export default function Pipeline() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
   const [nextRunText, setNextRunText] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [confirm, setConfirm] = useState<ConfirmState>({ open: false, label: "", stages: [], stageDescription: "" });
 
   useEffect(() => {
     // Load initial state
@@ -198,7 +202,18 @@ export default function Pipeline() {
     return () => clearInterval(interval);
   }, [nextRunText]);
 
-  const handleStart = async (stages: string[]) => {
+  const requestStart = (label: string, stages: string[]) => {
+    setConfirm({
+      open: true,
+      label,
+      stages,
+      stageDescription: stagesToDescription(stages),
+    });
+  };
+
+  const handleConfirmedStart = async () => {
+    const stages = confirm.stages;
+    setConfirm({ open: false, label: "", stages: [], stageDescription: "" });
     if (starting) return;
     setStarting(true);
     // Clear node states BEFORE starting so early events aren't wiped
@@ -225,14 +240,48 @@ export default function Pipeline() {
   // stats.companies is an array of {status, count} — sum all counts for total
   const companyCounts = (stats.companies as { status: string; count: number }[]) ?? [];
   const totalCompanies = companyCounts.reduce((sum, c) => sum + (c.count ?? 0), 0);
+  const errorCount = companyCounts.find((c) => c.status === "error")?.count ?? 0;
   // Deep enriched = companies with process_capabilities_json set (not directly in stats, approximate from pipeline node)
   const deepEnrichNode = nodes.deep_enrich;
   const deepEnriched = deepEnrichNode?.status === "completed"
     ? (deepEnrichNode.progress?.total ?? deepEnrichNode.progress?.current ?? 0)
     : (deepEnrichNode?.progress?.current ?? 0);
 
+  // Batch wave progress
+  const batchNode = nodes.batch;
+  const batchWave = (batchNode as Record<string, unknown> | null)?.wave as number | undefined;
+  const batchTotalProcessed = (batchNode as Record<string, unknown> | null)?.total_processed as number | undefined;
+  const batchCurrentStage = batchNode?.progress?.current_item ?? (batchNode?.status === "running" ? "Processing" : null);
+
   return (
     <div className="space-y-6">
+      {/* Confirmation dialog */}
+      {confirm.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-xl border border-gray-200 p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Start Pipeline?</h3>
+            <div className="space-y-2 text-sm text-gray-600 mb-6">
+              <p><span className="font-medium text-gray-700">Mode:</span> {stagesToMode(confirm.stages)}</p>
+              <p><span className="font-medium text-gray-700">Stages:</span> {confirm.stageDescription}</p>
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setConfirm({ open: false, label: "", stages: [], stageDescription: "" })}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmedStart}
+                className="px-4 py-2 text-sm font-medium text-white bg-forge-600 hover:bg-forge-700 rounded-lg transition-colors"
+              >
+                Start
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -241,35 +290,76 @@ export default function Pipeline() {
             Real-time view of the Nightshift enrichment pipeline
           </p>
         </div>
-        <div className="flex gap-2 flex-wrap justify-end">
+        <div className="flex items-center gap-3">
           {running ? (
             <button
               onClick={handleStop}
-              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium text-white transition-colors"
+              className="flex items-center gap-2 px-5 py-2.5 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium text-white transition-colors"
             >
-              <Square className="w-3.5 h-3.5" />
-              Stop
+              <Square className="w-4 h-4" />
+              Stop Pipeline
             </button>
           ) : (
-            PRESETS.map((preset) => (
+            <div className="flex items-center gap-2">
               <button
-                key={preset.label}
-                onClick={() => handleStart(preset.stages)}
+                onClick={() => requestStart("Batch Pipeline", ["batch"])}
                 disabled={starting}
-                className={`flex items-center gap-2 px-3 py-2 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors ${
-                  preset.primary
-                    ? "bg-forge-600 hover:bg-forge-700"
-                    : "bg-gray-600 hover:bg-gray-700"
-                }`}
-                title={preset.description}
+                className="flex items-center gap-2 px-5 py-2.5 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
               >
-                {preset.icon}
-                {preset.label}
+                <Play className="w-4 h-4" />
+                Run Pipeline
               </button>
-            ))
+              <button
+                onClick={() => setAdvancedOpen(!advancedOpen)}
+                className="flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <Settings2 className="w-3.5 h-3.5" />
+                Advanced
+                {advancedOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+              </button>
+            </div>
           )}
         </div>
       </div>
+
+      {/* Advanced presets (collapsed by default) */}
+      {advancedOpen && !running && (
+        <div className="flex gap-2 flex-wrap">
+          {ADVANCED_PRESETS.map((preset) => (
+            <button
+              key={preset.label}
+              onClick={() => requestStart(preset.label, preset.stages)}
+              disabled={starting}
+              className="flex items-center gap-2 px-3 py-2 disabled:opacity-50 rounded-lg text-xs font-medium text-white bg-gray-600 hover:bg-gray-700 transition-colors"
+              title={preset.description}
+            >
+              {preset.icon}
+              {preset.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Batch wave progress banner */}
+      {batchNode && running && (
+        <div className="flex items-center gap-4 px-4 py-3 bg-forge-50 border border-forge-200 rounded-xl text-sm font-medium text-forge-800">
+          <span className="uppercase tracking-wide text-xs font-bold text-forge-600">Batch Mode</span>
+          <span className="text-gray-400">|</span>
+          {batchWave != null && <span>Wave {batchWave}</span>}
+          {batchCurrentStage && (
+            <>
+              <span className="text-gray-400">|</span>
+              <span>Currently: {batchCurrentStage}</span>
+            </>
+          )}
+          {batchTotalProcessed != null && (
+            <>
+              <span className="text-gray-400">|</span>
+              <span>~{batchTotalProcessed.toLocaleString()} processed</span>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Stats bar */}
       <div className="grid grid-cols-7 gap-3">
@@ -293,10 +383,18 @@ export default function Pipeline() {
           <p className="text-[10px] text-gray-500 uppercase tracking-wide">Intel Records</p>
           <p className="text-lg font-bold text-gray-900">{extStats.intel_records.toLocaleString()}</p>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
-          <p className="text-[10px] text-gray-500 uppercase tracking-wide">Activities</p>
-          <p className="text-lg font-bold text-gray-900">{extStats.activities.toLocaleString()}</p>
-        </div>
+        <button
+          onClick={() => navigate("/review?status=error")}
+          className={`bg-white rounded-xl border p-3 shadow-sm text-left transition-colors hover:bg-red-50 ${
+            errorCount > 0 ? "border-red-300" : "border-gray-200"
+          }`}
+        >
+          <p className={`text-[10px] uppercase tracking-wide ${errorCount > 0 ? "text-red-500" : "text-gray-500"}`}>
+            <AlertTriangle className="w-3 h-3 inline-block mr-1 -mt-0.5" />
+            Errors
+          </p>
+          <p className={`text-lg font-bold ${errorCount > 0 ? "text-red-600" : "text-gray-900"}`}>{errorCount.toLocaleString()}</p>
+        </button>
         <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
           <p className="text-[10px] text-gray-500 uppercase tracking-wide">Pushed</p>
           <p className="text-lg font-bold text-gray-900">{companyCounts.find(c => c.status === "pushed")?.count?.toLocaleString() ?? "0"}</p>

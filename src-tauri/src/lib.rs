@@ -258,6 +258,46 @@ async fn test_deepseek_connection(api_key: String) -> Result<serde_json::Value, 
 }
 
 #[tauri::command]
+async fn suggest_categories(
+    db: tauri::State<'_, Database>,
+    profile_name: String,
+    domain: String,
+    description: String,
+) -> Result<serde_json::Value, String> {
+    let config = db.get_all_config().map_err(|e| e.to_string())?;
+    let api_key = config
+        .get("deepseek_api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if api_key.is_empty() {
+        return Err("DeepSeek API key not configured. Set it in Settings > Connections.".to_string());
+    }
+    let system = "You are a B2B industry analyst. Given a search profile for finding companies, suggest relevant categories with search keywords. Return a JSON array of objects with 'id' (lowercase_underscore), 'name' (human-readable), and 'keywords' (array of 3-5 search phrases someone would use to find companies in this category). Return ONLY the JSON array, no other text.";
+    let prompt = format!(
+        "Profile: {}\nDomain: {}\nDescription: {}\n\nSuggest 8-12 relevant company categories for this profile. Each category should represent a distinct type of company or manufacturing process. Include practical search keywords that would find real companies on the web.",
+        profile_name, domain, description
+    );
+    let response = services::deepseek::chat(&api_key, Some(system), &prompt, true)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Parse the response as JSON array
+    let parsed: serde_json::Value = serde_json::from_str(&response)
+        .or_else(|_| {
+            // Try to find array in the response
+            let trimmed = response.trim();
+            if let Some(start) = trimmed.find('[') {
+                if let Some(end) = trimmed.rfind(']') {
+                    return serde_json::from_str(&trimmed[start..=end]);
+                }
+            }
+            serde_json::from_str("[]")
+        })
+        .map_err(|e| format!("Failed to parse suggestions: {}", e))?;
+    Ok(parsed)
+}
+
+#[tauri::command]
 async fn start_pipeline(app: tauri::AppHandle, stages: Vec<String>) -> Result<String, String> {
     pipeline::start_pipeline(app, stages)
         .await
@@ -1665,6 +1705,7 @@ pub fn run() {
             test_resend_connection,
             test_anthropic_connection,
             test_deepseek_connection,
+            suggest_categories,
             start_pipeline,
             stop_pipeline,
             get_pipeline_status,

@@ -11,6 +11,8 @@ import {
   Plus,
   Pencil,
   Trash2,
+  X,
+  Sparkles,
 } from "lucide-react";
 import {
   getConfig,
@@ -24,7 +26,9 @@ import {
   backupDatabase,
   reenrichAll,
   getEmailTemplates,
-  EmailTemplate,
+  suggestCategories,
+  type EmailTemplate,
+  type SuggestedCategory,
   getSearchProfiles,
   saveSearchProfile,
   deleteSearchProfile,
@@ -36,6 +40,33 @@ import ScheduleCalendar from "../components/ScheduleCalendar";
 import { useError } from "../contexts/ErrorContext";
 
 type TestStatus = "idle" | "testing" | "success" | "error";
+type SettingsTab = "profiles" | "connections" | "pipeline" | "data";
+
+interface Category {
+  id: string;
+  name: string;
+  keywords?: string[];
+}
+
+function parseCategories(json: string): Category[] {
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function serializeCategories(categories: Category[]): string {
+  return JSON.stringify(categories);
+}
+
+function generateCategoryId(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+}
 
 export default function Settings() {
   const [config, setConfigState] = useState<Record<string, string>>({});
@@ -63,12 +94,21 @@ export default function Settings() {
   const [importPreview, setImportPreview] = useState<Record<string, string> | null>(null);
   const [excludeSecrets, setExcludeSecrets] = useState(true);
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
+  const [activeTab, setActiveTab] = useState<SettingsTab>("profiles");
 
   // Search Profiles state
   const [searchProfiles, setSearchProfiles] = useState<SearchProfile[]>([]);
   const [activeProfileId, setActiveProfileIdState] = useState<string>("");
   const [editingProfile, setEditingProfile] = useState<Partial<SearchProfile> | null>(null);
   const [profileSaving, setProfileSaving] = useState(false);
+
+  // Category chip editor state
+  const [newCategoryName, setNewCategoryName] = useState("");
+
+  // Category suggestion state
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestions, setSuggestions] = useState<SuggestedCategory[]>([]);
+  const [selectedSuggestions, setSelectedSuggestions] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     loadConfig();
@@ -103,6 +143,8 @@ export default function Settings() {
         target_countries_json: editingProfile.target_countries_json || "[]",
       });
       setEditingProfile(null);
+      setSuggestions([]);
+      setSelectedSuggestions(new Set());
       await loadProfiles();
     } catch (e) {
       showError(`Failed to save profile: ${e}`);
@@ -364,13 +406,10 @@ export default function Settings() {
     setSaving(true);
     try {
       for (const [key, value] of Object.entries(importPreview)) {
-        // Skip null/undefined values — don't store literal "null" in config
         if (value == null) continue;
-        // Stringify non-string values (numbers, booleans, arrays) for the config store
         const strValue = typeof value === "string" ? value : JSON.stringify(value);
         await setConfig(key, strValue);
       }
-      // Normalize all values to strings for local state
       const normalized: Record<string, string> = {};
       for (const [key, value] of Object.entries(importPreview)) {
         normalized[key] = typeof value === "string" ? value : JSON.stringify(value);
@@ -385,6 +424,81 @@ export default function Settings() {
     setSaving(false);
   }
 
+  // Category chip editor helpers
+  function handleAddCategory() {
+    if (!editingProfile || !newCategoryName.trim()) return;
+    const categories = parseCategories(editingProfile.categories_json || "[]");
+    const id = generateCategoryId(newCategoryName.trim());
+    if (categories.some((c) => c.id === id)) {
+      showError(`Category "${newCategoryName.trim()}" already exists`);
+      return;
+    }
+    categories.push({ id, name: newCategoryName.trim(), keywords: [] });
+    setEditingProfile({
+      ...editingProfile,
+      categories_json: serializeCategories(categories),
+    });
+    setNewCategoryName("");
+  }
+
+  function handleRemoveCategory(categoryId: string) {
+    if (!editingProfile) return;
+    const categories = parseCategories(editingProfile.categories_json || "[]");
+    const filtered = categories.filter((c) => c.id !== categoryId);
+    setEditingProfile({
+      ...editingProfile,
+      categories_json: serializeCategories(filtered),
+    });
+  }
+
+  async function handleSuggestCategories() {
+    if (!editingProfile) return;
+    setSuggesting(true);
+    setSuggestions([]);
+    setSelectedSuggestions(new Set());
+    try {
+      const result = await suggestCategories(
+        editingProfile.name || "",
+        editingProfile.domain || "",
+        editingProfile.description || ""
+      );
+      // Filter out categories that already exist
+      const existing = parseCategories(editingProfile.categories_json || "[]");
+      const existingIds = new Set(existing.map((c) => c.id));
+      const filtered = result.filter((s) => !existingIds.has(s.id));
+      setSuggestions(filtered);
+    } catch (e) {
+      showError(`Failed to suggest categories: ${e}`);
+    }
+    setSuggesting(false);
+  }
+
+  function handleToggleSuggestion(id: string) {
+    setSelectedSuggestions((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function handleApplySuggestions() {
+    if (!editingProfile || selectedSuggestions.size === 0) return;
+    const categories = parseCategories(editingProfile.categories_json || "[]");
+    const existingIds = new Set(categories.map((c) => c.id));
+    for (const s of suggestions) {
+      if (selectedSuggestions.has(s.id) && !existingIds.has(s.id)) {
+        categories.push({ id: s.id, name: s.name, keywords: s.keywords || [] });
+      }
+    }
+    setEditingProfile({
+      ...editingProfile,
+      categories_json: serializeCategories(categories),
+    });
+    setSuggestions([]);
+    setSelectedSuggestions(new Set());
+  }
+
   function StatusIcon({ status }: { status: TestStatus }) {
     switch (status) {
       case "testing":
@@ -397,6 +511,28 @@ export default function Settings() {
         return null;
     }
   }
+
+  const CHIP_COLORS = [
+    "bg-blue-100 text-blue-700 border-blue-200",
+    "bg-green-100 text-green-700 border-green-200",
+    "bg-purple-100 text-purple-700 border-purple-200",
+    "bg-orange-100 text-orange-700 border-orange-200",
+    "bg-pink-100 text-pink-700 border-pink-200",
+    "bg-teal-100 text-teal-700 border-teal-200",
+    "bg-indigo-100 text-indigo-700 border-indigo-200",
+    "bg-yellow-100 text-yellow-700 border-yellow-200",
+  ];
+
+  function getChipColor(index: number): string {
+    return CHIP_COLORS[index % CHIP_COLORS.length];
+  }
+
+  const tabs: { key: SettingsTab; label: string }[] = [
+    { key: "profiles", label: "Profiles" },
+    { key: "connections", label: "Connections" },
+    { key: "pipeline", label: "Pipeline" },
+    { key: "data", label: "Data" },
+  ];
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -422,657 +558,817 @@ export default function Settings() {
         </button>
       </div>
 
-      {/* Search Profiles */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-4 shadow-sm">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-900">Search Profiles</h2>
+      {/* Tab bar */}
+      <div className="flex gap-1 bg-gray-100 p-1 rounded-lg">
+        {tabs.map((tab) => (
           <button
-            onClick={() => setEditingProfile({ id: "", name: "", domain: "", description: "", categories_json: "[]", target_countries_json: "[]" })}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-forge-600 hover:bg-forge-700 rounded-lg text-xs font-medium text-white transition-colors"
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+              activeTab === tab.key
+                ? "bg-white text-gray-900 shadow-sm"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
           >
-            <Plus className="w-3 h-3" />
-            Create Profile
+            {tab.label}
           </button>
-        </div>
+        ))}
+      </div>
 
-        <div className="space-y-3">
-          {searchProfiles.map((profile) => (
-            <div
-              key={profile.id}
-              className={`border rounded-lg p-3 ${
-                profile.id === activeProfileId
-                  ? "border-forge-300 bg-forge-50"
-                  : "border-gray-200"
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium text-sm text-gray-900">{profile.name}</span>
-                  <span className={`px-2 py-0.5 rounded-full text-xs ${DOMAIN_BADGE_COLORS[profile.domain] || "bg-gray-100 text-gray-600"}`}>
-                    {profile.domain}
-                  </span>
-                  {profile.id === activeProfileId && (
-                    <span className="px-2 py-0.5 rounded-full text-xs bg-forge-100 text-forge-700 font-medium">
-                      Active
-                    </span>
+      {/* ============ PROFILES TAB ============ */}
+      {activeTab === "profiles" && (
+        <>
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-900">Search Profiles</h2>
+              <button
+                onClick={() => {
+                  setEditingProfile({ id: "", name: "", domain: "", description: "", categories_json: "[]", target_countries_json: "[]" });
+                  setSuggestions([]);
+                  setSelectedSuggestions(new Set());
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-forge-600 hover:bg-forge-700 rounded-lg text-xs font-medium text-white transition-colors"
+              >
+                <Plus className="w-3 h-3" />
+                Create Profile
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {searchProfiles.map((profile) => (
+                <div
+                  key={profile.id}
+                  className={`border rounded-lg p-3 ${
+                    profile.id === activeProfileId
+                      ? "border-forge-300 bg-forge-50"
+                      : "border-gray-200"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-sm text-gray-900">{profile.name}</span>
+                      <span className={`px-2 py-0.5 rounded-full text-xs ${DOMAIN_BADGE_COLORS[profile.domain] || "bg-gray-100 text-gray-600"}`}>
+                        {profile.domain}
+                      </span>
+                      {profile.id === activeProfileId && (
+                        <span className="px-2 py-0.5 rounded-full text-xs bg-forge-100 text-forge-700 font-medium">
+                          Active
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {profile.id !== activeProfileId && (
+                        <button
+                          onClick={() => handleSetActiveProfile(profile.id)}
+                          className="px-2 py-1 text-xs text-forge-600 hover:bg-forge-50 rounded transition-colors"
+                        >
+                          Set Active
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          setEditingProfile({ ...profile });
+                          setSuggestions([]);
+                          setSelectedSuggestions(new Set());
+                        }}
+                        className="p-1 text-gray-400 hover:text-gray-600 rounded transition-colors"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteProfile(profile.id)}
+                        disabled={profile.id === "manufacturing"}
+                        className="p-1 text-gray-400 hover:text-red-500 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-500">
+                    <span>{getCategoryCount(profile.categories_json)} categories</span>
+                    <span>{getCountryList(profile.target_countries_json) || "All countries"}</span>
+                  </div>
+                  {profile.description && (
+                    <p className="text-xs text-gray-400 mt-1">{profile.description}</p>
                   )}
                 </div>
-                <div className="flex items-center gap-1">
-                  {profile.id !== activeProfileId && (
-                    <button
-                      onClick={() => handleSetActiveProfile(profile.id)}
-                      className="px-2 py-1 text-xs text-forge-600 hover:bg-forge-50 rounded transition-colors"
-                    >
-                      Set Active
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setEditingProfile({ ...profile })}
-                    className="p-1 text-gray-400 hover:text-gray-600 rounded transition-colors"
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => handleDeleteProfile(profile.id)}
-                    disabled={profile.id === "manufacturing"}
-                    className="p-1 text-gray-400 hover:text-red-500 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-500">
-                <span>{getCategoryCount(profile.categories_json)} categories</span>
-                <span>{getCountryList(profile.target_countries_json) || "All countries"}</span>
-              </div>
-              {profile.description && (
-                <p className="text-xs text-gray-400 mt-1">{profile.description}</p>
+              ))}
+              {searchProfiles.length === 0 && (
+                <p className="text-sm text-gray-400 text-center py-4">No search profiles configured</p>
               )}
             </div>
-          ))}
-          {searchProfiles.length === 0 && (
-            <p className="text-sm text-gray-400 text-center py-4">No search profiles configured</p>
-          )}
-        </div>
 
-        {/* Edit/Create Profile Form */}
-        {editingProfile && (
-          <div className="border border-gray-200 rounded-lg p-4 space-y-3 bg-gray-50">
-            <h3 className="text-sm font-semibold text-gray-900">
-              {editingProfile.id ? "Edit Profile" : "New Profile"}
-            </h3>
+            {/* Edit/Create Profile Form */}
+            {editingProfile && (
+              <div className="border border-gray-200 rounded-lg p-4 space-y-3 bg-gray-50">
+                <h3 className="text-sm font-semibold text-gray-900">
+                  {editingProfile.id ? "Edit Profile" : "New Profile"}
+                </h3>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Name</label>
+                  <input
+                    type="text"
+                    value={editingProfile.name || ""}
+                    onChange={(e) => setEditingProfile({ ...editingProfile, name: e.target.value })}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
+                    placeholder="e.g. Clean Tech UK"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Domain</label>
+                  <input
+                    type="text"
+                    value={editingProfile.domain || ""}
+                    onChange={(e) => setEditingProfile({ ...editingProfile, domain: e.target.value })}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
+                    placeholder="e.g. cleantech, biotech, manufacturing"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Description</label>
+                  <textarea
+                    value={editingProfile.description || ""}
+                    onChange={(e) => setEditingProfile({ ...editingProfile, description: e.target.value })}
+                    rows={2}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500 resize-none"
+                    placeholder="Optional description"
+                  />
+                </div>
+
+                {/* Category Chip Editor */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs text-gray-500">Categories</label>
+                    <button
+                      onClick={handleSuggestCategories}
+                      disabled={suggesting || !editingProfile.name || !editingProfile.domain}
+                      className="flex items-center gap-1 px-2 py-1 text-xs text-forge-600 hover:bg-forge-50 disabled:opacity-40 disabled:cursor-not-allowed rounded transition-colors"
+                    >
+                      {suggesting ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3 h-3" />
+                      )}
+                      {suggesting ? "Thinking..." : "Suggest Categories"}
+                    </button>
+                  </div>
+
+                  {/* Category chips */}
+                  <div className="min-h-[40px] border border-gray-200 rounded-lg p-2 bg-white">
+                    <div className="flex flex-wrap gap-1.5">
+                      {parseCategories(editingProfile.categories_json || "[]").map((cat, i) => (
+                        <span
+                          key={cat.id}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border ${getChipColor(i)}`}
+                          title={cat.keywords?.length ? `Keywords: ${cat.keywords.join(", ")}` : "No keywords"}
+                        >
+                          {cat.name}
+                          {cat.keywords && cat.keywords.length > 0 && (
+                            <span className="opacity-60 text-[10px]">({cat.keywords.length})</span>
+                          )}
+                          <button
+                            onClick={() => handleRemoveCategory(cat.id)}
+                            className="ml-0.5 hover:opacity-70 transition-opacity"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                      {parseCategories(editingProfile.categories_json || "[]").length === 0 && (
+                        <span className="text-xs text-gray-400 py-1">No categories yet</span>
+                      )}
+                    </div>
+
+                    {/* Add category input */}
+                    <div className="flex items-center gap-2 mt-2">
+                      <input
+                        type="text"
+                        value={newCategoryName}
+                        onChange={(e) => setNewCategoryName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleAddCategory();
+                          }
+                        }}
+                        className="flex-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500 placeholder-gray-400"
+                        placeholder="Add category... (press Enter)"
+                      />
+                      <button
+                        onClick={handleAddCategory}
+                        disabled={!newCategoryName.trim()}
+                        className="px-2.5 py-1.5 bg-forge-600 hover:bg-forge-700 disabled:opacity-40 rounded-lg text-xs font-medium text-white transition-colors"
+                      >
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* AI Suggestions */}
+                {suggestions.length > 0 && (
+                  <div className="border border-forge-200 rounded-lg p-3 bg-forge-50/50 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-semibold text-forge-700 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3" />
+                        Suggested Categories
+                      </h4>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => {
+                            setSelectedSuggestions(new Set(suggestions.map((s) => s.id)));
+                          }}
+                          className="text-[10px] text-forge-600 hover:underline"
+                        >
+                          Select all
+                        </button>
+                        <button
+                          onClick={handleApplySuggestions}
+                          disabled={selectedSuggestions.size === 0}
+                          className="px-2 py-0.5 bg-forge-600 hover:bg-forge-700 disabled:opacity-40 rounded text-[10px] font-medium text-white transition-colors"
+                        >
+                          Add Selected ({selectedSuggestions.size})
+                        </button>
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      {suggestions.map((s) => (
+                        <label
+                          key={s.id}
+                          className="flex items-start gap-2 p-1.5 rounded hover:bg-forge-100/50 cursor-pointer transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedSuggestions.has(s.id)}
+                            onChange={() => handleToggleSuggestion(s.id)}
+                            className="accent-forge-600 mt-0.5"
+                          />
+                          <div>
+                            <span className="text-xs font-medium text-gray-800">{s.name}</span>
+                            {s.keywords && s.keywords.length > 0 && (
+                              <p className="text-[10px] text-gray-500 mt-0.5">
+                                {s.keywords.join(", ")}
+                              </p>
+                            )}
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Target Countries (comma-separated)</label>
+                  <input
+                    type="text"
+                    value={(() => {
+                      try {
+                        const parsed = JSON.parse(editingProfile.target_countries_json || "[]");
+                        return Array.isArray(parsed) ? parsed.join(", ") : editingProfile.target_countries_json || "";
+                      } catch {
+                        return editingProfile.target_countries_json || "";
+                      }
+                    })()}
+                    onChange={(e) => {
+                      const countries = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                      setEditingProfile({ ...editingProfile, target_countries_json: JSON.stringify(countries) });
+                    }}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
+                    placeholder="DE, FR, GB, NL"
+                  />
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    onClick={handleSaveProfile}
+                    disabled={profileSaving || !editingProfile.name || !editingProfile.domain}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors"
+                  >
+                    {profileSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                    Save
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingProfile(null);
+                      setSuggestions([]);
+                      setSelectedSuggestions(new Set());
+                    }}
+                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs font-medium text-gray-600 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        </>
+      )}
+
+      {/* ============ CONNECTIONS TAB ============ */}
+      {activeTab === "connections" && (
+        <>
+          {/* LLM Backend */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <h2 className="text-sm font-semibold text-gray-900">LLM Backend</h2>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Name</label>
-              <input
-                type="text"
-                value={editingProfile.name || ""}
-                onChange={(e) => setEditingProfile({ ...editingProfile, name: e.target.value })}
+              <label className="block text-xs text-gray-500 mb-1">Active Backend</label>
+              <select
+                value={config.llm_backend || "haiku"}
+                onChange={(e) => updateField("llm_backend", e.target.value)}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
-                placeholder="e.g. Clean Tech UK"
-              />
+              >
+                <option value="haiku">Haiku (Cloud)</option>
+                <option value="deepseek">DeepSeek (Cloud)</option>
+                <option value="ollama">Ollama (Local)</option>
+              </select>
             </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Domain</label>
-              <input
-                type="text"
-                value={editingProfile.domain || ""}
-                onChange={(e) => setEditingProfile({ ...editingProfile, domain: e.target.value })}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
-                placeholder="e.g. cleantech, biotech, manufacturing"
-              />
+            <p className="text-xs text-gray-400">
+              Controls which LLM is used for research, enrichment, and deep enrichment.
+              Haiku is faster and more reliable. Ollama runs locally but may hang on some hardware.
+            </p>
+          </section>
+
+          {/* Anthropic */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-900">Anthropic (Cloud LLM)</h2>
+              <button
+                onClick={handleTestAnthropic}
+                className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
+              >
+                <TestTube className="w-3 h-3" />
+                Test
+                <StatusIcon status={anthropicStatus} />
+              </button>
             </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Description</label>
-              <textarea
-                value={editingProfile.description || ""}
-                onChange={(e) => setEditingProfile({ ...editingProfile, description: e.target.value })}
-                rows={2}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500 resize-none"
-                placeholder="Optional description"
-              />
+            <Input
+              label="API Key"
+              value={config.anthropic_api_key || ""}
+              onChange={(v) => updateField("anthropic_api_key", v)}
+              placeholder="sk-ant-..."
+              type="password"
+              error={validationErrors["anthropic_api_key"]}
+            />
+            {anthropicStatus === "error" && anthropicError && (
+              <p className="text-xs text-red-600">{anthropicError}</p>
+            )}
+            {anthropicStatus === "success" && (
+              <p className="text-xs text-green-600">Connected to Claude Haiku</p>
+            )}
+          </section>
+
+          {/* DeepSeek */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-900">DeepSeek (Cloud LLM)</h2>
+              <button
+                onClick={handleTestDeepSeek}
+                className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
+              >
+                <TestTube className="w-3 h-3" />
+                Test
+                <StatusIcon status={deepseekStatus} />
+              </button>
             </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Categories (JSON array)</label>
-              <textarea
-                value={editingProfile.categories_json || "[]"}
-                onChange={(e) => setEditingProfile({ ...editingProfile, categories_json: e.target.value })}
-                rows={4}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500 resize-none"
-                placeholder='["CNC Machining", "Sheet Metal", ...]'
-              />
+            <Input
+              label="API Key"
+              value={config.deepseek_api_key || ""}
+              onChange={(v) => updateField("deepseek_api_key", v)}
+              placeholder="sk-..."
+              type="password"
+              error={validationErrors["deepseek_api_key"]}
+            />
+            {deepseekStatus === "error" && deepseekError && (
+              <p className="text-xs text-red-600">{deepseekError}</p>
+            )}
+            {deepseekStatus === "success" && (
+              <p className="text-xs text-green-600">Connected to DeepSeek V4</p>
+            )}
+            <p className="text-xs text-gray-400">
+              DeepSeek V4 is significantly cheaper than Haiku ($0.30/$0.50 per MTok vs $0.80/$4.00).
+            </p>
+          </section>
+
+          {/* OpenAI (Embeddings) */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <h2 className="text-sm font-semibold text-gray-900">OpenAI (Semantic Search)</h2>
+            <p className="text-xs text-gray-500">Used for embedding queries in semantic search. Falls back to ForgeOS .env.local if not set here.</p>
+            <Input
+              label="API Key"
+              value={config.openai_api_key || ""}
+              onChange={(v) => updateField("openai_api_key", v)}
+              placeholder="sk-..."
+              type="password"
+            />
+          </section>
+
+          {/* Ollama */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-900">Ollama (Local LLM)</h2>
+              <button
+                onClick={handleTestOllama}
+                className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
+              >
+                <TestTube className="w-3 h-3" />
+                Test
+                <StatusIcon status={ollamaStatus} />
+              </button>
             </div>
+            <Input
+              label="Ollama URL"
+              value={config.ollama_url || ""}
+              onChange={(v) => updateField("ollama_url", v)}
+              placeholder="http://localhost:11434"
+              error={validationErrors["ollama_url"]}
+            />
+            <ModelSelect label="Research Model" value={config.research_model || ""} onChange={(v) => updateField("research_model", v)} models={ollamaModels} placeholder="qwen3:8b" />
+            <ModelSelect label="Enrichment Model" value={config.enrich_model || ""} onChange={(v) => updateField("enrich_model", v)} models={ollamaModels} placeholder="qwen3:30b-a3b-instruct-2507-q4_K_M" />
+            <ModelSelect label="Outreach Model" value={config.outreach_model || ""} onChange={(v) => updateField("outreach_model", v)} models={ollamaModels} placeholder="qwen3:32b" />
+            {ollamaStatus === "error" && ollamaError && (
+              <p className="text-xs text-red-600">{ollamaError}</p>
+            )}
+          </section>
+
+          {/* Brave Search */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-900">Brave Search</h2>
+              <button
+                onClick={handleTestBrave}
+                className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
+              >
+                <TestTube className="w-3 h-3" />
+                Test
+                <StatusIcon status={braveStatus} />
+              </button>
+            </div>
+            <Input
+              label="API Key"
+              value={config.brave_api_key || ""}
+              onChange={(v) => updateField("brave_api_key", v)}
+              placeholder="BSA..."
+              type="password"
+              error={validationErrors["brave_api_key"]}
+            />
+            {braveStatus === "error" && braveError && (
+              <p className="text-xs text-red-600">{braveError}</p>
+            )}
+          </section>
+
+          {/* Supabase */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-900">Supabase (ForgeOS)</h2>
+              <button
+                onClick={handleTestSupabase}
+                className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
+              >
+                <TestTube className="w-3 h-3" />
+                Test
+                <StatusIcon status={supabaseStatus} />
+              </button>
+            </div>
+            <Input
+              label="Project URL"
+              value={config.supabase_url || ""}
+              onChange={(v) => updateField("supabase_url", v)}
+              placeholder="https://xxx.supabase.co"
+              error={validationErrors["supabase_url"]}
+            />
+            <Input
+              label="Service Role Key"
+              value={config.supabase_service_key || ""}
+              onChange={(v) => updateField("supabase_service_key", v)}
+              placeholder="eyJ..."
+              type="password"
+              error={validationErrors["supabase_service_key"]}
+            />
+            <Input
+              label="Foundry ID"
+              value={config.foundry_id || ""}
+              onChange={(v) => updateField("foundry_id", v)}
+              placeholder="UUID of your foundry"
+            />
+            {supabaseStatus === "error" && supabaseError && (
+              <p className="text-xs text-red-600">{supabaseError}</p>
+            )}
+          </section>
+
+          {/* Resend */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-900">Resend (Email)</h2>
+              <button
+                onClick={handleTestResend}
+                className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
+              >
+                <TestTube className="w-3 h-3" />
+                Test
+                <StatusIcon status={resendStatus} />
+              </button>
+            </div>
+            <Input
+              label="API Key"
+              value={config.resend_api_key || ""}
+              onChange={(v) => updateField("resend_api_key", v)}
+              placeholder="re_..."
+              type="password"
+              error={validationErrors["resend_api_key"]}
+            />
+            <Input
+              label="From Email"
+              value={config.from_email || ""}
+              onChange={(v) => updateField("from_email", v)}
+              placeholder="outreach@fractionalforge.com"
+            />
+            {resendStatus === "error" && resendError && (
+              <p className="text-xs text-red-600">{resendError}</p>
+            )}
+          </section>
+
+          {/* Companies House */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <h2 className="text-sm font-semibold text-gray-900">
+              Companies House (UK Enrichment)
+            </h2>
+            <Input
+              label="API Key"
+              value={config.companies_house_api_key || ""}
+              onChange={(v) => updateField("companies_house_api_key", v)}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              type="password"
+            />
+            <p className="text-xs text-gray-400">
+              Used to enrich UK companies with directors, SIC codes, and company
+              status from Companies House.
+            </p>
+          </section>
+        </>
+      )}
+
+      {/* ============ PIPELINE TAB ============ */}
+      {activeTab === "pipeline" && (
+        <>
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <h2 className="text-sm font-semibold text-gray-900">Pipeline</h2>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Target Countries (comma-separated)</label>
-              <input
-                type="text"
-                value={(() => {
-                  try {
-                    const parsed = JSON.parse(editingProfile.target_countries_json || "[]");
-                    return Array.isArray(parsed) ? parsed.join(", ") : editingProfile.target_countries_json || "";
-                  } catch {
-                    return editingProfile.target_countries_json || "";
-                  }
-                })()}
-                onChange={(e) => {
-                  const countries = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
-                  setEditingProfile({ ...editingProfile, target_countries_json: JSON.stringify(countries) });
+              <label className="block text-xs text-gray-500 mb-1">Schedules</label>
+              <ScheduleCalendar
+                schedules={(() => { try { return JSON.parse(config.schedules || "[]"); } catch { return []; } })()}
+                templateId={config.auto_outreach_template_id}
+                onChange={async (schedules) => {
+                  const json = JSON.stringify(schedules);
+                  updateField("schedules", json);
+                  try { await setConfig("schedules", json); } catch {}
                 }}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
-                placeholder="DE, FR, GB, NL"
               />
             </div>
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                onClick={handleSaveProfile}
-                disabled={profileSaving || !editingProfile.name || !editingProfile.domain}
-                className="flex items-center gap-1.5 px-4 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-xs font-medium text-white transition-colors"
-              >
-                {profileSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-                Save
-              </button>
-              <button
-                onClick={() => setEditingProfile(null)}
-                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs font-medium text-gray-600 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-      </section>
-
-      {/* LLM Backend */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <h2 className="text-sm font-semibold text-gray-900">LLM Backend</h2>
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Active Backend</label>
-          <select
-            value={config.llm_backend || "haiku"}
-            onChange={(e) => updateField("llm_backend", e.target.value)}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
-          >
-            <option value="haiku">Haiku (Cloud)</option>
-            <option value="deepseek">DeepSeek (Cloud)</option>
-            <option value="ollama">Ollama (Local)</option>
-          </select>
-        </div>
-        <p className="text-xs text-gray-400">
-          Controls which LLM is used for research, enrichment, and deep enrichment.
-          Haiku is faster and more reliable. Ollama runs locally but may hang on some hardware.
-        </p>
-      </section>
-
-      {/* Anthropic */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-900">Anthropic (Cloud LLM)</h2>
-          <button
-            onClick={handleTestAnthropic}
-            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
-          >
-            <TestTube className="w-3 h-3" />
-            Test
-            <StatusIcon status={anthropicStatus} />
-          </button>
-        </div>
-        <Input
-          label="API Key"
-          value={config.anthropic_api_key || ""}
-          onChange={(v) => updateField("anthropic_api_key", v)}
-          placeholder="sk-ant-..."
-          type="password"
-          error={validationErrors["anthropic_api_key"]}
-        />
-        {anthropicStatus === "error" && anthropicError && (
-          <p className="text-xs text-red-600">{anthropicError}</p>
-        )}
-        {anthropicStatus === "success" && (
-          <p className="text-xs text-green-600">Connected to Claude Haiku</p>
-        )}
-      </section>
-
-      {/* DeepSeek */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-900">DeepSeek (Cloud LLM)</h2>
-          <button
-            onClick={handleTestDeepSeek}
-            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
-          >
-            <TestTube className="w-3 h-3" />
-            Test
-            <StatusIcon status={deepseekStatus} />
-          </button>
-        </div>
-        <Input
-          label="API Key"
-          value={config.deepseek_api_key || ""}
-          onChange={(v) => updateField("deepseek_api_key", v)}
-          placeholder="sk-..."
-          type="password"
-          error={validationErrors["deepseek_api_key"]}
-        />
-        {deepseekStatus === "error" && deepseekError && (
-          <p className="text-xs text-red-600">{deepseekError}</p>
-        )}
-        {deepseekStatus === "success" && (
-          <p className="text-xs text-green-600">Connected to DeepSeek V4</p>
-        )}
-        <p className="text-xs text-gray-400">
-          DeepSeek V4 is significantly cheaper than Haiku ($0.30/$0.50 per MTok vs $0.80/$4.00).
-        </p>
-      </section>
-
-      {/* OpenAI (Embeddings) */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <h2 className="text-sm font-semibold text-gray-900">OpenAI (Semantic Search)</h2>
-        <p className="text-xs text-gray-500">Used for embedding queries in semantic search. Falls back to ForgeOS .env.local if not set here.</p>
-        <Input
-          label="API Key"
-          value={config.openai_api_key || ""}
-          onChange={(v) => updateField("openai_api_key", v)}
-          placeholder="sk-..."
-          type="password"
-        />
-      </section>
-
-      {/* Ollama */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-900">Ollama (Local LLM)</h2>
-          <button
-            onClick={handleTestOllama}
-            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
-          >
-            <TestTube className="w-3 h-3" />
-            Test
-            <StatusIcon status={ollamaStatus} />
-          </button>
-        </div>
-        <Input
-          label="Ollama URL"
-          value={config.ollama_url || ""}
-          onChange={(v) => updateField("ollama_url", v)}
-          placeholder="http://localhost:11434"
-          error={validationErrors["ollama_url"]}
-        />
-        <ModelSelect label="Research Model" value={config.research_model || ""} onChange={(v) => updateField("research_model", v)} models={ollamaModels} placeholder="qwen3:8b" />
-        <ModelSelect label="Enrichment Model" value={config.enrich_model || ""} onChange={(v) => updateField("enrich_model", v)} models={ollamaModels} placeholder="qwen3:30b-a3b-instruct-2507-q4_K_M" />
-        <ModelSelect label="Outreach Model" value={config.outreach_model || ""} onChange={(v) => updateField("outreach_model", v)} models={ollamaModels} placeholder="qwen3:32b" />
-        {ollamaStatus === "error" && ollamaError && (
-          <p className="text-xs text-red-600">{ollamaError}</p>
-        )}
-      </section>
-
-      {/* Brave Search */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-900">Brave Search</h2>
-          <button
-            onClick={handleTestBrave}
-            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
-          >
-            <TestTube className="w-3 h-3" />
-            Test
-            <StatusIcon status={braveStatus} />
-          </button>
-        </div>
-        <Input
-          label="API Key"
-          value={config.brave_api_key || ""}
-          onChange={(v) => updateField("brave_api_key", v)}
-          placeholder="BSA..."
-          type="password"
-          error={validationErrors["brave_api_key"]}
-        />
-        {braveStatus === "error" && braveError && (
-          <p className="text-xs text-red-600">{braveError}</p>
-        )}
-      </section>
-
-      {/* Supabase */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-900">Supabase (ForgeOS)</h2>
-          <button
-            onClick={handleTestSupabase}
-            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
-          >
-            <TestTube className="w-3 h-3" />
-            Test
-            <StatusIcon status={supabaseStatus} />
-          </button>
-        </div>
-        <Input
-          label="Project URL"
-          value={config.supabase_url || ""}
-          onChange={(v) => updateField("supabase_url", v)}
-          placeholder="https://xxx.supabase.co"
-          error={validationErrors["supabase_url"]}
-        />
-        <Input
-          label="Service Role Key"
-          value={config.supabase_service_key || ""}
-          onChange={(v) => updateField("supabase_service_key", v)}
-          placeholder="eyJ..."
-          type="password"
-          error={validationErrors["supabase_service_key"]}
-        />
-        <Input
-          label="Foundry ID"
-          value={config.foundry_id || ""}
-          onChange={(v) => updateField("foundry_id", v)}
-          placeholder="UUID of your foundry"
-        />
-        {supabaseStatus === "error" && supabaseError && (
-          <p className="text-xs text-red-600">{supabaseError}</p>
-        )}
-      </section>
-
-      {/* Resend */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-900">Resend (Email)</h2>
-          <button
-            onClick={handleTestResend}
-            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-700 transition-colors"
-          >
-            <TestTube className="w-3 h-3" />
-            Test
-            <StatusIcon status={resendStatus} />
-          </button>
-        </div>
-        <Input
-          label="API Key"
-          value={config.resend_api_key || ""}
-          onChange={(v) => updateField("resend_api_key", v)}
-          placeholder="re_..."
-          type="password"
-          error={validationErrors["resend_api_key"]}
-        />
-        <Input
-          label="From Email"
-          value={config.from_email || ""}
-          onChange={(v) => updateField("from_email", v)}
-          placeholder="outreach@fractionalforge.com"
-        />
-        {resendStatus === "error" && resendError && (
-          <p className="text-xs text-red-600">{resendError}</p>
-        )}
-      </section>
-
-      {/* Companies House */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <h2 className="text-sm font-semibold text-gray-900">
-          Companies House (UK Enrichment)
-        </h2>
-        <Input
-          label="API Key"
-          value={config.companies_house_api_key || ""}
-          onChange={(v) => updateField("companies_house_api_key", v)}
-          placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-          type="password"
-        />
-        <p className="text-xs text-gray-400">
-          Used to enrich UK companies with directors, SIC codes, and company
-          status from Companies House.
-        </p>
-      </section>
-
-      {/* Pipeline */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <h2 className="text-sm font-semibold text-gray-900">Pipeline</h2>
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Schedules</label>
-          <ScheduleCalendar
-            schedules={(() => { try { return JSON.parse(config.schedules || "[]"); } catch { return []; } })()}
-            templateId={config.auto_outreach_template_id}
-            onChange={async (schedules) => {
-              const json = JSON.stringify(schedules);
-              updateField("schedules", json);
-              try { await setConfig("schedules", json); } catch {}
-            }}
-          />
-        </div>
-        <Input
-          label="Daily Email Limit"
-          value={config.daily_email_limit || ""}
-          onChange={(v) => updateField("daily_email_limit", v)}
-          placeholder="30"
-          type="number"
-          min={1}
-          max={500}
-        />
-        <Input
-          label="Relevance Threshold (0-100)"
-          value={config.relevance_threshold || ""}
-          onChange={(v) => updateField("relevance_threshold", v)}
-          placeholder="60"
-          type="number"
-          min={0}
-          max={100}
-        />
-        <Input
-          label="Categories per Run"
-          value={config.categories_per_run || ""}
-          onChange={(v) => updateField("categories_per_run", v)}
-          placeholder="8"
-          type="number"
-          min={1}
-          max={37}
-        />
-        <Input
-          label="Pipeline Batch Size"
-          value={config.pipeline_batch_size || ""}
-          onChange={(v) => updateField("pipeline_batch_size", v)}
-          placeholder="100"
-          type="number"
-          min={1}
-          max={10000}
-        />
-        <Input
-          label="Enrich Concurrency (1-10)"
-          value={config.enrich_concurrency || ""}
-          onChange={(v) => updateField("enrich_concurrency", v)}
-          placeholder="3"
-          type="number"
-          min={1}
-          max={10}
-        />
-        <Input
-          label="Deep Enrich Concurrency (1-5)"
-          value={config.deep_enrich_concurrency || ""}
-          onChange={(v) => updateField("deep_enrich_concurrency", v)}
-          placeholder="2"
-          type="number"
-          min={1}
-          max={5}
-        />
-        <Input
-          label="Target Countries (JSON)"
-          value={config.target_countries || ""}
-          onChange={(v) => updateField("target_countries", v)}
-          placeholder='["DE","FR","NL","BE","IT","GB"]'
-        />
-        <div className="border-t border-gray-100 pt-3">
-          {reenrichStage === "confirm" && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-2">
-              <p className="text-sm font-medium text-amber-800">
-                This will reset all enriched, enriching, and error companies back to discovered.
-              </p>
-              <p className="text-xs text-amber-600 mt-1">
-                They will need to go through the enrichment pipeline again.
-              </p>
-              <div className="flex gap-2 mt-2.5">
+            <Input
+              label="Daily Email Limit"
+              value={config.daily_email_limit || ""}
+              onChange={(v) => updateField("daily_email_limit", v)}
+              placeholder="30"
+              type="number"
+              min={1}
+              max={500}
+            />
+            <Input
+              label="Relevance Threshold (0-100)"
+              value={config.relevance_threshold || ""}
+              onChange={(v) => updateField("relevance_threshold", v)}
+              placeholder="60"
+              type="number"
+              min={0}
+              max={100}
+            />
+            <Input
+              label="Categories per Run"
+              value={config.categories_per_run || ""}
+              onChange={(v) => updateField("categories_per_run", v)}
+              placeholder="8"
+              type="number"
+              min={1}
+              max={37}
+            />
+            <Input
+              label="Pipeline Batch Size"
+              value={config.pipeline_batch_size || ""}
+              onChange={(v) => updateField("pipeline_batch_size", v)}
+              placeholder="100"
+              type="number"
+              min={1}
+              max={10000}
+            />
+            <Input
+              label="Enrich Concurrency (1-10)"
+              value={config.enrich_concurrency || ""}
+              onChange={(v) => updateField("enrich_concurrency", v)}
+              placeholder="3"
+              type="number"
+              min={1}
+              max={10}
+            />
+            <Input
+              label="Deep Enrich Concurrency (1-5)"
+              value={config.deep_enrich_concurrency || ""}
+              onChange={(v) => updateField("deep_enrich_concurrency", v)}
+              placeholder="2"
+              type="number"
+              min={1}
+              max={5}
+            />
+            <Input
+              label="Target Countries (JSON)"
+              value={config.target_countries || ""}
+              onChange={(v) => updateField("target_countries", v)}
+              placeholder='["DE","FR","NL","BE","IT","GB"]'
+            />
+            <div className="border-t border-gray-100 pt-3">
+              {reenrichStage === "confirm" && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-2">
+                  <p className="text-sm font-medium text-amber-800">
+                    This will reset all enriched, enriching, and error companies back to discovered.
+                  </p>
+                  <p className="text-xs text-amber-600 mt-1">
+                    They will need to go through the enrichment pipeline again.
+                  </p>
+                  <div className="flex gap-2 mt-2.5">
+                    <button
+                      onClick={handleReenrichAll}
+                      className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 rounded-lg text-xs font-medium text-white transition-colors"
+                    >
+                      Yes, Reset All
+                    </button>
+                    <button
+                      onClick={() => setReenrichStage("idle")}
+                      className="px-3 py-1.5 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg text-xs font-medium text-gray-600 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+              {reenrichStage !== "confirm" && (
                 <button
                   onClick={handleReenrichAll}
-                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 rounded-lg text-xs font-medium text-white transition-colors"
+                  disabled={reenrichStage === "running"}
+                  className="flex items-center gap-2 px-4 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-200 disabled:opacity-50 rounded-lg text-sm font-medium text-amber-800 transition-colors"
                 >
-                  Yes, Reset All
+                  {reenrichStage === "running" ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-4 h-4" />
+                  )}
+                  {reenrichStage === "running" ? "Resetting..." : "Re-enrich All Companies"}
                 </button>
-                <button
-                  onClick={() => setReenrichStage("idle")}
-                  className="px-3 py-1.5 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg text-xs font-medium text-gray-600 transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
+              )}
+              {reenrichStage === "done" && (
+                <p className="text-xs text-green-600 mt-1.5 flex items-center gap-1">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  {reenrichCount} companies reset to discovered — run the Enrich pipeline to process them.
+                </p>
+              )}
+              {reenrichStage === "error" && (
+                <p className="text-xs text-red-600 mt-1.5 flex items-center gap-1">
+                  <XCircle className="w-3.5 h-3.5" />
+                  Re-enrich reset failed
+                </p>
+              )}
+              {reenrichStage === "idle" && (
+                <p className="text-xs text-gray-400 mt-1.5">
+                  Resets enriched, enriching, and error companies back to discovered so they go through the new website-scraping enrichment pipeline.
+                </p>
+              )}
             </div>
-          )}
-          {reenrichStage !== "confirm" && (
+          </section>
+
+          {/* Autopilot Outreach */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <h2 className="text-sm font-semibold text-gray-900">Autopilot Outreach</h2>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={config.auto_outreach_enabled === "true"}
+                  onChange={(e) =>
+                    updateField("auto_outreach_enabled", e.target.checked ? "true" : "false")
+                  }
+                  className="accent-forge-600 w-4 h-4"
+                />
+                <span className="text-sm text-gray-700">Enable autopilot</span>
+              </label>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Template</label>
+              <select
+                value={config.auto_outreach_template_id || ""}
+                onChange={(e) => updateField("auto_outreach_template_id", e.target.value)}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
+              >
+                <option value="">Select a template...</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Input
+              label="Batch Size (emails per hour, 1-20)"
+              value={config.outreach_batch_size || ""}
+              onChange={(v) => updateField("outreach_batch_size", v)}
+              placeholder="5"
+              type="number"
+              min={1}
+              max={20}
+            />
+            <div className="bg-gray-50 border border-gray-100 rounded-lg p-3 space-y-1.5">
+              <p className="text-xs font-medium text-gray-600">How it works across multiple days:</p>
+              <ol className="text-xs text-gray-400 list-decimal list-inside space-y-1">
+                <li>
+                  At your scheduled time each day, the pipeline runs (research &rarr; enrich &rarr; push),
+                  then auto-generates personalised drafts for all eligible companies and auto-approves them.
+                </li>
+                <li>
+                  Starting the next hour, the batch sender drip-sends {config.outreach_batch_size || "5"} emails/hour
+                  until the daily limit ({config.daily_email_limit || "30"}) is reached, then stops for the day.
+                </li>
+                <li>
+                  Any unsent approved emails carry over to the next day — they get sent first (FIFO),
+                  before new drafts from that day&rsquo;s pipeline run.
+                </li>
+                <li>
+                  The daily sent count resets at midnight, so the cycle repeats automatically each day.
+                </li>
+              </ol>
+            </div>
+          </section>
+        </>
+      )}
+
+      {/* ============ DATA TAB ============ */}
+      {activeTab === "data" && (
+        <>
+          {/* Database */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <h2 className="text-sm font-semibold text-gray-900">Database</h2>
             <button
-              onClick={handleReenrichAll}
-              disabled={reenrichStage === "running"}
-              className="flex items-center gap-2 px-4 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-200 disabled:opacity-50 rounded-lg text-sm font-medium text-amber-800 transition-colors"
+              onClick={handleBackup}
+              disabled={backingUp}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 rounded-lg text-sm font-medium text-gray-700 transition-colors"
             >
-              {reenrichStage === "running" ? (
+              {backingUp ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
-                <RefreshCw className="w-4 h-4" />
+                <HardDrive className="w-4 h-4" />
               )}
-              {reenrichStage === "running" ? "Resetting..." : "Re-enrich All Companies"}
+              Backup Database
             </button>
-          )}
-          {reenrichStage === "done" && (
-            <p className="text-xs text-green-600 mt-1.5 flex items-center gap-1">
-              <CheckCircle className="w-3.5 h-3.5" />
-              {reenrichCount} companies reset to discovered — run the Enrich pipeline to process them.
+            {backupPath && backupPath !== "error" && (
+              <p className="text-xs text-green-600">
+                Backup saved: {backupPath}
+              </p>
+            )}
+            {backupPath === "error" && (
+              <p className="text-xs text-red-600">Backup failed</p>
+            )}
+            <p className="text-xs text-gray-400">
+              Creates a copy of the database. Backups also run automatically before each pipeline run.
             </p>
-          )}
-          {reenrichStage === "error" && (
-            <p className="text-xs text-red-600 mt-1.5 flex items-center gap-1">
-              <XCircle className="w-3.5 h-3.5" />
-              Re-enrich reset failed
-            </p>
-          )}
-          {reenrichStage === "idle" && (
-            <p className="text-xs text-gray-400 mt-1.5">
-              Resets enriched, enriching, and error companies back to discovered so they go through the new website-scraping enrichment pipeline.
-            </p>
-          )}
-        </div>
-      </section>
+          </section>
 
-      {/* Autopilot Outreach */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <h2 className="text-sm font-semibold text-gray-900">Autopilot Outreach</h2>
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={config.auto_outreach_enabled === "true"}
-              onChange={(e) =>
-                updateField("auto_outreach_enabled", e.target.checked ? "true" : "false")
-              }
-              className="accent-forge-600 w-4 h-4"
-            />
-            <span className="text-sm text-gray-700">Enable autopilot</span>
-          </label>
-        </div>
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Template</label>
-          <select
-            value={config.auto_outreach_template_id || ""}
-            onChange={(e) => updateField("auto_outreach_template_id", e.target.value)}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-forge-500"
-          >
-            <option value="">Select a template...</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <Input
-          label="Batch Size (emails per hour, 1-20)"
-          value={config.outreach_batch_size || ""}
-          onChange={(v) => updateField("outreach_batch_size", v)}
-          placeholder="5"
-          type="number"
-          min={1}
-          max={20}
-        />
-        <div className="bg-gray-50 border border-gray-100 rounded-lg p-3 space-y-1.5">
-          <p className="text-xs font-medium text-gray-600">How it works across multiple days:</p>
-          <ol className="text-xs text-gray-400 list-decimal list-inside space-y-1">
-            <li>
-              At your scheduled time each day, the pipeline runs (research → enrich → push),
-              then auto-generates personalised drafts for all eligible companies and auto-approves them.
-            </li>
-            <li>
-              Starting the next hour, the batch sender drip-sends {config.outreach_batch_size || "5"} emails/hour
-              until the daily limit ({config.daily_email_limit || "30"}) is reached, then stops for the day.
-            </li>
-            <li>
-              Any unsent approved emails carry over to the next day — they get sent first (FIFO),
-              before new drafts from that day's pipeline run.
-            </li>
-            <li>
-              The daily sent count resets at midnight, so the cycle repeats automatically each day.
-            </li>
-          </ol>
-        </div>
-      </section>
-
-      {/* Database */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <h2 className="text-sm font-semibold text-gray-900">Database</h2>
-        <button
-          onClick={handleBackup}
-          disabled={backingUp}
-          className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 rounded-lg text-sm font-medium text-gray-700 transition-colors"
-        >
-          {backingUp ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <HardDrive className="w-4 h-4" />
-          )}
-          Backup Database
-        </button>
-        {backupPath && backupPath !== "error" && (
-          <p className="text-xs text-green-600">
-            Backup saved: {backupPath}
-          </p>
-        )}
-        {backupPath === "error" && (
-          <p className="text-xs text-red-600">Backup failed</p>
-        )}
-        <p className="text-xs text-gray-400">
-          Creates a copy of the database. Backups also run automatically before each pipeline run.
-        </p>
-      </section>
-
-      {/* Import / Export */}
-      <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-        <h2 className="text-sm font-semibold text-gray-900">Import / Export</h2>
-        <div className="flex items-center gap-3">
-          <button onClick={handleExportConfig} className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium text-gray-700 transition-colors">
-            <Download className="w-4 h-4" />
-            Export Config
-          </button>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={excludeSecrets} onChange={(e) => setExcludeSecrets(e.target.checked)} className="accent-forge-600" />
-            <span className="text-xs text-gray-500">Exclude API keys</span>
-          </label>
-        </div>
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Import Config</label>
-          <input type="file" accept=".json" onChange={handleImportFile} className="text-sm text-gray-500 file:mr-2 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200" />
-        </div>
-        {importPreview && (
-          <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
-            <p className="text-xs font-medium text-gray-700">Preview: {Object.keys(importPreview).length} keys</p>
-            <div className="max-h-32 overflow-y-auto text-xs text-gray-500 font-mono">
-              {Object.keys(importPreview).map((k) => <div key={k}>{k}</div>)}
+          {/* Import / Export */}
+          <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
+            <h2 className="text-sm font-semibold text-gray-900">Import / Export</h2>
+            <div className="flex items-center gap-3">
+              <button onClick={handleExportConfig} className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium text-gray-700 transition-colors">
+                <Download className="w-4 h-4" />
+                Export Config
+              </button>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={excludeSecrets} onChange={(e) => setExcludeSecrets(e.target.checked)} className="accent-forge-600" />
+                <span className="text-xs text-gray-500">Exclude API keys</span>
+              </label>
             </div>
-            <div className="flex gap-2">
-              <button onClick={handleApplyImport} className="px-3 py-1.5 bg-forge-600 hover:bg-forge-700 rounded-lg text-xs font-medium text-white">Apply</button>
-              <button onClick={() => setImportPreview(null)} className="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 rounded-lg text-xs font-medium text-gray-700">Cancel</button>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Import Config</label>
+              <input type="file" accept=".json" onChange={handleImportFile} className="text-sm text-gray-500 file:mr-2 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200" />
             </div>
-          </div>
-        )}
-      </section>
+            {importPreview && (
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
+                <p className="text-xs font-medium text-gray-700">Preview: {Object.keys(importPreview).length} keys</p>
+                <div className="max-h-32 overflow-y-auto text-xs text-gray-500 font-mono">
+                  {Object.keys(importPreview).map((k) => <div key={k}>{k}</div>)}
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={handleApplyImport} className="px-3 py-1.5 bg-forge-600 hover:bg-forge-700 rounded-lg text-xs font-medium text-white">Apply</button>
+                  <button onClick={() => setImportPreview(null)} className="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 rounded-lg text-xs font-medium text-gray-700">Cancel</button>
+                </div>
+              </div>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }
@@ -1132,7 +1428,6 @@ function ModelSelect({ label, value, onChange, models, placeholder }: {
   label: string; value: string; onChange: (v: string) => void; models: string[]; placeholder: string;
 }) {
   if (models.length > 0) {
-    // Include current value in options even if not in Ollama list (e.g. model was pulled after last test)
     const options = value && !models.includes(value) ? [value, ...models] : models;
     return (
       <div>

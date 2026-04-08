@@ -45,7 +45,7 @@ function getNodePos(id: string) {
 
 export default function FlowChart({ nodes }: FlowChartProps) {
   return (
-    <div className="relative bg-white rounded-xl border border-gray-200 shadow-sm min-h-[420px]" style={{ height: "calc(100vh - 280px)" }}>
+    <div className="relative bg-white rounded-xl border border-gray-200 shadow-sm max-h-[420px]" style={{ minHeight: "380px" }}>
       <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 0 }}>
         {CONNECTORS.map((conn) => {
           const from = getNodePos(conn.from);
