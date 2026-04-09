@@ -1631,17 +1631,18 @@ impl Database {
 
     /// Get candidates for deep enrichment trial: mix of top/mid/lower quality enriched companies.
     pub fn get_deep_enrich_candidates(&self, count: i64) -> Result<Vec<Value>> {
+        let profile_id = self.get_active_profile_id();
         let conn = self.conn.lock().unwrap();
         let per_tier = count / 3;
         let remainder = count - per_tier * 3;
 
-        // Top tier
+        // Top tier (filtered by active profile)
         let mut stmt = conn.prepare(
-            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL ORDER BY enrichment_quality DESC LIMIT ?1"
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL AND search_profile_id = ?2 ORDER BY enrichment_quality DESC LIMIT ?1"
         )?;
         let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
         let mut rows: Vec<Value> = stmt
-            .query_map([per_tier + remainder], |row| {
+            .query_map(rusqlite::params![per_tier + remainder, profile_id], |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col) in columns.iter().enumerate() {
                     let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
@@ -1658,11 +1659,11 @@ impl Database {
 
         // Mid tier
         let mut stmt2 = conn.prepare(
-            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL ORDER BY enrichment_quality DESC LIMIT ?1 OFFSET 100"
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL AND search_profile_id = ?2 ORDER BY enrichment_quality DESC LIMIT ?1 OFFSET 100"
         )?;
         let columns2: Vec<String> = stmt2.column_names().iter().map(|c| c.to_string()).collect();
         let mid_rows: Vec<Value> = stmt2
-            .query_map([per_tier], |row| {
+            .query_map(rusqlite::params![per_tier, profile_id], |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col) in columns2.iter().enumerate() {
                     let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
@@ -1684,11 +1685,11 @@ impl Database {
 
         // Lower tier
         let mut stmt3 = conn.prepare(
-            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL ORDER BY enrichment_quality DESC LIMIT ?1 OFFSET 500"
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL AND search_profile_id = ?2 ORDER BY enrichment_quality DESC LIMIT ?1 OFFSET 500"
         )?;
         let columns3: Vec<String> = stmt3.column_names().iter().map(|c| c.to_string()).collect();
         let lower_rows: Vec<Value> = stmt3
-            .query_map([per_tier], |row| {
+            .query_map(rusqlite::params![per_tier, profile_id], |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col) in columns3.iter().enumerate() {
                     let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
@@ -1725,13 +1726,14 @@ impl Database {
     /// Get a batch of unenriched candidates for the deep enrichment drain-loop.
     /// Simple query with LIMIT — no stratified sampling (that's only for trial mode).
     pub fn get_deep_enrich_batch(&self, limit: i64) -> Result<Vec<Value>> {
+        let profile_id = self.get_active_profile_id();
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL ORDER BY enrichment_quality DESC LIMIT ?1"
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL AND search_profile_id = ?2 ORDER BY enrichment_quality DESC LIMIT ?1"
         )?;
         let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
         let rows: Vec<Value> = stmt
-            .query_map([limit], |row| {
+            .query_map(rusqlite::params![limit, profile_id], |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col) in columns.iter().enumerate() {
                     let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
@@ -1767,14 +1769,15 @@ impl Database {
 
     /// Get deep enrich candidates filtered by sector (category, subcategory, or specialties).
     pub fn get_deep_enrich_candidates_by_sector(&self, sector: &str, count: i64) -> Result<Vec<Value>> {
+        let profile_id = self.get_active_profile_id();
         let conn = self.conn.lock().unwrap();
         let pattern = format!("%{}%", sector);
         let mut stmt = conn.prepare(
-            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL AND (category LIKE ?1 OR subcategory LIKE ?1 OR specialties LIKE ?1) ORDER BY enrichment_quality DESC LIMIT ?2"
+            "SELECT * FROM companies WHERE status IN ('enriched','approved','pushed') AND website_url IS NOT NULL AND website_url != '' AND deep_enriched_at IS NULL AND search_profile_id = ?3 AND (category LIKE ?1 OR subcategory LIKE ?1 OR specialties LIKE ?1) ORDER BY enrichment_quality DESC LIMIT ?2"
         )?;
         let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
         let rows: Vec<Value> = stmt
-            .query_map(rusqlite::params![pattern, count], |row| {
+            .query_map(rusqlite::params![pattern, count, profile_id], |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col) in columns.iter().enumerate() {
                     let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
