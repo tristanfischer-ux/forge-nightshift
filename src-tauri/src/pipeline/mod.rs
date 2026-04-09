@@ -16,6 +16,7 @@ mod synthesize;
 mod director_intel;
 mod activity;
 mod embeddings;
+mod investor_match;
 
 use anyhow::Result;
 use chrono::{Datelike, Timelike};
@@ -298,6 +299,29 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
             let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "completed"}));
         }
 
+        // Step 7: Activity feed (company news)
+        if !is_cancelled() {
+            log::info!("[Batch] Wave {}: Starting activity feed", wave);
+            let _ = app.emit("pipeline:stage", json!({"stage": "activity", "status": "running"}));
+            let _ = activity::run(app, job_id, &wave_config).await;
+            let _ = app.emit("pipeline:stage", json!({"stage": "activity", "status": "completed"}));
+        }
+
+        // Step 8: Investor matching (cross-reference with ForgeOS investors)
+        if !is_cancelled() {
+            let match_needed = {
+                let db: tauri::State<'_, Database> = app.state();
+                let profile_id = db.get_active_profile_id();
+                db.count_needing_investor_match(&profile_id).unwrap_or(0)
+            };
+            if match_needed > 0 {
+                log::info!("[Batch] Wave {}: Starting investor matching ({} need matching)", wave, match_needed);
+                let _ = app.emit("pipeline:stage", json!({"stage": "investor_match", "status": "running"}));
+                let _ = investor_match::run(app, job_id, &wave_config).await;
+                let _ = app.emit("pipeline:stage", json!({"stage": "investor_match", "status": "completed"}));
+            }
+        }
+
         // Count remaining work across ALL stages for this profile
         let (discovered_remaining, enriched_needing_verify, verified_needing_synthesis) = {
             let db: tauri::State<'_, Database> = app.state();
@@ -492,6 +516,7 @@ async fn run_single_stage(
         "companies_house" => companies_house::run(app, job_id, config).await,
         "director_intel" => director_intel::run(app, job_id, config).await,
         "embeddings" => embeddings::run(app, job_id, config).await,
+        "investor_match" => investor_match::run(app, job_id, config).await,
         "learn_outreach" => outreach_learner::run_learning_cycle(app, job_id, config).await,
         s if s.starts_with("template_outreach:") => {
             let template_id = &s["template_outreach:".len()..];

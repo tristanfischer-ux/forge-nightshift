@@ -1495,6 +1495,15 @@ fn get_company_verification(
 }
 
 #[tauri::command]
+fn get_investor_matches(
+    db: tauri::State<'_, Database>,
+    company_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    db.get_investor_matches(&company_id, 5)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn search_semantic(
     db: tauri::State<'_, Database>,
     cache: tauri::State<'_, Mutex<EmbeddingCache>>,
@@ -1760,6 +1769,7 @@ pub fn run() {
             get_company_activities,
             get_company_intel,
             get_company_verification,
+            get_investor_matches,
             get_search_profiles,
             save_search_profile,
             delete_search_profile,

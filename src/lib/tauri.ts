@@ -655,6 +655,25 @@ export async function getCompanyVerification(companyId: string) {
   });
 }
 
+// --- Investor Matches ---
+
+export interface InvestorMatch {
+  investor_listing_id: string;
+  investor_name: string | null;
+  investor_sector_focus: string | null;
+  investor_stage_focus: string | null;
+  investor_geo_focus: string | null;
+  match_score: number;
+  match_reasons: string | null;
+  created_at: string | null;
+}
+
+export async function getInvestorMatches(companyId: string) {
+  return invoke<InvestorMatch[]>("get_investor_matches", {
+    companyId,
+  });
+}
+
 // --- Semantic Search (Phase 6) ---
 
 export interface SemanticSearchResult {

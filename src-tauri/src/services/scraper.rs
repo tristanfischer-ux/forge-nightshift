@@ -305,7 +305,7 @@ pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
 
     if subpage_urls.is_empty() {
         log::info!("Deep scrape: no scored subpages for {}, using root only", url);
-        let signals = extract_signals(&root_text, &all_emails);
+        let signals = extract_signals(&root_text, &all_emails, &root_html);
         let content = format!("{}\n--- PAGE: / ---\n{}", signals, root_text);
         return Ok(truncate_text(&content, 16000, url));
     }
@@ -320,7 +320,7 @@ pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
     let consecutive_failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let circuit_broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    let subpage_results: Vec<(String, Option<String>, Vec<String>)> = stream::iter(top_urls)
+    let subpage_results: Vec<(String, Option<String>, Vec<String>, Option<String>)> = stream::iter(top_urls)
         .map(|sub_url| {
             let client = client.clone();
             let consecutive_failures = consecutive_failures.clone();
@@ -329,7 +329,7 @@ pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
                 // Check circuit breaker before fetching
                 if circuit_broken.load(std::sync::atomic::Ordering::Relaxed) {
                     log::warn!("Deep scrape: circuit breaker tripped, skipping {}", sub_url);
-                    return (sub_url, None, vec![]);
+                    return (sub_url, None, vec![], None);
                 }
 
                 match fetch_html(&client, &sub_url).await {
@@ -338,7 +338,7 @@ pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
                         consecutive_failures.store(0, std::sync::atomic::Ordering::Relaxed);
                         let emails = extract_emails(&html);
                         let text = html_to_text(&html);
-                        (sub_url, Some(text), emails)
+                        (sub_url, Some(text), emails, Some(html))
                     }
                     Err(e) => {
                         let count = consecutive_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -347,7 +347,7 @@ pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
                             circuit_broken.store(true, std::sync::atomic::Ordering::Relaxed);
                             log::warn!("Deep scrape: circuit breaker tripped after {} consecutive failures on {}", count, extract_base_url(&sub_url));
                         }
-                        (sub_url, None, vec![])
+                        (sub_url, None, vec![], None)
                     }
                 }
             }
@@ -356,10 +356,11 @@ pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
         .collect()
         .await;
 
-    // Collect all page text
+    // Collect all page text and HTML for signal extraction
     let mut combined = format!("--- PAGE: / ---\n{}", root_text);
     let mut all_text = root_text.clone();
-    for (sub_url, text, emails) in &subpage_results {
+    let mut all_html = root_html;
+    for (sub_url, text, emails, html) in &subpage_results {
         all_emails.extend(emails.iter().cloned());
         if let Some(t) = text {
             if !t.is_empty() {
@@ -369,6 +370,10 @@ pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
                 all_text.push_str(t);
             }
         }
+        if let Some(h) = html {
+            all_html.push(' ');
+            all_html.push_str(h);
+        }
     }
 
     // Deduplicate emails
@@ -377,8 +382,8 @@ pub async fn fetch_website_text_deep(url: &str) -> Result<String> {
         all_emails.into_iter().filter(|e| seen.insert(e.clone())).collect()
     };
 
-    // Extract structured signals from all collected text
-    let signals = extract_signals(&all_text, &unique_emails);
+    // Extract structured signals from all collected text and HTML
+    let signals = extract_signals(&all_text, &unique_emails, &all_html);
 
     // Prepend signals header
     combined = format!("{}\n{}", signals, combined);
@@ -471,9 +476,10 @@ fn score_url_by_priority(path_lower: &str) -> usize {
     best_score
 }
 
-/// Extract structured signals from page text.
-/// Finds people names+titles, email addresses, LinkedIn URLs, and hiring indicators.
-fn extract_signals(text: &str, emails: &[String]) -> String {
+/// Extract structured signals from page text and raw HTML.
+/// Finds people names+titles, email addresses, LinkedIn URLs, social media URLs, and hiring indicators.
+/// `html` parameter is the raw HTML (for extracting href-based social links); pass "" if unavailable.
+fn extract_signals(text: &str, emails: &[String], html: &str) -> String {
     let mut sections: Vec<String> = Vec::new();
 
     // 1. People names and titles — "Name, Title" or "Name - Title" patterns
@@ -499,11 +505,83 @@ fn extract_signals(text: &str, emails: &[String]) -> String {
         sections.push(format!("HIRING SIGNALS: {}", hiring_signals.join("; ")));
     }
 
+    // 5. Social media URLs (extracted from HTML hrefs + text)
+    let social = extract_social_media(html, text);
+    if !social.is_empty() {
+        sections.push(format!("SOCIAL MEDIA: {}", social.join(" | ")));
+    }
+
     if sections.is_empty() {
         String::new()
     } else {
         format!("--- EXTRACTED SIGNALS ---\n{}\n--- END SIGNALS ---\n", sections.join("\n"))
     }
+}
+
+/// Extract social media URLs from raw HTML (href attributes) and page text.
+/// Returns formatted entries like "LinkedIn Company: https://linkedin.com/company/xxx".
+fn extract_social_media(html: &str, text: &str) -> Vec<String> {
+    let mut results: Vec<String> = Vec::new();
+
+    // Combine HTML + text for searching (HTML has hrefs, text has visible URLs)
+    let combined = format!("{} {}", html, text);
+
+    // LinkedIn company pages (NOT personal /in/ profiles — those are captured separately)
+    let linkedin_co_re = Regex::new(
+        r#"https?://(?:www\.)?linkedin\.com/company/[a-zA-Z0-9\-_]+/?"#
+    ).unwrap();
+    if let Some(m) = linkedin_co_re.find(&combined) {
+        let url = m.as_str().trim_end_matches('/').to_string();
+        results.push(format!("LinkedIn Company: {}", url));
+    }
+
+    // Twitter/X
+    let twitter_re = Regex::new(
+        r#"https?://(?:www\.)?(?:twitter\.com|x\.com)/[a-zA-Z0-9_]+/?"#
+    ).unwrap();
+    if let Some(m) = twitter_re.find(&combined) {
+        let url = m.as_str().trim_end_matches('/').to_string();
+        // Filter out generic paths like twitter.com/share, twitter.com/intent
+        let path = url.split('/').last().unwrap_or("");
+        if !["share", "intent", "home", "search", "login", "signup", "i", "hashtag"].contains(&path) {
+            results.push(format!("Twitter: {}", url));
+        }
+    }
+
+    // Facebook
+    let facebook_re = Regex::new(
+        r#"https?://(?:www\.)?facebook\.com/[a-zA-Z0-9.\-_]+/?"#
+    ).unwrap();
+    if let Some(m) = facebook_re.find(&combined) {
+        let url = m.as_str().trim_end_matches('/').to_string();
+        let path = url.split('/').last().unwrap_or("");
+        if !["sharer", "sharer.php", "share", "dialog", "login", "tr"].contains(&path) {
+            results.push(format!("Facebook: {}", url));
+        }
+    }
+
+    // Instagram
+    let instagram_re = Regex::new(
+        r#"https?://(?:www\.)?instagram\.com/[a-zA-Z0-9._]+/?"#
+    ).unwrap();
+    if let Some(m) = instagram_re.find(&combined) {
+        let url = m.as_str().trim_end_matches('/').to_string();
+        let path = url.split('/').last().unwrap_or("");
+        if !["accounts", "explore", "p"].contains(&path) {
+            results.push(format!("Instagram: {}", url));
+        }
+    }
+
+    // YouTube — channel, @handle, or user pages
+    let youtube_re = Regex::new(
+        r#"https?://(?:www\.)?youtube\.com/(?:channel/[a-zA-Z0-9_\-]+|@[a-zA-Z0-9_\-]+|c/[a-zA-Z0-9_\-]+|user/[a-zA-Z0-9_\-]+)/?"#
+    ).unwrap();
+    if let Some(m) = youtube_re.find(&combined) {
+        let url = m.as_str().trim_end_matches('/').to_string();
+        results.push(format!("YouTube: {}", url));
+    }
+
+    results
 }
 
 /// Extract "Name, Title" patterns from text.

@@ -66,6 +66,8 @@ import {
   type ActivityItem,
   getCompanyIntel,
   getCompanyVerification,
+  getInvestorMatches,
+  type InvestorMatch,
   getSearchProfiles,
   getActiveProfile,
   getExtendedStats,
@@ -226,6 +228,10 @@ export default function Review() {
   // Intel tab data
   const [intelData, setIntelData] = useState<Record<string, unknown> | null>(null);
   const [intelLoading, setIntelLoading] = useState(false);
+
+  // Investor matches
+  const [investorMatches, setInvestorMatches] = useState<InvestorMatch[]>([]);
+  const [investorMatchesLoading, setInvestorMatchesLoading] = useState(false);
 
   // Verification tab data
   const [verificationData, setVerificationData] = useState<Record<string, unknown> | null>(null);
@@ -829,6 +835,7 @@ export default function Review() {
     ? String(selected.financial_health || "")
     : "";
   const companyAddress = selected ? String(selected.address || "") : "";
+  const attrSocialMedia = (attrs.social_media || {}) as Record<string, string | null>;
 
   // Deep enrichment — process capabilities
   const processCapabilities: {
@@ -883,6 +890,7 @@ export default function Review() {
     setProcessCapOpen(true);
     setIntelData(null);
     setVerificationData(null);
+    setInvestorMatches([]);
   }, [selectedId]);
 
   // Load intel data on tab click
@@ -894,6 +902,14 @@ export default function Review() {
       .then((data) => setIntelData(data))
       .catch(() => setIntelData(null))
       .finally(() => setIntelLoading(false));
+    // Also load investor matches
+    if (investorMatches.length === 0) {
+      setInvestorMatchesLoading(true);
+      getInvestorMatches(selectedId)
+        .then((matches) => setInvestorMatches(matches || []))
+        .catch(() => setInvestorMatches([]))
+        .finally(() => setInvestorMatchesLoading(false));
+    }
   }, [detailTab, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load verification data on tab click
@@ -2256,6 +2272,79 @@ export default function Review() {
                       )}
                     </>
                   )}
+
+                  {/* Matching Investors */}
+                  <div className="pt-3 border-t border-gray-100">
+                    <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                      <TrendingUp className="w-3 h-3" /> Matching Investors
+                      {investorMatches.length > 0 && (
+                        <span className="ml-1 px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 text-[10px] font-medium">
+                          {investorMatches.length}
+                        </span>
+                      )}
+                    </h4>
+                    {investorMatchesLoading ? (
+                      <div className="flex items-center gap-2 text-xs text-gray-400 py-2">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        Loading investor matches...
+                      </div>
+                    ) : investorMatches.length === 0 ? (
+                      <p className="text-xs text-gray-400">No investor matches found. Run the Investor Match pipeline stage.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {investorMatches.map((match) => (
+                          <div
+                            key={match.investor_listing_id}
+                            className="rounded-lg border border-gray-100 bg-gray-50 p-2.5"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-medium text-gray-900">
+                                {match.investor_name || "Unknown Investor"}
+                              </span>
+                              <span
+                                className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${
+                                  match.match_score >= 60
+                                    ? "bg-green-100 text-green-700"
+                                    : match.match_score >= 30
+                                      ? "bg-yellow-100 text-yellow-700"
+                                      : "bg-gray-100 text-gray-600"
+                                }`}
+                              >
+                                {match.match_score}%
+                              </span>
+                            </div>
+                            {match.investor_sector_focus && (
+                              <p className="text-[10px] text-gray-500 mt-0.5 truncate">
+                                <span className="text-gray-400">Sectors:</span> {match.investor_sector_focus}
+                              </p>
+                            )}
+                            {match.investor_stage_focus && (
+                              <p className="text-[10px] text-gray-500 truncate">
+                                <span className="text-gray-400">Stage:</span> {match.investor_stage_focus}
+                              </p>
+                            )}
+                            {match.investor_geo_focus && (
+                              <p className="text-[10px] text-gray-500 truncate">
+                                <span className="text-gray-400">Geo:</span> {match.investor_geo_focus}
+                              </p>
+                            )}
+                            {match.match_reasons && (
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {match.match_reasons.split("; ").map((reason, i) => (
+                                  <span
+                                    key={i}
+                                    className="px-1.5 py-0.5 rounded text-[10px] bg-blue-50 text-blue-600"
+                                  >
+                                    {reason}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -2697,10 +2786,77 @@ export default function Review() {
                     </div>
                   )}
 
+                  {/* Social Media Links */}
+                  {Object.values(attrSocialMedia).some((v) => v) && (
+                    <div>
+                      <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
+                        <Globe className="w-3 h-3" /> Social Media
+                      </h4>
+                      <div className="space-y-1.5">
+                        {attrSocialMedia.linkedin_company && (
+                          <a
+                            href={String(attrSocialMedia.linkedin_company)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 text-sm text-forge-600 hover:text-forge-700"
+                          >
+                            <ExternalLink className="w-3 h-3 shrink-0" />
+                            LinkedIn
+                          </a>
+                        )}
+                        {attrSocialMedia.twitter && (
+                          <a
+                            href={String(attrSocialMedia.twitter)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 text-sm text-forge-600 hover:text-forge-700"
+                          >
+                            <ExternalLink className="w-3 h-3 shrink-0" />
+                            Twitter / X
+                          </a>
+                        )}
+                        {attrSocialMedia.facebook && (
+                          <a
+                            href={String(attrSocialMedia.facebook)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 text-sm text-forge-600 hover:text-forge-700"
+                          >
+                            <ExternalLink className="w-3 h-3 shrink-0" />
+                            Facebook
+                          </a>
+                        )}
+                        {attrSocialMedia.instagram && (
+                          <a
+                            href={String(attrSocialMedia.instagram)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 text-sm text-forge-600 hover:text-forge-700"
+                          >
+                            <ExternalLink className="w-3 h-3 shrink-0" />
+                            Instagram
+                          </a>
+                        )}
+                        {attrSocialMedia.youtube && (
+                          <a
+                            href={String(attrSocialMedia.youtube)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 text-sm text-forge-600 hover:text-forge-700"
+                          >
+                            <ExternalLink className="w-3 h-3 shrink-0" />
+                            YouTube
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* No contact info message */}
                   {!(selected.contact_name || selected.contact_email || selected.contact_title) &&
                     attrKeyPeople.length === 0 &&
-                    attrChDirectors.length === 0 && (
+                    attrChDirectors.length === 0 &&
+                    !Object.values(attrSocialMedia).some((v) => v) && (
                     <div className="p-4 text-center text-gray-400 text-sm">
                       No contact information available.
                     </div>

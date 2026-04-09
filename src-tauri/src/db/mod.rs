@@ -72,6 +72,7 @@ impl Database {
             include_str!("migrations/025_search_profiles.sql"),
             include_str!("migrations/026_directory_search.sql"),
             include_str!("migrations/027_push_to_forgeos.sql"),
+            include_str!("migrations/028_investor_matches.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -3238,16 +3239,17 @@ impl Database {
         Ok(rows)
     }
 
-    /// Get companies eligible for activity feed fetch (pushed/approved, limit N).
+    /// Get companies eligible for activity feed fetch (pushed/approved, limit N, filtered by active profile).
     pub fn get_activity_eligible_companies(&self, limit: i64) -> Result<Vec<Value>> {
+        let profile_id = self.get_active_profile_id();
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, name, city, country FROM companies \
-             WHERE status IN ('pushed', 'approved') \
+             WHERE status IN ('pushed', 'approved') AND search_profile_id = ?2 \
              ORDER BY RANDOM() LIMIT ?1",
         )?;
         let rows: Vec<Value> = stmt
-            .query_map(rusqlite::params![limit], |row| {
+            .query_map(rusqlite::params![limit, profile_id], |row| {
                 Ok(json!({
                     "id": row.get::<_, String>(0)?,
                     "name": row.get::<_, String>(1)?,
@@ -3258,6 +3260,102 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
+    }
+
+    // ── Investor Matches ──────────────────────────────────────────────
+
+    /// Save an investor match for a company. ON CONFLICT updates score/reasons.
+    pub fn save_investor_match(
+        &self,
+        company_id: &str,
+        investor_listing_id: &str,
+        investor_name: &str,
+        sector_focus: &str,
+        stage_focus: &str,
+        geo_focus: &str,
+        match_score: i32,
+        match_reasons: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn.execute(
+            "INSERT INTO investor_matches (company_id, investor_listing_id, investor_name, investor_sector_focus, investor_stage_focus, investor_geo_focus, match_score, match_reasons) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+             ON CONFLICT(company_id, investor_listing_id) DO UPDATE SET \
+             match_score = excluded.match_score, match_reasons = excluded.match_reasons, \
+             investor_name = excluded.investor_name, created_at = datetime('now')",
+            rusqlite::params![company_id, investor_listing_id, investor_name, sector_focus, stage_focus, geo_focus, match_score, match_reasons],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Get investor matches for a company, ordered by score descending.
+    pub fn get_investor_matches(&self, company_id: &str, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT investor_listing_id, investor_name, investor_sector_focus, investor_stage_focus, investor_geo_focus, match_score, match_reasons, created_at \
+             FROM investor_matches WHERE company_id = ?1 ORDER BY match_score DESC LIMIT ?2",
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map(rusqlite::params![company_id, limit], |row| {
+                Ok(json!({
+                    "investor_listing_id": row.get::<_, String>(0)?,
+                    "investor_name": row.get::<_, Option<String>>(1)?,
+                    "investor_sector_focus": row.get::<_, Option<String>>(2)?,
+                    "investor_stage_focus": row.get::<_, Option<String>>(3)?,
+                    "investor_geo_focus": row.get::<_, Option<String>>(4)?,
+                    "match_score": row.get::<_, i32>(5)?,
+                    "match_reasons": row.get::<_, Option<String>>(6)?,
+                    "created_at": row.get::<_, Option<String>>(7)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Get companies that need investor matching (enriched/approved/pushed, no matches yet).
+    pub fn get_investor_match_eligible_companies(&self, limit: i64) -> Result<Vec<Value>> {
+        let profile_id = self.get_active_profile_id();
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.name, c.category, c.subcategory, c.specialties, c.industries, c.company_size, c.country, c.city \
+             FROM companies c \
+             WHERE c.status IN ('enriched', 'approved', 'pushed') \
+             AND c.search_profile_id = ?2 \
+             AND c.id NOT IN (SELECT DISTINCT company_id FROM investor_matches) \
+             ORDER BY c.enrichment_quality DESC LIMIT ?1",
+        )?;
+        let rows: Vec<Value> = stmt
+            .query_map(rusqlite::params![limit, profile_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "category": row.get::<_, Option<String>>(2)?,
+                    "subcategory": row.get::<_, Option<String>>(3)?,
+                    "specialties": row.get::<_, Option<String>>(4)?,
+                    "industries": row.get::<_, Option<String>>(5)?,
+                    "company_size": row.get::<_, Option<String>>(6)?,
+                    "country": row.get::<_, Option<String>>(7)?,
+                    "city": row.get::<_, Option<String>>(8)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Count companies needing investor matching.
+    pub fn count_needing_investor_match(&self, profile_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM companies c \
+             WHERE c.status IN ('enriched', 'approved', 'pushed') \
+             AND c.search_profile_id = ?1 \
+             AND c.id NOT IN (SELECT DISTINCT company_id FROM investor_matches)",
+            rusqlite::params![profile_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
     }
 
     // ── Nightshift Intel (PRIVATE — never push to ForgeOS) ────────────
