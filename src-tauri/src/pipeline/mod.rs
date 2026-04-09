@@ -265,6 +265,22 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
         }
     }
 
+    // Backfill: deep enrich companies that were verified without deep enrichment
+    if !is_cancelled() {
+        let backfill_config = {
+            let db: tauri::State<'_, Database> = app.state();
+            db.get_all_config().unwrap_or_default()
+        };
+        log::info!("[Batch] Running deep enrich backfill for any companies missing it");
+        {
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(job_id, "batch", "info", "Running deep enrich backfill for verified companies that were never deep enriched");
+        }
+        let _ = app.emit("pipeline:stage", json!({"stage": "deep_enrich_all", "status": "running"}));
+        let _ = deep_enrich::run_all(app, job_id, &backfill_config).await;
+        let _ = app.emit("pipeline:stage", json!({"stage": "deep_enrich_all", "status": "completed"}));
+    }
+
     emit_node(app, json!({
         "node_id": "batch",
         "status": "completed",

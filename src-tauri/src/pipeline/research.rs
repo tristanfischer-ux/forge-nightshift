@@ -509,7 +509,8 @@ Return ONLY valid JSON."#,
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
                 // Brave pagination: if page 1 returned a full page, fetch page 2
-                if page1_full && !super::is_cancelled() {
+                // Skip page 2 if batch limit already reached
+                if page1_full && !super::is_cancelled() && !(batch_limit > 0 && total_discovered >= batch_limit) {
                     let page2_key = format!("{} [page 2]", query);
                     let already_done = {
                         let db: tauri::State<'_, Database> = app.state();
@@ -525,6 +526,7 @@ Return ONLY valid JSON."#,
 
                             for result in &page2_results {
                                 if super::is_cancelled() { break; }
+                                if batch_limit > 0 && total_discovered >= batch_limit { break; }
                                 batch_results += 1;
 
                                 let parse_prompt = format!(
