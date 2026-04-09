@@ -179,8 +179,15 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
         let mut wave_config = config.clone();
         wave_config["pipeline_batch_size"] = json!(batch_size.to_string());
 
-        // Step 1: Research (capped at batch_size)
-        if !is_cancelled() {
+        // Step 1: Research (capped at batch_size) — skip if enough discovered companies already exist
+        let discovered_backlog = {
+            let db: tauri::State<'_, Database> = app.state();
+            let profile_id = db.get_active_profile_id();
+            db.get_companies_count(Some("discovered"), Some(&profile_id)).unwrap_or(0) as usize
+        };
+
+        if !is_cancelled() && discovered_backlog < batch_size {
+            log::info!("[Batch] Wave {}: {} discovered in backlog (< {}), running research", wave, discovered_backlog, batch_size);
             let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "running"}));
             let res = research::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "completed"}));
@@ -188,6 +195,11 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
                 let db: tauri::State<'_, Database> = app.state();
                 let _ = db.log_activity(job_id, "batch", "warn", &format!("Research error in wave {}: {}", wave, e));
             }
+        } else if discovered_backlog >= batch_size {
+            log::info!("[Batch] Wave {}: {} discovered in backlog (>= {}), skipping research", wave, discovered_backlog, batch_size);
+            let db: tauri::State<'_, Database> = app.state();
+            let _ = db.log_activity(job_id, "batch", "info",
+                &format!("Skipping research — {} companies already discovered (backlog >= batch size {})", discovered_backlog, batch_size));
         }
 
         // Step 2: Enrich discovered companies
