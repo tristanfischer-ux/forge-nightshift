@@ -58,7 +58,7 @@ export default function CommandPalette({
       action: async () => {
         try {
           const status = await getPipelineStatus();
-          if (!status.running) await startPipeline(["research", "enrich", "deep_enrich_all", "aggregate_techniques", "push_techniques"]);
+          if (!status.running) await startPipeline(["batch"]);
         } catch (e) { showError(`Failed to start pipeline: ${e}`); }
         onClose();
       },

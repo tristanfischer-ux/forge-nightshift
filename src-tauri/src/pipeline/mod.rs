@@ -763,22 +763,10 @@ pub async fn start_scheduler(app: tauri::AppHandle) {
                 .unwrap_or("");
 
             if !has_schedules && !schedule_time.is_empty() {
-                let mut stages = vec![
-                    "research".to_string(),
-                    "enrich".to_string(),
-                    "push".to_string(),
-                    "report".to_string(),
-                ];
-                let auto_enabled = config.get("auto_outreach_enabled")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("false") == "true";
-                let auto_template = config.get("auto_outreach_template_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if auto_enabled && !auto_template.is_empty() {
-                    stages.push("learn_outreach".to_string());
-                    stages.push(format!("template_outreach:{}", auto_template));
-                }
+                // Use batch mode for migrated schedules — batch_pipeline handles the full
+                // stage sequence (research → enrich → deep_enrich → verify → synthesize →
+                // director_intel → embeddings) automatically.
+                let stages = vec!["batch".to_string()];
 
                 let schedule = Schedule {
                     id: format!("{:016x}", chrono::Utc::now().timestamp_millis() as u64),
@@ -909,28 +897,11 @@ pub async fn start_scheduler(app: tauri::AppHandle) {
                     .and_then(|v| v.as_str())
                     .unwrap_or("[]");
                 let schedules: Vec<Schedule> = serde_json::from_str(schedules_json).unwrap_or_default();
+                // Use stages from the first enabled schedule, or default to batch mode
                 let stages = schedules.iter()
                     .find(|s| s.enabled)
                     .map(|s| s.stages.clone())
-                    .unwrap_or_else(|| {
-                        let mut s = vec![
-                            "research".to_string(),
-                            "enrich".to_string(),
-                            "push".to_string(),
-                            "report".to_string(),
-                        ];
-                        let auto_enabled = config.get("auto_outreach_enabled")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("false") == "true";
-                        let auto_template = config.get("auto_outreach_template_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if auto_enabled && !auto_template.is_empty() {
-                            s.push("learn_outreach".to_string());
-                            s.push(format!("template_outreach:{}", auto_template));
-                        }
-                        s
-                    });
+                    .unwrap_or_else(|| vec!["batch".to_string()]);
                 let app_clone = app.clone();
                 match start_pipeline(app_clone, stages).await {
                     Ok(job_id) => log::info!("[scheduler] Retry pipeline started: {}", job_id),

@@ -669,6 +669,9 @@ export default function Review() {
     }
   }
 
+  // Intentionally enrich-only: runs enrichment on Discovered tab companies.
+  // For the full pipeline (research + enrich + deep_enrich + verify + synthesize + ...),
+  // use the Pipeline page or Command Palette "Start Full Pipeline".
   async function handleRunEnrich() {
     try {
       setEnriching(true);
@@ -955,6 +958,7 @@ export default function Review() {
               <button
                 onClick={handleRunEnrich}
                 disabled={enriching}
+                title="Enrichment only — processes discovered companies. Use Pipeline page for the full pipeline."
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
                   enriching
                     ? "bg-forge-400 cursor-not-allowed"
@@ -2852,6 +2856,7 @@ export default function Review() {
                   <button
                     onClick={handleRunEnrich}
                     disabled={enriching}
+                    title="Enrichment only — processes discovered companies. Use Pipeline page for the full pipeline."
                     className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
                       enriching
                         ? "bg-forge-400 cursor-not-allowed"

@@ -77,6 +77,8 @@ export default function Research() {
     }
   }
 
+  // Intentionally research-only: discovers new companies without enrichment.
+  // For the full pipeline, use the Pipeline page or Command Palette "Start Full Pipeline".
   async function runResearchOnly() {
     setLoading(true);
     try {
@@ -105,6 +107,7 @@ export default function Research() {
         <button
           onClick={runResearchOnly}
           disabled={loading}
+          title="Research only — discovers new companies. Use Pipeline page for the full pipeline."
           className="flex items-center gap-2 px-4 py-2 bg-forge-600 hover:bg-forge-700 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
         >
           {loading ? (
