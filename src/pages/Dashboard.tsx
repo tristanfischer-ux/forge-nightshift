@@ -344,7 +344,6 @@ export default function Dashboard() {
               <option value="all">All stages</option>
               <option value="research">Research</option>
               <option value="enrich">Enrich</option>
-              <option value="deep_enrich">Deep Enrich</option>
               <option value="verify">Verify</option>
               <option value="synthesize">Synthesize</option>
               <option value="director_intel">Director Intel</option>

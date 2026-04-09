@@ -42,9 +42,9 @@ const ADVANCED_PRESETS: { label: string; stages: string[]; icon: React.ReactNode
   },
   {
     label: "Enrich + Verify",
-    stages: ["enrich", "deep_enrich_drain", "verify", "synthesize"],
+    stages: ["enrich", "verify", "synthesize"],
     icon: <Zap className="w-3.5 h-3.5" />,
-    description: "Enrich, deep enrich, verify, and synthesize",
+    description: "Enrich, verify, and synthesize",
   },
   {
     label: "Discovery Only",
@@ -62,7 +62,7 @@ const ADVANCED_PRESETS: { label: string; stages: string[]; icon: React.ReactNode
 
 function stagesToDescription(stages: string[]): string {
   if (stages.length === 1 && stages[0] === "batch") {
-    return "Research \u2192 Enrich \u2192 Deep Enrich \u2192 Verify \u2192 Synthesize \u2192 Director Intel \u2192 Embeddings";
+    return "Research \u2192 Enrich \u2192 Verify \u2192 Synthesize \u2192 Director Intel \u2192 Embeddings";
   }
   return stages.map((s) => s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())).join(" \u2192 ");
 }
@@ -241,12 +241,6 @@ export default function Pipeline() {
   const companyCounts = (stats.companies as { status: string; count: number }[]) ?? [];
   const totalCompanies = companyCounts.reduce((sum, c) => sum + (c.count ?? 0), 0);
   const errorCount = companyCounts.find((c) => c.status === "error")?.count ?? 0;
-  // Deep enriched = companies with process_capabilities_json set (not directly in stats, approximate from pipeline node)
-  const deepEnrichNode = nodes.deep_enrich;
-  const deepEnriched = deepEnrichNode?.status === "completed"
-    ? (deepEnrichNode.progress?.total ?? deepEnrichNode.progress?.current ?? 0)
-    : (deepEnrichNode?.progress?.current ?? 0);
-
   // Batch wave progress
   const batchNode = nodes.batch;
   const batchWave = (batchNode as Record<string, unknown> | null)?.wave as number | undefined;
@@ -362,14 +356,10 @@ export default function Pipeline() {
       )}
 
       {/* Stats bar */}
-      <div className="grid grid-cols-7 gap-3">
+      <div className="grid grid-cols-6 gap-3">
         <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
           <p className="text-[10px] text-gray-500 uppercase tracking-wide">Companies</p>
           <p className="text-lg font-bold text-gray-900">{totalCompanies.toLocaleString()}</p>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
-          <p className="text-[10px] text-gray-500 uppercase tracking-wide">Deep Enriched</p>
-          <p className="text-lg font-bold text-gray-900">{deepEnriched.toLocaleString()}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
           <p className="text-[10px] text-gray-500 uppercase tracking-wide">Verified</p>

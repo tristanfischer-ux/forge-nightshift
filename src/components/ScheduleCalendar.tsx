@@ -29,7 +29,7 @@ const STAGE_COLORS: Record<string, { bg: string; border: string; text: string }>
   enrich: { bg: "bg-purple-100", border: "border-purple-300", text: "text-purple-800" },
   push: { bg: "bg-green-100", border: "border-green-300", text: "text-green-800" },
   outreach: { bg: "bg-amber-100", border: "border-amber-300", text: "text-amber-800" },
-  deep_enrich: { bg: "bg-indigo-100", border: "border-indigo-300", text: "text-indigo-800" },
+  embeddings: { bg: "bg-indigo-100", border: "border-indigo-300", text: "text-indigo-800" },
 };
 
 function getColor(stages: string[]) {
@@ -72,8 +72,8 @@ function getPresets(templateId?: string): Preset[] {
   return [
     { label: "Full Pipeline", stages: ["research", "enrich", "push", "learn_outreach", `template_outreach:${templateId}`], needsTemplate: true },
     { label: "Discovery Only", stages: ["research", "enrich", "push"] },
-    { label: "Full + Deep", stages: ["research", "enrich", "deep_enrich_drain"] },
-    { label: "Backfill Only", stages: ["deep_enrich_all", "aggregate_techniques", "push_techniques"] },
+    { label: "Full Pipeline", stages: ["research", "enrich", "verify", "synthesize"] },
+    { label: "Techniques", stages: ["aggregate_techniques", "push_techniques"] },
     { label: "Outreach Only", stages: ["learn_outreach", `template_outreach:${templateId}`], needsTemplate: true },
   ];
 }

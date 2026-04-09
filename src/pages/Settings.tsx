@@ -1169,15 +1169,6 @@ export default function Settings() {
               max={10}
             />
             <Input
-              label="Deep Enrich Concurrency (1-5)"
-              value={config.deep_enrich_concurrency || ""}
-              onChange={(v) => updateField("deep_enrich_concurrency", v)}
-              placeholder="2"
-              type="number"
-              min={1}
-              max={5}
-            />
-            <Input
               label="Target Countries (JSON)"
               value={config.target_countries || ""}
               onChange={(v) => updateField("target_countries", v)}

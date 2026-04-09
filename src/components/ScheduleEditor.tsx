@@ -58,12 +58,12 @@ function getPresets(templateId?: string): Preset[] {
       stages: ["research", "enrich", "push"],
     },
     {
-      label: "Full + Deep",
-      stages: ["research", "enrich", "deep_enrich_drain"],
+      label: "Full Pipeline",
+      stages: ["research", "enrich", "verify", "synthesize"],
     },
     {
-      label: "Backfill Only",
-      stages: ["deep_enrich_all", "aggregate_techniques", "push_techniques"],
+      label: "Techniques",
+      stages: ["aggregate_techniques", "push_techniques"],
     },
     {
       label: "Outreach Only",

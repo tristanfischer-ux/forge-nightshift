@@ -1,9 +1,12 @@
 mod research;
+#[allow(dead_code)]
 mod enrich;
 mod push;
 mod outreach;
 mod report;
+#[allow(dead_code)]
 mod deep_enrich;
+mod enrich_v2;
 mod technique_aggregate;
 pub mod template_outreach;
 mod companies_house;
@@ -143,7 +146,7 @@ pub fn is_cancelled() -> bool {
 }
 
 /// Batch pipeline mode: processes companies in waves of N.
-/// Each wave runs research (capped) → enrich → deep_enrich → verify → synthesize → director_intel sequentially.
+/// Each wave runs research (capped) → enrich_v2 → verify → synthesize → director_intel → embeddings sequentially.
 /// Stops when research finds nothing new or pipeline is cancelled.
 async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result<Value> {
     let batch_size: usize = config
@@ -202,42 +205,35 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
                 &format!("Skipping research — {} companies already discovered (backlog >= batch size {})", discovered_backlog, batch_size));
         }
 
-        // Step 2: Enrich discovered companies
+        // Step 2: Enrich discovered companies (v2 — combines old enrich + deep_enrich)
         if !is_cancelled() {
             let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "running"}));
-            let _ = enrich::run(app, job_id, &wave_config).await;
+            let _ = enrich_v2::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "completed"}));
         }
 
-        // Step 3: Deep enrich (all mode since enrich is done for this batch)
-        if !is_cancelled() {
-            let _ = app.emit("pipeline:stage", json!({"stage": "deep_enrich_all", "status": "running"}));
-            let _ = deep_enrich::run_all(app, job_id, &wave_config).await;
-            let _ = app.emit("pipeline:stage", json!({"stage": "deep_enrich_all", "status": "completed"}));
-        }
-
-        // Step 4: Verify
+        // Step 3: Verify
         if !is_cancelled() {
             let _ = app.emit("pipeline:stage", json!({"stage": "verify", "status": "running"}));
             let _ = verify::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "verify", "status": "completed"}));
         }
 
-        // Step 5: Synthesize
+        // Step 4: Synthesize
         if !is_cancelled() {
             let _ = app.emit("pipeline:stage", json!({"stage": "synthesize", "status": "running"}));
             let _ = synthesize::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "synthesize", "status": "completed"}));
         }
 
-        // Step 6: Director intel
+        // Step 5: Director intel
         if !is_cancelled() {
             let _ = app.emit("pipeline:stage", json!({"stage": "director_intel", "status": "running"}));
             let _ = director_intel::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "director_intel", "status": "completed"}));
         }
 
-        // Step 7: Generate embeddings for semantic search
+        // Step 6: Generate embeddings for semantic search
         if !is_cancelled() {
             let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "running"}));
             let _ = embeddings::run(app, job_id, &wave_config).await;
@@ -275,22 +271,6 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
         if discovered_remaining == 0 || is_cancelled() {
             break;
         }
-    }
-
-    // Backfill: deep enrich companies that were verified without deep enrichment
-    if !is_cancelled() {
-        let backfill_config = {
-            let db: tauri::State<'_, Database> = app.state();
-            db.get_all_config().unwrap_or_default()
-        };
-        log::info!("[Batch] Running deep enrich backfill for any companies missing it");
-        {
-            let db: tauri::State<'_, Database> = app.state();
-            let _ = db.log_activity(job_id, "batch", "info", "Running deep enrich backfill for verified companies that were never deep enriched");
-        }
-        let _ = app.emit("pipeline:stage", json!({"stage": "deep_enrich_all", "status": "running"}));
-        let _ = deep_enrich::run_all(app, job_id, &backfill_config).await;
-        let _ = app.emit("pipeline:stage", json!({"stage": "deep_enrich_all", "status": "completed"}));
     }
 
     emit_node(app, json!({
@@ -369,146 +349,27 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
         return batch_pipeline(app, job_id, &config).await;
     }
 
-    // Auto-inject deep_enrich_drain if enrich is requested but no deep enrich variant is present.
-    // This ensures deep enrichment always runs concurrently with enrich for new companies.
-    let stages: Vec<String> = {
-        let mut s = stages.to_vec();
-        let has_enrich = s.iter().any(|st| st == "enrich");
-        let has_any_deep = s.iter().any(|st| st == "deep_enrich_drain" || st == "deep_enrich_all" || st.starts_with("deep_enrich:"));
-        if has_enrich && !has_any_deep {
-            if let Some(pos) = s.iter().position(|st| st == "enrich") {
-                s.insert(pos + 1, "deep_enrich_drain".to_string());
-            }
-            log::info!("[pipeline] Auto-injected deep_enrich_drain alongside enrich");
-        }
-        s
-    };
-
     // Filter out Ollama-dependent outreach stages if Ollama is down
     let stages: Vec<String> = if !ollama_available {
-        stages.into_iter().filter(|s| {
-            s != "learn_outreach" && !s.starts_with("template_outreach:")
-        }).collect()
+        stages.iter().filter(|s| {
+            s.as_str() != "learn_outreach" && !s.starts_with("template_outreach:")
+        }).cloned().collect()
     } else {
-        stages
+        stages.to_vec()
     };
 
-    // Determine which stages can run concurrently
-    let has_research = stages.iter().any(|s| s == "research");
-    let has_enrich = stages.iter().any(|s| s == "enrich");
-    let has_deep_enrich_drain = stages.iter().any(|s| s == "deep_enrich_drain");
-
-    // Stages that are handled in the parallel block (skip in sequential remainder)
-    let parallel_stages: Vec<&str> = {
-        let mut ps = Vec::new();
-        if has_research && has_enrich { ps.push("research"); ps.push("enrich"); }
-        if has_deep_enrich_drain && has_enrich { ps.push("deep_enrich_drain"); }
-        ps
-    };
-    let run_parallel = !parallel_stages.is_empty();
-
-    if run_parallel {
-        // Log what's running in parallel
-        let parallel_label = parallel_stages.join(" + ");
-        {
+    // Sequential execution — enrich_v2 replaces the old enrich+deep_enrich parallel dance
+    for stage in &stages {
+        if is_cancelled() {
             let db: tauri::State<'_, Database> = app.state();
-            let _ = db.log_activity(job_id, "pipeline", "info", &format!("Running {} in parallel", parallel_label));
+            let _ = db.log_activity(job_id, stage, "warn", "Pipeline cancelled by user");
+            break;
         }
 
-        for &s in &parallel_stages {
-            let _ = app.emit("pipeline:stage", json!({"stage": s, "status": "running"}));
-            let db: tauri::State<'_, Database> = app.state();
-            let _ = db.log_activity(job_id, s, "info", &format!("Starting {} stage", s));
-        }
-
-        // 4 cases based on which stages are present
-        if has_research && has_enrich && has_deep_enrich_drain {
-            // Case 1: research + enrich + deep_enrich_drain — all 3 concurrent
-            RESEARCH_ACTIVE.store(true, Ordering::SeqCst);
-            ENRICH_ACTIVE.store(true, Ordering::SeqCst);
-
-            let (research_result, enrich_result, deep_enrich_result) = tokio::join!(
-                async {
-                    let _guard = AtomicGuard(&RESEARCH_ACTIVE);
-                    research::run(app, job_id, &config).await
-                },
-                async {
-                    let _guard = AtomicGuard(&ENRICH_ACTIVE);
-                    enrich::run(app, job_id, &config).await
-                },
-                deep_enrich::run_drain(app, job_id, &config)
-            );
-
-            process_parallel_result(&mut summary, app, job_id, "research", research_result);
-            process_parallel_result(&mut summary, app, job_id, "enrich", enrich_result);
-            process_parallel_result(&mut summary, app, job_id, "deep_enrich_drain", deep_enrich_result);
-
-        } else if has_research && has_enrich {
-            // Case 2: research + enrich — no deep_enrich_drain
-            RESEARCH_ACTIVE.store(true, Ordering::SeqCst);
-            ENRICH_ACTIVE.store(true, Ordering::SeqCst);
-
-            let (research_result, enrich_result) = tokio::join!(
-                async {
-                    let _guard = AtomicGuard(&RESEARCH_ACTIVE);
-                    research::run(app, job_id, &config).await
-                },
-                async {
-                    let _guard = AtomicGuard(&ENRICH_ACTIVE);
-                    enrich::run(app, job_id, &config).await
-                }
-            );
-
-            process_parallel_result(&mut summary, app, job_id, "research", research_result);
-            process_parallel_result(&mut summary, app, job_id, "enrich", enrich_result);
-
-        } else if has_enrich && has_deep_enrich_drain {
-            // Case 3: enrich + deep_enrich_drain — no research
-            ENRICH_ACTIVE.store(true, Ordering::SeqCst);
-
-            let (enrich_result, deep_enrich_result) = tokio::join!(
-                async {
-                    let _guard = AtomicGuard(&ENRICH_ACTIVE);
-                    enrich::run(app, job_id, &config).await
-                },
-                deep_enrich::run_drain(app, job_id, &config)
-            );
-
-            process_parallel_result(&mut summary, app, job_id, "enrich", enrich_result);
-            process_parallel_result(&mut summary, app, job_id, "deep_enrich_drain", deep_enrich_result);
-        }
-
-        // Run remaining stages sequentially (skip those handled in parallel)
-        for stage in &stages {
-            if parallel_stages.contains(&stage.as_str()) {
-                continue;
-            }
-            if is_cancelled() {
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, stage, "warn", "Pipeline cancelled by user");
-                break;
-            }
-
-            let result = run_single_stage(app, job_id, &config, stage).await;
-            match result {
-                Ok(r) => summary[stage.as_str()] = r,
-                Err(e) => summary[stage.as_str()] = json!({"error": e.to_string()}),
-            }
-        }
-    } else {
-        // Sequential execution (original behavior)
-        for stage in &stages {
-            if is_cancelled() {
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, stage, "warn", "Pipeline cancelled by user");
-                break;
-            }
-
-            let result = run_single_stage(app, job_id, &config, stage).await;
-            match result {
-                Ok(r) => summary[stage.as_str()] = r,
-                Err(e) => summary[stage.as_str()] = json!({"error": e.to_string()}),
-            }
+        let result = run_single_stage(app, job_id, &config, stage).await;
+        match result {
+            Ok(r) => summary[stage.as_str()] = r,
+            Err(e) => summary[stage.as_str()] = json!({"error": e.to_string()}),
         }
     }
 
@@ -516,6 +377,7 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
 }
 
 /// Process the result of a parallel stage and update summary.
+#[allow(dead_code)]
 fn process_parallel_result(
     summary: &mut Value,
     app: &tauri::AppHandle,
@@ -553,21 +415,13 @@ async fn run_single_stage(
 
     let stage_result = match stage {
         "research" => research::run(app, job_id, config).await,
-        "enrich" => enrich::run(app, job_id, config).await,
+        "enrich" => enrich_v2::run(app, job_id, config).await,
         "push" => push::run(app, job_id, config).await,
         "push_capabilities" => push::push_capabilities(app, job_id, config).await,
         "outreach" => outreach::run(app, job_id, config).await,
         "report" => report::run(app, job_id, config).await,
-        "deep_enrich_trial" => deep_enrich::run_trial(app, job_id, config).await,
-        "deep_enrich_all" => deep_enrich::run_all(app, job_id, config).await,
-        "deep_enrich_drain" => deep_enrich::run_drain(app, job_id, config).await,
         "aggregate_techniques" => technique_aggregate::run(app, job_id, config).await,
         "push_techniques" => technique_aggregate::push_techniques(app, job_id, config).await,
-        "enrich_all" => run_enrich_all(app, job_id, config).await,
-        s if s.starts_with("deep_enrich:") => {
-            let sector = &s["deep_enrich:".len()..];
-            deep_enrich::run_sector(app, job_id, config, sector).await
-        }
         "verify" => verify::run(app, job_id, config).await,
         "synthesize" => synthesize::run(app, job_id, config).await,
         "activity" => activity::run(app, job_id, config).await,
@@ -622,6 +476,8 @@ async fn run_single_stage(
 }
 
 /// Composite stage: deep_enrich_trial → aggregate_techniques → push_techniques
+/// Kept for rollback safety — currently unused (enrich_v2 replaces deep_enrich).
+#[allow(dead_code)]
 async fn run_enrich_all(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result<Value> {
     let db: tauri::State<'_, Database> = app.state();
     let _ = db.log_activity(job_id, "enrich_all", "info", "Starting enrich_all: deep_enrich → aggregate → push");
@@ -792,7 +648,7 @@ pub async fn start_scheduler(app: tauri::AppHandle) {
 
             if !has_schedules && !schedule_time.is_empty() {
                 // Use batch mode for migrated schedules — batch_pipeline handles the full
-                // stage sequence (research → enrich → deep_enrich → verify → synthesize →
+                // stage sequence (research → enrich → verify → synthesize →
                 // director_intel → embeddings) automatically.
                 let stages = vec!["batch".to_string()];
 

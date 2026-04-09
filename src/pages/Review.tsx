@@ -670,7 +670,7 @@ export default function Review() {
   }
 
   // Intentionally enrich-only: runs enrichment on Discovered tab companies.
-  // For the full pipeline (research + enrich + deep_enrich + verify + synthesize + ...),
+  // For the full pipeline (research + enrich + verify + synthesize + ...),
   // use the Pipeline page or Command Palette "Start Full Pipeline".
   async function handleRunEnrich() {
     try {
