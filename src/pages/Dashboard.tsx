@@ -227,7 +227,7 @@ export default function Dashboard() {
       )}
 
       {/* Pipeline Funnel — Hero element */}
-      <PipelineFunnel data={funnel} profileName={activeProfileName} />
+      <PipelineFunnel data={funnel} profileName={activeProfileName} onRetryErrors={loadData} />
 
       {/* Secondary stats */}
       <div className="grid grid-cols-3 gap-4">

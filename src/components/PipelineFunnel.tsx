@@ -1,4 +1,7 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { RotateCcw } from "lucide-react";
+import { resetErrorCompanies } from "../lib/tauri";
 import type { PipelineFunnelData } from "../lib/tauri";
 
 interface FunnelRow {
@@ -28,10 +31,13 @@ interface Props {
   profileName?: string;
   /** Render in compact mode (smaller text, no profile header) */
   compact?: boolean;
+  /** Callback after errors are retried (e.g. to refresh stats) */
+  onRetryErrors?: () => void;
 }
 
-export default function PipelineFunnel({ data, profileName, compact = false }: Props) {
+export default function PipelineFunnel({ data, profileName, compact = false, onRetryErrors }: Props) {
   const navigate = useNavigate();
+  const [retrying, setRetrying] = useState(false);
 
   if (!data) {
     return (
@@ -51,6 +57,20 @@ export default function PipelineFunnel({ data, profileName, compact = false }: P
   function handleRowClick(row: FunnelRow) {
     if (row.filter) {
       navigate(`/review?${row.filter}`);
+    }
+  }
+
+  async function handleRetryErrors() {
+    setRetrying(true);
+    try {
+      const count = await resetErrorCompanies();
+      if (count > 0 && onRetryErrors) {
+        onRetryErrors();
+      }
+    } catch (e) {
+      console.error("Failed to retry errors:", e);
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -101,7 +121,22 @@ export default function PipelineFunnel({ data, profileName, compact = false }: P
                 <td className={`${compact ? "text-xs" : "text-sm"} font-bold text-right pr-3 tabular-nums ${
                   isError && count > 0 ? "text-red-600" : "text-gray-900"
                 }`}>
-                  {count.toLocaleString()}
+                  <span className="inline-flex items-center gap-1.5">
+                    {count.toLocaleString()}
+                    {isError && count > 0 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRetryErrors();
+                        }}
+                        disabled={retrying}
+                        title="Retry all error companies"
+                        className="inline-flex items-center justify-center w-5 h-5 rounded bg-red-100 hover:bg-red-200 text-red-600 transition-colors disabled:opacity-50"
+                      >
+                        <RotateCcw className={`w-3 h-3 ${retrying ? "animate-spin" : ""}`} />
+                      </button>
+                    )}
+                  </span>
                 </td>
                 <td className="py-1">
                   <div className={`w-full ${compact ? "h-3" : "h-4"} bg-gray-100 rounded-full overflow-hidden`}>

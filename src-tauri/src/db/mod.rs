@@ -649,6 +649,60 @@ impl Database {
         Ok(conn.changes() as i64)
     }
 
+    /// Reset error companies for a specific search profile back to discovered for retry.
+    pub fn reset_error_companies_for_profile(&self, profile_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET status = 'discovered', last_error = NULL, updated_at = datetime('now') \
+             WHERE status = 'error' AND search_profile_id = ?1",
+            [profile_id],
+        )?;
+        Ok(conn.changes() as i64)
+    }
+
+    /// Reset verification for companies that were verified without deep enrichment data (stale verifications).
+    pub fn reset_stale_verifications(&self, profile_id: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET verified_v2_at = NULL, synthesis_public_json = NULL, synthesis_private_json = NULL \
+             WHERE search_profile_id = ?1 \
+             AND verified_v2_at IS NOT NULL \
+             AND (process_capabilities_json IS NULL OR process_capabilities_json = '[]')",
+            [profile_id],
+        )?;
+        Ok(conn.changes() as usize)
+    }
+
+    /// Count companies needing verification (enriched/approved/pushed with no verified_v2_at) for a profile.
+    pub fn count_needing_verification(&self, profile_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM companies \
+             WHERE verified_v2_at IS NULL \
+               AND status IN ('enriched', 'approved', 'pushed') \
+               AND website_url IS NOT NULL AND website_url != '' \
+               AND search_profile_id = ?1",
+            [profile_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Count companies needing synthesis (verified but no synthesis_public_json) for a profile.
+    pub fn count_needing_synthesis(&self, profile_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM companies \
+             WHERE verified_v2_at IS NOT NULL \
+               AND (synthesis_public_json IS NULL OR synthesis_public_json = '') \
+               AND status IN ('enriched', 'approved', 'pushed') \
+               AND search_profile_id = ?1",
+            [profile_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
     /// Reset enriched, enriching, and error companies back to discovered for re-enrichment.
     /// Clears all enrichment fields so they go through the full pipeline again.
     pub fn reset_for_reenrichment(&self) -> Result<i64> {

@@ -158,6 +158,44 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
     let mut wave = 1u32;
     let mut total_processed: usize = 0;
 
+    // Step 0: Auto-retry errors from previous runs
+    if !is_cancelled() {
+        let error_count = {
+            let db: tauri::State<'_, Database> = app.state();
+            let profile_id = db.get_active_profile_id();
+            db.get_companies_count(Some("error"), Some(&profile_id)).unwrap_or(0)
+        };
+        if error_count > 0 {
+            log::info!("[Batch] Resetting {} error companies for retry", error_count);
+            let db: tauri::State<'_, Database> = app.state();
+            let profile_id = db.get_active_profile_id();
+            let _ = db.reset_error_companies_for_profile(&profile_id);
+            let _ = db.log_activity(job_id, "batch", "info",
+                &format!("Auto-retrying {} error companies", error_count));
+        }
+    }
+
+    // Step 0b: Invalidate stale verifications (verified before enrichment was updated)
+    if !is_cancelled() {
+        let result = {
+            let db: tauri::State<'_, Database> = app.state();
+            let profile_id = db.get_active_profile_id();
+            db.reset_stale_verifications(&profile_id)
+        };
+        match result {
+            Ok(stale) if stale > 0 => {
+                log::info!("[Batch] Reset {} stale verifications for re-processing", stale);
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, "batch", "info",
+                    &format!("Reset {} stale verifications (verified before enrichment update)", stale));
+            }
+            Err(e) => {
+                log::warn!("[Batch] Failed to reset stale verifications: {}", e);
+            }
+            _ => {}
+        }
+    }
+
     loop {
         if is_cancelled() {
             break;
@@ -207,6 +245,12 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
 
         // Step 2: Enrich discovered companies (v2 — combines old enrich + deep_enrich)
         if !is_cancelled() {
+            let discovered_count = {
+                let db: tauri::State<'_, Database> = app.state();
+                let profile_id = db.get_active_profile_id();
+                db.get_companies_count(Some("discovered"), Some(&profile_id)).unwrap_or(0)
+            };
+            log::info!("[Batch] Wave {}: Starting enrich ({} discovered)", wave, discovered_count);
             let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "running"}));
             let _ = enrich_v2::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "completed"}));
@@ -214,6 +258,12 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
 
         // Step 3: Verify
         if !is_cancelled() {
+            let needs_verify = {
+                let db: tauri::State<'_, Database> = app.state();
+                let profile_id = db.get_active_profile_id();
+                db.count_needing_verification(&profile_id).unwrap_or(0)
+            };
+            log::info!("[Batch] Wave {}: Starting verify ({} need verification)", wave, needs_verify);
             let _ = app.emit("pipeline:stage", json!({"stage": "verify", "status": "running"}));
             let _ = verify::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "verify", "status": "completed"}));
@@ -221,6 +271,12 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
 
         // Step 4: Synthesize
         if !is_cancelled() {
+            let needs_synthesis = {
+                let db: tauri::State<'_, Database> = app.state();
+                let profile_id = db.get_active_profile_id();
+                db.count_needing_synthesis(&profile_id).unwrap_or(0)
+            };
+            log::info!("[Batch] Wave {}: Starting synthesize ({} need synthesis)", wave, needs_synthesis);
             let _ = app.emit("pipeline:stage", json!({"stage": "synthesize", "status": "running"}));
             let _ = synthesize::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "synthesize", "status": "completed"}));
@@ -228,6 +284,7 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
 
         // Step 5: Director intel
         if !is_cancelled() {
+            log::info!("[Batch] Wave {}: Starting director_intel", wave);
             let _ = app.emit("pipeline:stage", json!({"stage": "director_intel", "status": "running"}));
             let _ = director_intel::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "director_intel", "status": "completed"}));
@@ -235,17 +292,20 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
 
         // Step 6: Generate embeddings for semantic search
         if !is_cancelled() {
+            log::info!("[Batch] Wave {}: Starting embeddings", wave);
             let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "running"}));
             let _ = embeddings::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "completed"}));
         }
 
-        // Count remaining discovered (un-enriched) companies for this profile
-        let discovered_remaining = {
+        // Count remaining work across ALL stages for this profile
+        let (discovered_remaining, enriched_needing_verify, verified_needing_synthesis) = {
             let db: tauri::State<'_, Database> = app.state();
             let profile_id = db.get_active_profile_id();
-            db.get_companies_count(Some("discovered"), Some(&profile_id))
-                .unwrap_or(0)
+            let disc = db.get_companies_count(Some("discovered"), Some(&profile_id)).unwrap_or(0);
+            let need_verify = db.count_needing_verification(&profile_id).unwrap_or(0);
+            let need_synth = db.count_needing_synthesis(&profile_id).unwrap_or(0);
+            (disc, need_verify, need_synth)
         };
 
         total_processed += batch_size;
@@ -253,7 +313,8 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
         {
             let db: tauri::State<'_, Database> = app.state();
             let _ = db.log_activity(job_id, "batch", "info",
-                &format!("Wave {} complete. Discovered remaining: {}, total processed: ~{}", wave, discovered_remaining, total_processed));
+                &format!("Wave {} complete. Discovered: {}, needing verify: {}, needing synthesis: {}, total processed: ~{}",
+                    wave, discovered_remaining, enriched_needing_verify, verified_needing_synthesis, total_processed));
         }
 
         emit_node(app, json!({
@@ -267,8 +328,11 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
 
         wave += 1;
 
-        // If research found nothing new (no discovered companies left), stop
-        if discovered_remaining == 0 || is_cancelled() {
+        // Don't exit if there are companies waiting for verify/synthesize/intel/embeddings
+        let needs_processing = discovered_remaining > 0
+            || enriched_needing_verify > 0
+            || verified_needing_synthesis > 0;
+        if !needs_processing || is_cancelled() {
             break;
         }
     }
