@@ -300,6 +300,110 @@ impl Database {
         }))
     }
 
+    pub fn get_pipeline_funnel(&self, profile_id: Option<&str>) -> Result<Value> {
+        let conn = self.conn.lock().unwrap();
+
+        let profile_filter = if profile_id.is_some() { " AND search_profile_id = ?1" } else { "" };
+        let profile_filter_where = if profile_id.is_some() { " WHERE search_profile_id = ?1" } else { "" };
+
+        // Helper macro to query a single count with optional profile filter
+        macro_rules! count_query {
+            ($sql_where:expr) => {{
+                let sql = format!("SELECT COUNT(*) FROM companies{}", $sql_where);
+                if let Some(pid) = profile_id {
+                    conn.query_row(&sql, [pid], |row| row.get::<_, i64>(0)).unwrap_or(0)
+                } else {
+                    conn.query_row(&sql, [], |row| row.get::<_, i64>(0)).unwrap_or(0)
+                }
+            }};
+        }
+
+        let total = count_query!(profile_filter_where);
+        let discovered = count_query!(&format!(" WHERE status = 'discovered'{}", profile_filter));
+        let enriching = count_query!(&format!(" WHERE status = 'enriching'{}", profile_filter));
+        let enriched = count_query!(&format!(" WHERE status = 'enriched'{}", profile_filter));
+        let approved = count_query!(&format!(" WHERE status = 'approved'{}", profile_filter));
+        let pushed = count_query!(&format!(" WHERE status = 'pushed'{}", profile_filter));
+        let error = count_query!(&format!(" WHERE status = 'error'{}", profile_filter));
+        let removed_no_website = count_query!(&format!(" WHERE status = 'removed_no_website'{}", profile_filter));
+
+        // Deeper stages (column-based, not status-based)
+        let with_process_capabilities = count_query!(&format!(
+            " WHERE process_capabilities_json IS NOT NULL AND process_capabilities_json != ''{}",
+            profile_filter
+        ));
+        let verified = count_query!(&format!(
+            " WHERE verified_v2_at IS NOT NULL{}",
+            profile_filter
+        ));
+        let synthesized_public = count_query!(&format!(
+            " WHERE synthesis_public_json IS NOT NULL AND synthesis_public_json != ''{}",
+            profile_filter
+        ));
+        let synthesized_private = count_query!(&format!(
+            " WHERE synthesis_private_json IS NOT NULL AND synthesis_private_json != ''{}",
+            profile_filter
+        ));
+
+        // Director intel — join to nightshift_intel table
+        let director_intel: i64 = if let Some(pid) = profile_id {
+            conn.query_row(
+                "SELECT COUNT(*) FROM nightshift_intel ni JOIN companies c ON ni.company_id = c.id WHERE c.search_profile_id = ?1",
+                [pid],
+                |row| row.get(0),
+            ).unwrap_or(0)
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM nightshift_intel",
+                [],
+                |row| row.get(0),
+            ).unwrap_or(0)
+        };
+
+        // Embeddings — check if supplier_embeddings table exists
+        let embeddings: i64 = {
+            let table_exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='supplier_embeddings'",
+                [],
+                |row| row.get::<_, i64>(0),
+            ).unwrap_or(0) > 0;
+            if table_exists {
+                if let Some(pid) = profile_id {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM supplier_embeddings se JOIN companies c ON se.company_id = c.id WHERE c.search_profile_id = ?1",
+                        [pid],
+                        |row| row.get(0),
+                    ).unwrap_or(0)
+                } else {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM supplier_embeddings",
+                        [],
+                        |row| row.get(0),
+                    ).unwrap_or(0)
+                }
+            } else {
+                0
+            }
+        };
+
+        Ok(json!({
+            "total": total,
+            "discovered": discovered,
+            "enriching": enriching,
+            "enriched": enriched,
+            "approved": approved,
+            "pushed": pushed,
+            "error": error,
+            "removed_no_website": removed_no_website,
+            "with_process_capabilities": with_process_capabilities,
+            "verified": verified,
+            "synthesized_public": synthesized_public,
+            "synthesized_private": synthesized_private,
+            "director_intel": director_intel,
+            "embeddings": embeddings,
+        }))
+    }
+
     pub fn get_companies(&self, status: Option<&str>, limit: i64, offset: i64, profile_id: Option<&str>) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
 

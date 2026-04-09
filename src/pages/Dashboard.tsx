@@ -3,16 +3,14 @@ import { useNavigate } from "react-router-dom";
 import {
   Building2,
   Mail,
-  Upload,
-  Search,
   Play,
   Square,
   Activity,
   AlertCircle,
-  CheckCircle,
 } from "lucide-react";
 import StatCard from "../components/StatCard";
 import ChartCard from "../components/ChartCard";
+import PipelineFunnel from "../components/PipelineFunnel";
 import {
   getStats,
   getPipelineStatus,
@@ -23,8 +21,9 @@ import {
   onPipelineProgress,
   getStatsHistory,
   getExtendedStats,
+  getPipelineFunnel,
 } from "../lib/tauri";
-import type { AnalyticsData, StatsHistoryEntry, ExtendedStats, SearchProfile } from "../lib/tauri";
+import type { AnalyticsData, StatsHistoryEntry, ExtendedStats, SearchProfile, PipelineFunnelData } from "../lib/tauri";
 import { getSearchProfiles, getActiveProfile } from "../lib/tauri";
 import { playSound } from "../lib/sounds";
 
@@ -45,6 +44,7 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [statsHistory, setStatsHistory] = useState<StatsHistoryEntry[]>([]);
   const [extStats, setExtStats] = useState<ExtendedStats>({ verified: 0, synthesized: 0, intel_records: 0, activities: 0 });
+  const [funnel, setFunnel] = useState<PipelineFunnelData | null>(null);
   const [logStageFilter, setLogStageFilter] = useState("all");
   const [logLevelFilter, setLogLevelFilter] = useState("all");
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -101,13 +101,14 @@ export default function Dashboard() {
 
   async function loadData() {
     try {
-      const [s, p, l, a, h, ext] = await Promise.all([
+      const [s, p, l, a, h, ext, f] = await Promise.all([
         getStats(),
         getPipelineStatus(),
         getRunLog(undefined, 20),
         getAnalytics(),
         getStatsHistory(),
         getExtendedStats(),
+        getPipelineFunnel(),
       ]);
       setStats(s);
       setPipeline(p);
@@ -116,6 +117,7 @@ export default function Dashboard() {
       setAnalytics(a);
       setStatsHistory(h);
       setExtStats(ext);
+      setFunnel(f);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -124,18 +126,20 @@ export default function Dashboard() {
 
   async function refreshStats() {
     try {
-      const [s, l, a, h, ext] = await Promise.all([
+      const [s, l, a, h, ext, f] = await Promise.all([
         getStats(),
         getRunLog(undefined, 20),
         getAnalytics(),
         getStatsHistory(),
         getExtendedStats(),
+        getPipelineFunnel(),
       ]);
       setStats(s);
       setLogs(l);
       setAnalytics(a);
       setStatsHistory(h);
       setExtStats(ext);
+      setFunnel(f);
     } catch (e) {
       console.warn("Failed to refresh stats:", e);
     }
@@ -222,58 +226,29 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Stats cards */}
-      <div className="grid grid-cols-4 gap-4">
+      {/* Pipeline Funnel — Hero element */}
+      <PipelineFunnel data={funnel} profileName={activeProfileName} />
+
+      {/* Secondary stats */}
+      <div className="grid grid-cols-3 gap-4">
+        <StatCard
+          label="Emails Sent"
+          value={getStatCount(emailsData, "sent")}
+          icon={Mail}
+          color="text-orange-600"
+        />
+        <StatCard
+          label="Activities"
+          value={extStats.activities}
+          icon={Activity}
+          color="text-indigo-600"
+        />
         <StatCard
           label="Companies Found"
           value={getStatCount(companiesData)}
           icon={Building2}
           color="text-blue-600"
           trend={statsHistory.map((h) => h.companies)}
-        />
-        <StatCard
-          label="Enriched"
-          value={
-            getStatCount(companiesData, "enriched") +
-            getStatCount(companiesData, "approved") +
-            getStatCount(companiesData, "pushed")
-          }
-          icon={Search}
-          color="text-purple-600"
-          trend={statsHistory.map((h) => h.enriched)}
-        />
-        <StatCard
-          label="Verified"
-          value={extStats.verified}
-          icon={CheckCircle}
-          color="text-teal-600"
-        />
-        <StatCard
-          label="Synthesized"
-          value={extStats.synthesized}
-          icon={Activity}
-          color="text-indigo-600"
-        />
-      </div>
-      <div className="grid grid-cols-3 gap-4">
-        <StatCard
-          label="Intel Records"
-          value={extStats.intel_records}
-          icon={Search}
-          color="text-yellow-600"
-        />
-        <StatCard
-          label="Pushed to ForgeOS"
-          value={getStatCount(companiesData, "pushed")}
-          icon={Upload}
-          color="text-green-600"
-          trend={statsHistory.map((h) => h.pushed)}
-        />
-        <StatCard
-          label="Emails Sent"
-          value={getStatCount(emailsData, "sent")}
-          icon={Mail}
-          color="text-orange-600"
         />
       </div>
 

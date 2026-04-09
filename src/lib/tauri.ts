@@ -241,6 +241,28 @@ export async function getExtendedStats() {
   return invoke<ExtendedStats>("get_extended_stats");
 }
 
+// Pipeline Funnel
+export interface PipelineFunnelData {
+  total: number;
+  discovered: number;
+  enriching: number;
+  enriched: number;
+  approved: number;
+  pushed: number;
+  error: number;
+  removed_no_website: number;
+  with_process_capabilities: number;
+  verified: number;
+  synthesized_public: number;
+  synthesized_private: number;
+  director_intel: number;
+  embeddings: number;
+}
+
+export async function getPipelineFunnel() {
+  return invoke<PipelineFunnelData>("get_pipeline_funnel");
+}
+
 // Search Profiles
 export interface SearchProfile {
   id: string;

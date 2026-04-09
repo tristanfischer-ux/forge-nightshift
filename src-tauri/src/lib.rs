@@ -56,6 +56,12 @@ fn get_extended_stats(db: tauri::State<'_, Database>) -> Result<serde_json::Valu
 }
 
 #[tauri::command]
+fn get_pipeline_funnel(db: tauri::State<'_, Database>) -> Result<serde_json::Value, String> {
+    let profile_id = db.get_active_profile_id();
+    db.get_pipeline_funnel(Some(&profile_id)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_companies(
     db: tauri::State<'_, Database>,
     status: Option<String>,
@@ -1695,6 +1701,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_stats,
             get_extended_stats,
+            get_pipeline_funnel,
             get_companies,
             get_company,
             update_company_status,

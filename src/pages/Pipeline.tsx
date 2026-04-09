@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Play, Square, Search, Activity, Zap, Clock, ChevronDown, ChevronRight, Shield, Send, AlertTriangle, Settings2, History } from "lucide-react";
 import FlowChart from "../components/FlowChart";
+import PipelineFunnel from "../components/PipelineFunnel";
 import {
   startPipeline,
   stopPipeline,
@@ -15,8 +16,9 @@ import {
   getExtendedStats,
   getActiveProfile,
   getSearchProfiles,
+  getPipelineFunnel,
 } from "../lib/tauri";
-import type { PipelineNodeEvent, RunHistoryEntry, ExtendedStats, SearchProfile } from "../lib/tauri";
+import type { PipelineNodeEvent, RunHistoryEntry, ExtendedStats, SearchProfile, PipelineFunnelData } from "../lib/tauri";
 
 interface ActivityEntry {
   id: number;
@@ -92,6 +94,7 @@ export default function Pipeline() {
   const [activityTab, setActivityTab] = useState<ActivityTab>("feed");
   const [activityOpen, setActivityOpen] = useState(true);
   const [profileName, setProfileName] = useState("");
+  const [funnel, setFunnel] = useState<PipelineFunnelData | null>(null);
 
   useEffect(() => {
     // Load initial state
@@ -100,6 +103,7 @@ export default function Pipeline() {
     getStats().then(setStats).catch(() => {});
     getExtendedStats().then(setExtStats).catch(() => {});
     getRunHistory(10).then(setRunHistory).catch(() => {});
+    getPipelineFunnel().then(setFunnel).catch(() => {});
     getConfig().then((c) => {
       try {
         const schedules = JSON.parse(c.schedules || "[]") as { enabled: boolean; name: string; type: string; interval_hours?: number; time?: string; last_run_at?: string }[];
@@ -138,6 +142,7 @@ export default function Pipeline() {
         getStats().then(setStats).catch(() => {});
         getExtendedStats().then(setExtStats).catch(() => {});
         getRunHistory(10).then(setRunHistory).catch(() => {});
+        getPipelineFunnel().then(setFunnel).catch(() => {});
       }
     });
 
@@ -424,6 +429,9 @@ export default function Pipeline() {
         <div className="h-[280px]">
           <FlowChart nodes={nodes} />
         </div>
+
+        {/* Compact pipeline funnel */}
+        <PipelineFunnel data={funnel} compact />
       </div>
 
       {/* Activity — merged feed + history */}
