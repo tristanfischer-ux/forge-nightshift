@@ -4,6 +4,7 @@ import type { PipelineNodeEvent } from "../lib/tauri";
 interface FlowNodeProps {
   nodeId: string;
   label: string;
+  tooltip?: string;
   state: PipelineNodeEvent | null;
   x: number;
   y: number;
@@ -38,7 +39,7 @@ function formatElapsed(secs: number | null): string {
   return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
 }
 
-export default function FlowNode({ nodeId, label, state, x, y }: FlowNodeProps) {
+export default function FlowNode({ nodeId, label, tooltip, state, x, y }: FlowNodeProps) {
   const status = state?.status ?? "idle";
 
   const borderClass = {
@@ -61,6 +62,7 @@ export default function FlowNode({ nodeId, label, state, x, y }: FlowNodeProps) 
       className={`absolute w-48 rounded-xl border shadow-sm p-3 transition-all duration-300 ${borderClass} ${bgClass}`}
       style={{ left: x, top: y }}
       data-node-id={nodeId}
+      title={tooltip}
     >
       {status === "running" && (
         <div className="absolute left-0 top-0 bottom-0 w-1 bg-forge-500 rounded-l-xl animate-pulse" />

@@ -238,7 +238,7 @@ export default function Dashboard() {
           color="text-orange-600"
         />
         <StatCard
-          label="Activities"
+          label="News & Updates"
           value={extStats.activities}
           icon={Activity}
           color="text-indigo-600"
@@ -318,13 +318,13 @@ export default function Dashboard() {
             >
               <option value="all">All stages</option>
               <option value="research">Research</option>
-              <option value="enrich">Enrich</option>
-              <option value="verify">Verify</option>
-              <option value="synthesize">Synthesize</option>
-              <option value="director_intel">Director Intel</option>
-              <option value="push">Push</option>
+              <option value="enrich">Research</option>
+              <option value="verify">Fact-Check</option>
+              <option value="synthesize">Analyse</option>
+              <option value="director_intel">Leadership</option>
+              <option value="push">Publish</option>
               <option value="outreach">Outreach</option>
-              <option value="activity">Activity</option>
+              <option value="activity">News & Updates</option>
             </select>
             <select
               value={logLevelFilter}

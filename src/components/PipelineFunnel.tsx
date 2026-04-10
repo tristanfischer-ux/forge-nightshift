@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { RotateCcw } from "lucide-react";
 import { resetErrorCompanies } from "../lib/tauri";
 import type { PipelineFunnelData } from "../lib/tauri";
+import { stageLabel, stageTooltip } from "../lib/stage-labels";
 
 interface FunnelRow {
   label: string;
@@ -14,15 +15,15 @@ interface FunnelRow {
 
 const FUNNEL_ROWS: FunnelRow[] = [
   { label: "Total", key: "total", color: "bg-gray-400" },
-  { label: "Enriched", key: "enriched", color: "bg-purple-500", filter: "status=enriched" },
-  { label: "Process Caps", key: "with_process_capabilities", color: "bg-blue-500" },
-  { label: "Verified", key: "verified", color: "bg-teal-500" },
-  { label: "Synth (Public)", key: "synthesized_public", color: "bg-indigo-500" },
-  { label: "Synth (Private)", key: "synthesized_private", color: "bg-indigo-400" },
-  { label: "Director Intel", key: "director_intel", color: "bg-yellow-500" },
-  { label: "Embeddings", key: "embeddings", color: "bg-cyan-500" },
-  { label: "Approved", key: "approved", color: "bg-green-500", filter: "status=approved" },
-  { label: "Pushed", key: "pushed", color: "bg-green-600", filter: "status=pushed" },
+  { label: stageLabel("enriched"), key: "enriched", color: "bg-purple-500", filter: "status=enriched" },
+  { label: stageLabel("with_process_capabilities"), key: "with_process_capabilities", color: "bg-blue-500" },
+  { label: stageLabel("verified"), key: "verified", color: "bg-teal-500" },
+  { label: stageLabel("synthesized_public"), key: "synthesized_public", color: "bg-indigo-500" },
+  { label: stageLabel("synthesized_private"), key: "synthesized_private", color: "bg-indigo-400" },
+  { label: stageLabel("director_intel"), key: "director_intel", color: "bg-yellow-500" },
+  { label: stageLabel("embeddings"), key: "embeddings", color: "bg-cyan-500" },
+  { label: stageLabel("approved"), key: "approved", color: "bg-green-500", filter: "status=approved" },
+  { label: stageLabel("pushed"), key: "pushed", color: "bg-green-600", filter: "status=pushed" },
   { label: "Errors", key: "error", color: "bg-red-500", filter: "status=error" },
 ];
 
@@ -107,6 +108,7 @@ export default function PipelineFunnel({ data, profileName, compact = false, onR
               <tr
                 key={row.key}
                 onClick={() => handleRowClick(row)}
+                title={stageTooltip(row.key) ?? undefined}
                 className={`group ${
                   isClickable
                     ? "cursor-pointer hover:bg-gray-50 transition-colors"

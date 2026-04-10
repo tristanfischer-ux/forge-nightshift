@@ -1,6 +1,7 @@
 import FlowNode from "./FlowNode";
 import FlowConnector from "./FlowConnector";
 import type { PipelineNodeEvent } from "../lib/tauri";
+import { stageLabel, stageTooltip } from "../lib/stage-labels";
 
 interface FlowChartProps {
   nodes: Record<string, PipelineNodeEvent | null>;
@@ -12,14 +13,14 @@ interface FlowChartProps {
 // Row 1 (y=20):  research, enrich, verify, synthesize
 // Row 2 (y=140): director_intel, embeddings, push, outreach
 const NODE_DEFS = [
-  { id: "research",       label: "Research",       x: 15,  y: 20 },
-  { id: "enrich",         label: "Enrich",         x: 175, y: 20 },
-  { id: "verify",         label: "Verify",         x: 335, y: 20 },
-  { id: "synthesize",     label: "Synthesize",     x: 495, y: 20 },
-  { id: "director_intel", label: "Director Intel",  x: 15,  y: 140 },
-  { id: "embeddings",     label: "Embeddings",     x: 175, y: 140 },
-  { id: "push",           label: "Push",           x: 335, y: 140 },
-  { id: "outreach",       label: "Outreach",       x: 495, y: 140 },
+  { id: "research",       label: stageLabel("research"),       tooltip: stageTooltip("research"),       x: 15,  y: 20 },
+  { id: "enrich",         label: stageLabel("enrich"),         tooltip: stageTooltip("enrich"),         x: 175, y: 20 },
+  { id: "verify",         label: stageLabel("verify"),         tooltip: stageTooltip("verify"),         x: 335, y: 20 },
+  { id: "synthesize",     label: stageLabel("synthesize"),     tooltip: stageTooltip("synthesize"),     x: 495, y: 20 },
+  { id: "director_intel", label: stageLabel("director_intel"), tooltip: stageTooltip("director_intel"), x: 15,  y: 140 },
+  { id: "embeddings",     label: stageLabel("embeddings"),     tooltip: stageTooltip("embeddings"),     x: 175, y: 140 },
+  { id: "push",           label: stageLabel("push"),           tooltip: stageTooltip("push"),           x: 335, y: 140 },
+  { id: "outreach",       label: stageLabel("outreach"),       tooltip: stageTooltip("outreach"),       x: 495, y: 140 },
 ];
 
 // Node dimensions for connector math
@@ -66,6 +67,7 @@ export default function FlowChart({ nodes }: FlowChartProps) {
             key={def.id}
             nodeId={def.id}
             label={def.label}
+            tooltip={def.tooltip}
             state={nodes[def.id] ?? null}
             x={def.x}
             y={def.y}

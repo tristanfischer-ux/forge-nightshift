@@ -75,6 +75,7 @@ import {
 import type { SearchProfile } from "../lib/tauri";
 import { useError } from "../contexts/ErrorContext";
 import ConfirmDialog from "../components/ConfirmDialog";
+import { stageLabel, stageTooltip } from "../lib/stage-labels";
 
 const COUNTRIES: Record<string, string> = {
   DE: "Germany",
@@ -722,7 +723,7 @@ export default function Review() {
   function handleResetErrors() {
     setConfirmDialog({
       title: "Retry All Errors",
-      message: `Reset ${counts.error} error companies back to "discovered" so they can be re-processed by the pipeline?`,
+      message: `Reset ${counts.error} error companies back to "found" so they can be re-processed by the pipeline?`,
       confirmLabel: "Retry All",
       onConfirm: async () => {
         setConfirmDialog(null);
@@ -786,14 +787,14 @@ export default function Review() {
     }
   }
 
-  const tabs: { key: StatusFilter; label: string }[] = [
+  const tabs: { key: StatusFilter; label: string; tooltip?: string }[] = [
     { key: "all", label: "All" },
-    { key: "discovered", label: "Discovered" },
-    { key: "enriched", label: "Enriched" },
-    { key: "verified", label: "Verified" },
-    { key: "synthesized", label: "Synthesized" },
-    { key: "approved", label: "Approved" },
-    { key: "pushed", label: "Pushed" },
+    { key: "discovered", label: stageLabel("discovered"), tooltip: stageTooltip("discovered") },
+    { key: "enriched", label: stageLabel("enriched"), tooltip: stageTooltip("enriched") },
+    { key: "verified", label: stageLabel("verified"), tooltip: stageTooltip("verified") },
+    { key: "synthesized", label: stageLabel("synthesized"), tooltip: stageTooltip("synthesized") },
+    { key: "approved", label: stageLabel("approved"), tooltip: stageTooltip("approved") },
+    { key: "pushed", label: stageLabel("pushed"), tooltip: stageTooltip("pushed") },
     { key: "error", label: "Error" },
   ];
 
@@ -974,7 +975,7 @@ export default function Review() {
               <button
                 onClick={handleRunEnrich}
                 disabled={enriching}
-                title="Enrichment only — processes discovered companies. Use Pipeline page for the full pipeline."
+                title="Research only — processes found companies. Use Pipeline page for the full pipeline."
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
                   enriching
                     ? "bg-forge-400 cursor-not-allowed"
@@ -986,7 +987,7 @@ export default function Review() {
                 ) : (
                   <Play className="w-4 h-4" />
                 )}
-                {enriching ? "Enriching..." : "Enrich All"}
+                {enriching ? "Researching..." : "Research All"}
               </button>
               {companies.some((c) => Boolean(c.supabase_listing_id)) && (
                 <button
@@ -1023,7 +1024,7 @@ export default function Review() {
               className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm font-medium text-white transition-colors"
             >
               <CheckCircle className="w-4 h-4" />
-              Approve All
+              Qualify All
             </button>
           )}
           {filter === "approved" && companies.length > 0 && (
@@ -1041,7 +1042,7 @@ export default function Review() {
               ) : (
                 <ArrowUpCircle className="w-4 h-4" />
               )}
-              {enriching ? "Pipeline Running..." : "Push to ForgeOS"}
+              {enriching ? "Pipeline Running..." : "Publish to ForgeOS"}
             </button>
           )}
         </div>
@@ -1073,6 +1074,7 @@ export default function Review() {
               setFilter(tab.key);
               setSelected(null);
             }}
+            title={tab.tooltip}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               filter === tab.key
                 ? "bg-forge-600 text-white"
@@ -1131,7 +1133,7 @@ export default function Review() {
               <span className="text-sm font-medium text-gray-900 truncate">
                 {enrichProgress.phase === "waiting"
                   ? "Waiting for new companies..."
-                  : <>Enriching: {enrichProgress.currentCompany}</>}
+                  : <>Researching: {enrichProgress.currentCompany}</>}
                 {enrichProgress.model && (
                   <span className="text-gray-400 font-normal ml-1">
                     ({enrichProgress.model})
@@ -1141,7 +1143,7 @@ export default function Review() {
             </div>
             <div className="flex items-center gap-3 shrink-0 text-xs text-gray-500">
               <span>
-                Enriched: {enrichProgress.enriched}
+                Researched: {enrichProgress.enriched}
               </span>
               {enrichProgress.errors > 0 && (
                 <span className="text-red-600">
@@ -1191,12 +1193,12 @@ export default function Review() {
             <div className="flex items-center gap-2 min-w-0">
               <Loader2 className="w-4 h-4 text-purple-600 animate-spin shrink-0" />
               <span className="text-sm font-medium text-gray-900 truncate">
-                Pushing: {pushProgress.currentCompany}
+                Publishing: {pushProgress.currentCompany}
               </span>
             </div>
             <div className="flex items-center gap-3 shrink-0 text-xs text-gray-500">
               <span>
-                {pushProgress.pushed} pushed
+                {pushProgress.pushed} published
               </span>
               {pushProgress.skipped > 0 && (
                 <span className="text-amber-600">
@@ -1410,8 +1412,9 @@ export default function Review() {
                         className={`px-2 py-0.5 rounded-full text-xs ${
                           STATUS_BADGE[cStatus] || "bg-gray-100 text-gray-500"
                         }`}
+                        title={stageTooltip(cStatus)}
                       >
-                        {cStatus}
+                        {stageLabel(cStatus)}
                       </span>
                       {/* Semantic match score */}
                       {semanticScores[companyId] != null && (
@@ -1445,7 +1448,7 @@ export default function Review() {
                           }}
                           disabled={pushing === String(company.id)}
                           className="p-1 rounded hover:bg-purple-100 text-purple-600 transition-colors"
-                          title="Push to ForgeOS"
+                          title="Publish to ForgeOS"
                         >
                           {pushing === String(company.id) ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1519,8 +1522,9 @@ export default function Review() {
                     className={`px-2 py-0.5 rounded-full text-xs shrink-0 ${
                       STATUS_BADGE[status] || "bg-gray-100 text-gray-500"
                     }`}
+                    title={stageTooltip(status)}
                   >
-                    {status}
+                    {stageLabel(status)}
                   </span>
                 </div>
                 {!!selected.domain && (
@@ -1538,17 +1542,23 @@ export default function Review() {
 
               {/* Enhancement 11: Detail tabs */}
               <div className="flex gap-1 border-b border-gray-100 pb-2 flex-wrap">
-                {(["overview", "capabilities", "intelligence", "synthesis", "verification", "contact", "raw"] as const).map((tab) => (
-                  <button
-                    key={tab}
-                    onClick={() => setDetailTab(tab)}
-                    className={`px-3 py-1 text-xs rounded-md transition-colors ${
-                      detailTab === tab ? "bg-forge-100 text-forge-700 font-medium" : "text-gray-500 hover:text-gray-700"
-                    }`}
-                  >
-                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                  </button>
-                ))}
+                {(["overview", "capabilities", "intelligence", "synthesis", "verification", "contact", "raw"] as const).map((tab) => {
+                  const tabDisplayNames: Record<string, string> = {
+                    synthesis: "Analysis",
+                    verification: "Fact-Check",
+                  };
+                  return (
+                    <button
+                      key={tab}
+                      onClick={() => setDetailTab(tab)}
+                      className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                        detailTab === tab ? "bg-forge-100 text-forge-700 font-medium" : "text-gray-500 hover:text-gray-700"
+                      }`}
+                    >
+                      {tabDisplayNames[tab] ?? tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    </button>
+                  );
+                })}
               </div>
 
               {/* === OVERVIEW TAB === */}
@@ -1734,7 +1744,7 @@ export default function Review() {
                   <div>
                     <div className="flex items-center gap-2 mb-2">
                       <Newspaper className="w-4 h-4 text-blue-500" />
-                      <h4 className="font-medium text-sm text-gray-700">Recent Activity</h4>
+                      <h4 className="font-medium text-sm text-gray-700">News & Updates</h4>
                     </div>
                     {activitiesLoading ? (
                       <div className="flex items-center gap-2 text-xs text-gray-400">
@@ -1796,7 +1806,7 @@ export default function Review() {
                         className="flex items-center justify-between w-full mb-2"
                       >
                         <h4 className="text-xs text-gray-400 uppercase flex items-center gap-1">
-                          <Wrench className="w-3 h-3" /> Process Capabilities
+                          <Wrench className="w-3 h-3" /> Capabilities
                           <span className="ml-1 px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 text-[10px] font-medium">
                             {processCapabilities.length}
                           </span>
@@ -2276,7 +2286,7 @@ export default function Review() {
                   {/* Matching Investors */}
                   <div className="pt-3 border-t border-gray-100">
                     <h4 className="text-xs text-gray-400 uppercase mb-2 flex items-center gap-1">
-                      <TrendingUp className="w-3 h-3" /> Matching Investors
+                      <TrendingUp className="w-3 h-3" /> Investor Fit
                       {investorMatches.length > 0 && (
                         <span className="ml-1 px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 text-[10px] font-medium">
                           {investorMatches.length}
@@ -2289,7 +2299,7 @@ export default function Review() {
                         Loading investor matches...
                       </div>
                     ) : investorMatches.length === 0 ? (
-                      <p className="text-xs text-gray-400">No investor matches found. Run the Investor Match pipeline stage.</p>
+                      <p className="text-xs text-gray-400">No investor fit data found. Run the Investor Fit pipeline stage.</p>
                     ) : (
                       <div className="space-y-2">
                         {investorMatches.map((match) => (
@@ -2356,7 +2366,7 @@ export default function Review() {
                     const publicRaw = selected.synthesis_public_json;
                     if (!publicRaw) return (
                       <div className="p-4 text-center text-gray-400 text-sm">
-                        No synthesis data available. Run the Synthesis pipeline stage first.
+                        No analysis data available. Run the Analyse pipeline stage first.
                       </div>
                     );
                     try {
@@ -2366,7 +2376,7 @@ export default function Review() {
                           {/* Public section */}
                           <div className="rounded-lg border-2 border-blue-200 bg-blue-50/50 p-4 space-y-4">
                             <h4 className="text-xs font-semibold text-blue-700 uppercase flex items-center gap-1">
-                              <Eye className="w-3 h-3" /> Public Synthesis
+                              <Eye className="w-3 h-3" /> Public Analysis
                             </h4>
 
                             {/* Capability summary */}
@@ -2490,7 +2500,7 @@ export default function Review() {
                     } catch {
                       return (
                         <div className="p-4 text-center text-red-400 text-sm">
-                          Failed to parse synthesis data.
+                          Failed to parse analysis data.
                         </div>
                       );
                     }
@@ -2516,7 +2526,7 @@ export default function Review() {
                       {verificationData.verified_v2_at ? (
                         <div className="flex items-center gap-2">
                           <ShieldCheck className="w-4 h-4 text-green-600" />
-                          <span className="text-sm font-medium text-green-700">Verified</span>
+                          <span className="text-sm font-medium text-green-700">Fact-Checked</span>
                           <span className="text-xs text-gray-400">
                             {new Date(String(verificationData.verified_v2_at)).toLocaleString()}
                           </span>
@@ -2524,7 +2534,7 @@ export default function Review() {
                       ) : (
                         <div className="flex items-center gap-2">
                           <AlertTriangle className="w-4 h-4 text-gray-400" />
-                          <span className="text-sm text-gray-500">Not yet verified</span>
+                          <span className="text-sm text-gray-500">Not yet fact-checked</span>
                         </div>
                       )}
 
@@ -3012,7 +3022,7 @@ export default function Review() {
                   <button
                     onClick={handleRunEnrich}
                     disabled={enriching}
-                    title="Enrichment only — processes discovered companies. Use Pipeline page for the full pipeline."
+                    title="Research only — processes found companies. Use Pipeline page for the full pipeline."
                     className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
                       enriching
                         ? "bg-forge-400 cursor-not-allowed"
@@ -3021,10 +3031,10 @@ export default function Review() {
                   >
                     <RefreshCw className={`w-4 h-4 ${enriching ? "animate-spin" : ""}`} />
                     {enriching
-                      ? "Enriching..."
+                      ? "Researching..."
                       : status === "error"
-                        ? "Retry Enrichment"
-                        : "Run Enrichment"}
+                        ? "Retry Research"
+                        : "Run Research"}
                   </button>
                 )}
                 {status === "enriched" && (
@@ -3034,7 +3044,7 @@ export default function Review() {
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm font-medium text-white transition-colors"
                     >
                       <CheckCircle className="w-4 h-4" />
-                      Approve
+                      Qualify
                       <kbd className="ml-1 px-1 py-0.5 bg-green-700 rounded text-[10px] font-mono">a</kbd>
                     </button>
                     <button
@@ -3074,7 +3084,7 @@ export default function Review() {
                       ) : (
                         <ArrowUpCircle className="w-4 h-4" />
                       )}
-                      {pushing === String(selected.id) ? "Pushing..." : "Push to ForgeOS"}
+                      {pushing === String(selected.id) ? "Publishing..." : "Publish to ForgeOS"}
                     </button>
                     <button
                       onClick={() => handleUnapprove(String(selected.id))}

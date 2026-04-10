@@ -950,8 +950,8 @@ export default function Settings() {
 
           {/* OpenAI (Embeddings) */}
           <section className="bg-white rounded-xl border border-gray-200 p-4 space-y-3 shadow-sm">
-            <h2 className="text-sm font-semibold text-gray-900">OpenAI (Semantic Search)</h2>
-            <p className="text-xs text-gray-500">Used for embedding queries in semantic search. Falls back to ForgeOS .env.local if not set here.</p>
+            <h2 className="text-sm font-semibold text-gray-900">OpenAI (Search Index)</h2>
+            <p className="text-xs text-gray-500">Used for generating search index embeddings for semantic search. Falls back to ForgeOS .env.local if not set here.</p>
             <Input
               label="API Key"
               value={config.openai_api_key || ""}
@@ -1178,7 +1178,7 @@ export default function Settings() {
               {reenrichStage === "confirm" && (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-2">
                   <p className="text-sm font-medium text-amber-800">
-                    This will reset all enriched, enriching, and error companies back to discovered.
+                    This will reset all researched, researching, and error companies back to found.
                   </p>
                   <p className="text-xs text-amber-600 mt-1">
                     They will need to go through the enrichment pipeline again.
@@ -1216,7 +1216,7 @@ export default function Settings() {
               {reenrichStage === "done" && (
                 <p className="text-xs text-green-600 mt-1.5 flex items-center gap-1">
                   <CheckCircle className="w-3.5 h-3.5" />
-                  {reenrichCount} companies reset to discovered — run the Enrich pipeline to process them.
+                  {reenrichCount} companies reset to found — run the Research pipeline to process them.
                 </p>
               )}
               {reenrichStage === "error" && (
@@ -1227,7 +1227,7 @@ export default function Settings() {
               )}
               {reenrichStage === "idle" && (
                 <p className="text-xs text-gray-400 mt-1.5">
-                  Resets enriched, enriching, and error companies back to discovered so they go through the new website-scraping enrichment pipeline.
+                  Resets researched, researching, and error companies back to found so they go through the website-scraping research pipeline again.
                 </p>
               )}
             </div>

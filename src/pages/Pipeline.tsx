@@ -19,6 +19,7 @@ import {
   getPipelineFunnel,
 } from "../lib/tauri";
 import type { PipelineNodeEvent, RunHistoryEntry, ExtendedStats, SearchProfile, PipelineFunnelData } from "../lib/tauri";
+import { stageLabel, stageTooltip } from "../lib/stage-labels";
 
 interface ActivityEntry {
   id: number;
@@ -40,33 +41,33 @@ const ADVANCED_PRESETS: { label: string; stages: string[]; icon: React.ReactNode
     label: "Intelligence",
     stages: ["verify", "synthesize", "director_intel"],
     icon: <Shield className="w-3.5 h-3.5" />,
-    description: "Verify + synthesize + director analysis",
+    description: "Fact-check + analyse + leadership intel",
   },
   {
     label: "Enrich + Verify",
     stages: ["enrich", "verify", "synthesize"],
     icon: <Zap className="w-3.5 h-3.5" />,
-    description: "Enrich, verify, and synthesize",
+    description: "Research, fact-check, and analyse",
   },
   {
     label: "Discovery Only",
     stages: ["research", "enrich"],
     icon: <Search className="w-3.5 h-3.5" />,
-    description: "Find new companies and basic enrichment",
+    description: "Find new companies and basic research",
   },
   {
     label: "Push + Outreach",
     stages: ["push", "outreach", "activity"],
     icon: <Send className="w-3.5 h-3.5" />,
-    description: "Push to ForgeOS, send outreach, fetch activity",
+    description: "Publish to ForgeOS, send outreach, fetch news",
   },
 ];
 
 function stagesToDescription(stages: string[]): string {
   if (stages.length === 1 && stages[0] === "batch") {
-    return "Research \u2192 Enrich \u2192 Verify \u2192 Synthesize \u2192 Director Intel \u2192 Embeddings";
+    return `${stageLabel("research")} \u2192 ${stageLabel("enrich")} \u2192 ${stageLabel("verify")} \u2192 ${stageLabel("synthesize")} \u2192 ${stageLabel("director_intel")} \u2192 ${stageLabel("embeddings")}`;
   }
-  return stages.map((s) => s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())).join(" \u2192 ");
+  return stages.map((s) => stageLabel(s)).join(" \u2192 ");
 }
 
 function stagesToMode(stages: string[]): string {
@@ -399,7 +400,7 @@ export default function Pipeline() {
           </div>
           <div className="flex items-center gap-3 bg-white rounded-lg border border-gray-200 px-3 py-2">
             <div>
-              <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none">Verified</p>
+              <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none" title={stageTooltip("verified")}>Fact-Checked</p>
               <p className="text-base font-bold text-gray-900 mt-0.5">{extStats.verified.toLocaleString()}</p>
             </div>
           </div>
@@ -419,7 +420,7 @@ export default function Pipeline() {
           </button>
           <div className="flex items-center gap-3 bg-white rounded-lg border border-gray-200 px-3 py-2">
             <div>
-              <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none">Pushed</p>
+              <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none" title={stageTooltip("pushed")}>Published</p>
               <p className="text-base font-bold text-gray-900 mt-0.5">{pushedCount.toLocaleString()}</p>
             </div>
           </div>
