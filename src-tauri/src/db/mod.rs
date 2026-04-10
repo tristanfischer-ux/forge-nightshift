@@ -323,7 +323,10 @@ impl Database {
         let total = count_query!(profile_filter_where);
         let discovered = count_query!(&format!(" WHERE status = 'discovered'{}", profile_filter));
         let enriching = count_query!(&format!(" WHERE status = 'enriching'{}", profile_filter));
-        let enriched = count_query!(&format!(" WHERE status = 'enriched'{}", profile_filter));
+        // Cumulative: "Researched" = everyone who completed enrichment (enriched + approved + pushed)
+        let enriched = count_query!(&format!(" WHERE status IN ('enriched','approved','pushed'){}", profile_filter));
+        // Current status counts (for the funnel breakdown)
+        let enriched_only = count_query!(&format!(" WHERE status = 'enriched'{}", profile_filter));
         let approved = count_query!(&format!(" WHERE status = 'approved'{}", profile_filter));
         let pushed = count_query!(&format!(" WHERE status = 'pushed'{}", profile_filter));
         let error = count_query!(&format!(" WHERE status = 'error'{}", profile_filter));
@@ -392,7 +395,8 @@ impl Database {
             "total": total,
             "discovered": discovered,
             "enriching": enriching,
-            "enriched": enriched,
+            "enriched": enriched,  // cumulative: enriched + approved + pushed
+            "enriched_only": enriched_only,  // just status='enriched'
             "approved": approved,
             "pushed": pushed,
             "error": error,
