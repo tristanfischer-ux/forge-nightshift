@@ -851,10 +851,11 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                                             })
                                     })
                                     .unwrap_or(0);
-                                if rel >= relevance_threshold && qual >= quality_threshold {
-                                    let _ = db.update_company_status(&id, "approved");
-                                    approved_count.fetch_add(1, Ordering::Relaxed);
-                                }
+                                // Auto-approval REMOVED from enrichment.
+                                // Companies should only be qualified AFTER the full pipeline
+                                // (fact-check → analyse → leadership). Approval now happens
+                                // in the synthesize stage after analysis is complete.
+                                let _ = rel; let _ = qual; // suppress unused warnings
                             }
                             Err(e) => {
                                 let error_msg = format!("DB save failed: {}", e);

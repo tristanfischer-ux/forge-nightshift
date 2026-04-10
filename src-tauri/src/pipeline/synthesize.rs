@@ -48,6 +48,18 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .max(1)
         .min(10);
 
+    let relevance_threshold: i64 = config
+        .get("relevance_threshold")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+
+    let quality_threshold: i64 = config
+        .get("auto_approve_quality_threshold")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50);
+
     // Load active profile domain for prompt customization
     let active_domain = {
         let db: tauri::State<'_, Database> = app.state();
@@ -559,6 +571,22 @@ Return ONLY valid JSON."#,
                                     "info",
                                     &format!("[Synthesize] {} — public + private synthesis saved", name),
                                 );
+
+                                // Auto-qualify: now that the company is fully analysed,
+                                // approve if it meets quality thresholds
+                                {
+                                    let db: tauri::State<'_, Database> = app.state();
+                                    let rel: i64 = company.get("relevance_score")
+                                        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                                        .unwrap_or(0);
+                                    let qual: i64 = company.get("enrichment_quality")
+                                        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                                        .unwrap_or(0);
+                                    if rel >= relevance_threshold && qual >= quality_threshold {
+                                        let _ = db.update_company_status(&id, "approved");
+                                        log::info!("[Synthesize] {} auto-qualified (rel={}, qual={})", name, rel, qual);
+                                    }
+                                }
                             }
                             Err(e) => {
                                 let error_msg = format!("[Synthesize] DB save failed: {}", e);
