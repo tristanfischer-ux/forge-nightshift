@@ -176,25 +176,12 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
         }
     }
 
-    // Step 0b: Invalidate stale verifications (verified before enrichment was updated)
-    if !is_cancelled() {
-        let result = {
-            let db: tauri::State<'_, Database> = app.state();
-            let profile_id = db.get_active_profile_id();
-            db.reset_stale_verifications(&profile_id)
-        };
-        match result {
-            Ok(stale) if stale > 0 => {
-                log::info!("[Batch] Reset {} stale verifications for re-processing", stale);
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, "batch", "info",
-                    &format!("Reset {} stale verifications (verified before enrichment update)", stale));
-            }
-            Err(e) => {
-                log::warn!("[Batch] Failed to reset stale verifications: {}", e);
-            }
-            _ => {}
-        }
+    // Step 0b: Stale verification reset REMOVED.
+    // With unified enrichment (enrich_v2), process capabilities are extracted in the same
+    // pass as metadata. There is no "verified before deep enriched" scenario anymore.
+    // The old reset was checking process_capabilities_json IS NULL, which is always true
+    // for service companies (installers, consultants) — causing an infinite reset loop.
+    {
     }
 
     loop {
