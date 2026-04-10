@@ -1,0 +1,1 @@
+ALTER TABLE companies ADD COLUMN error_count INTEGER DEFAULT 0;

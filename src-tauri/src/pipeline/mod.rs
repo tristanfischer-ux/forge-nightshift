@@ -429,6 +429,13 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
     let db: tauri::State<'_, Database> = app.state();
     let config = db.get_all_config()?;
 
+    // Defensive check: outreach stages without batch mode is likely a legacy trigger
+    if stages.iter().any(|s| s == "learn_outreach" || s.starts_with("template_outreach:"))
+        && !stages.iter().any(|s| s == "batch")
+    {
+        log::warn!("[Pipeline] Non-batch pipeline with outreach stages detected. This is likely a legacy trigger.");
+    }
+
     // Batch mode: if stages contains "batch", run batch_pipeline instead of normal flow
     if stages.iter().any(|s| s == "batch") {
         log::info!("[pipeline] Batch mode activated");
@@ -723,43 +730,7 @@ pub async fn start_scheduler(app: tauri::AppHandle) {
     )
     .join(".nightshift-trigger");
 
-    // Migrate legacy schedule_time to new schedules format
-    {
-        let db: tauri::State<'_, Database> = app.state();
-        if let Ok(config) = db.get_all_config() {
-            let has_schedules = config.get("schedules")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.is_empty() && s != "[]")
-                .unwrap_or(false);
-            let schedule_time = config.get("schedule_time")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            if !has_schedules && !schedule_time.is_empty() {
-                // Use batch mode for migrated schedules — batch_pipeline handles the full
-                // stage sequence (research → enrich → verify → synthesize →
-                // director_intel → embeddings) automatically.
-                let stages = vec!["batch".to_string()];
-
-                let schedule = Schedule {
-                    id: format!("{:016x}", chrono::Utc::now().timestamp_millis() as u64),
-                    name: format!("Daily at {}", schedule_time),
-                    enabled: true,
-                    schedule_type: "daily".to_string(),
-                    interval_hours: None,
-                    time: Some(schedule_time.to_string()),
-                    days: None,
-                    stages,
-                    last_run_at: None,
-                };
-
-                if let Ok(json) = serde_json::to_string(&vec![schedule]) {
-                    let _ = db.set_config("schedules", &json);
-                    log::info!("[scheduler] Migrated schedule_time={} to new schedules format", schedule_time);
-                }
-            }
-        }
-    }
+    // Legacy schedule_time migration removed — schedule_time config key no longer exists.
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;

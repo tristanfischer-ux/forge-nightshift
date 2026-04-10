@@ -24,9 +24,10 @@ async fn fetch_investors_from_supabase(url: &str, key: &str) -> Result<Vec<Value
             .header("Authorization", format!("Bearer {}", key))
             .header("Range", format!("{}-{}", offset, offset + page_size - 1))
             .query(&[
-                ("select", "id,name,sector_focus,stage_focus,geo_focus,attributes"),
+                ("select", "id,title,subcategory,attributes"),
                 ("category", "eq.Finance"),
-                ("status", "eq.approved"),
+                ("approval_status", "eq.approved"),
+                ("limit", "1000"),
             ])
             .timeout(std::time::Duration::from_secs(30))
             .send()
@@ -51,8 +52,23 @@ async fn fetch_investors_from_supabase(url: &str, key: &str) -> Result<Vec<Value
     Ok(all_investors)
 }
 
+/// Helper: extract a JSON array of strings from attributes, lowercased.
+fn extract_string_array(attrs: &Value, key: &str) -> Vec<String> {
+    attrs
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_lowercase())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Compute a keyword overlap match score (0-100) between a company and an investor.
 /// Uses sector, stage, and geo overlap as signals.
+/// Investor fields (sectors, stage_focus, geo_focus) live inside the `attributes` JSONB column.
 fn compute_match_score(company: &Value, investor: &Value) -> (i32, Vec<String>) {
     let mut score = 0i32;
     let mut reasons: Vec<String> = Vec::new();
@@ -65,41 +81,46 @@ fn compute_match_score(company: &Value, investor: &Value) -> (i32, Vec<String>) 
     let company_size = company.get("company_size").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
     let company_country = company.get("country").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
 
-    // Extract investor fields
-    let investor_sector = investor.get("sector_focus").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
-    let investor_stage = investor.get("stage_focus").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
-    let investor_geo = investor.get("geo_focus").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+    // Extract investor fields from attributes JSONB
+    let attrs = investor.get("attributes").cloned().unwrap_or(json!({}));
+    let investor_sectors = extract_string_array(&attrs, "sectors");
+    let investor_stages = extract_string_array(&attrs, "stage_focus");
+    let investor_geos = extract_string_array(&attrs, "geo_focus");
 
-    // Also check attributes JSON for additional sector/stage/geo data
-    let investor_attrs = investor.get("attributes").and_then(|v| v.as_str()).unwrap_or("");
-    let attrs_lower = investor_attrs.to_lowercase();
+    // Build combined text for matching (used as fallback for keyword search)
+    let investor_sector_text = investor_sectors.join(" ");
+    let investor_stage_text = investor_stages.join(" ");
+    let _investor_geo_text = investor_geos.join(" ");
 
     // Combine all company sector text for matching
     let company_sector_text = format!("{} {} {} {}", company_category, company_subcategory, company_specialties, company_industries);
 
     // 1. Sector overlap (max 40 points)
-    let sector_keywords = extract_keywords(&investor_sector);
-    let sector_keywords_attrs = extract_keywords_from_json(&attrs_lower, "sector");
-    let all_sector_keywords: Vec<&str> = sector_keywords.iter().chain(sector_keywords_attrs.iter()).copied().collect();
-
+    // Each investor sector keyword is checked against the company's combined sector text
     let mut sector_matches = 0;
-    for keyword in &all_sector_keywords {
-        if keyword.len() >= 3 && company_sector_text.contains(keyword) {
-            sector_matches += 1;
+    let mut sector_total = 0;
+    for sector in &investor_sectors {
+        for keyword in extract_keywords(sector) {
+            if keyword.len() >= 3 {
+                sector_total += 1;
+                if company_sector_text.contains(keyword) {
+                    sector_matches += 1;
+                }
+            }
         }
     }
-    if !all_sector_keywords.is_empty() {
-        let sector_score = (sector_matches as f64 / all_sector_keywords.len() as f64 * 40.0).min(40.0) as i32;
+    if sector_total > 0 {
+        let sector_score = (sector_matches as f64 / sector_total as f64 * 40.0).min(40.0) as i32;
         if sector_score > 0 {
             score += sector_score;
-            reasons.push(format!("Sector overlap: {}/{} keywords match", sector_matches, all_sector_keywords.len()));
+            reasons.push(format!("Sector overlap: {}/{} keywords match", sector_matches, sector_total));
         }
     }
 
     // Bonus for cleantech/manufacturing/engineering keywords in investor focus
     let cleantech_keywords = ["cleantech", "clean tech", "green", "sustainability", "renewable", "energy", "climate", "environment", "manufacturing", "industrial", "engineering", "hardware"];
     for kw in &cleantech_keywords {
-        if (investor_sector.contains(kw) || attrs_lower.contains(kw)) && company_sector_text.contains(kw) {
+        if investor_sector_text.contains(kw) && company_sector_text.contains(kw) {
             score += 5;
             reasons.push(format!("Shared focus: {}", kw));
             break; // Only count once
@@ -109,21 +130,27 @@ fn compute_match_score(company: &Value, investor: &Value) -> (i32, Vec<String>) 
     // 2. Stage overlap (max 25 points)
     let stage_match = match company_size.as_str() {
         "small" | "micro" | "startup" => {
-            investor_stage.contains("seed") || investor_stage.contains("early") || investor_stage.contains("pre-seed")
-                || investor_stage.contains("series a") || investor_stage.contains("angel")
-                || attrs_lower.contains("seed") || attrs_lower.contains("early stage")
+            investor_stages.iter().any(|s| {
+                s.contains("seed") || s.contains("early") || s.contains("pre-seed")
+                    || s.contains("series a") || s.contains("angel")
+            })
         }
         "medium" | "sme" => {
-            investor_stage.contains("series b") || investor_stage.contains("growth")
-                || investor_stage.contains("series a") || investor_stage.contains("expansion")
-                || attrs_lower.contains("growth") || attrs_lower.contains("series b")
+            investor_stages.iter().any(|s| {
+                s.contains("series b") || s.contains("growth")
+                    || s.contains("series a") || s.contains("expansion")
+            })
         }
         "large" | "enterprise" => {
-            investor_stage.contains("late") || investor_stage.contains("growth")
-                || investor_stage.contains("buyout") || investor_stage.contains("pe")
-                || attrs_lower.contains("late stage") || attrs_lower.contains("buyout")
+            investor_stages.iter().any(|s| {
+                s.contains("late") || s.contains("growth")
+                    || s.contains("buyout") || s.contains("pe")
+            })
         }
-        _ => false,
+        _ => {
+            // Fallback: check combined stage text
+            !investor_stage_text.is_empty()
+        },
     };
     if stage_match {
         score += 25;
@@ -132,14 +159,12 @@ fn compute_match_score(company: &Value, investor: &Value) -> (i32, Vec<String>) 
 
     // 3. Geo overlap (max 25 points)
     let geo_match = if !company_country.is_empty() {
-        investor_geo.contains(&company_country)
-            || investor_geo.contains("uk") && (company_country == "gb" || company_country == "uk")
-            || investor_geo.contains("europe") && ["gb", "uk", "de", "fr", "nl", "it", "es", "se", "no", "dk", "fi", "be", "at", "ch", "ie", "pl", "cz", "pt"].contains(&company_country.as_str())
-            || investor_geo.contains("global")
-            || investor_geo.is_empty() // No geo restriction = open to all
-            || attrs_lower.contains(&company_country)
-            || (attrs_lower.contains("uk") && (company_country == "gb" || company_country == "uk"))
-            || attrs_lower.contains("europe")
+        investor_geos.iter().any(|g| {
+            g.contains(&company_country)
+                || (g.contains("uk") && (company_country == "gb" || company_country == "uk"))
+                || (g.contains("europe") && ["gb", "uk", "de", "fr", "nl", "it", "es", "se", "no", "dk", "fi", "be", "at", "ch", "ie", "pl", "cz", "pt"].contains(&company_country.as_str()))
+                || g.contains("global")
+        }) || investor_geos.is_empty() // No geo restriction = open to all
     } else {
         false
     };
@@ -149,8 +174,7 @@ fn compute_match_score(company: &Value, investor: &Value) -> (i32, Vec<String>) 
     }
 
     // 4. Name/brand recognition bonus (max 5 points)
-    // If investor name appears in common VC/grant databases, slight bonus
-    let investor_name = investor.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+    let investor_name = investor.get("title").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
     let known_brands = ["innovate uk", "british business bank", "eic", "horizon", "clean growth fund", "green angel", "carbon trust"];
     for brand in &known_brands {
         if investor_name.contains(brand) {
@@ -168,16 +192,6 @@ fn extract_keywords(text: &str) -> Vec<&str> {
     text.split(|c: char| c == ',' || c == ';' || c == '|')
         .map(|s| s.trim())
         .filter(|s| s.len() >= 3)
-        .collect()
-}
-
-/// Extract keywords from a JSON string that match a given field prefix.
-fn extract_keywords_from_json<'a>(json_text: &'a str, _field: &str) -> Vec<&'a str> {
-    // Simple extraction: split on common delimiters and take meaningful words
-    json_text
-        .split(|c: char| c == ',' || c == '"' || c == '[' || c == ']' || c == '{' || c == '}' || c == ':')
-        .map(|s| s.trim())
-        .filter(|s| s.len() >= 4 && !s.chars().all(|c| c.is_numeric()))
         .collect()
 }
 
@@ -291,14 +305,24 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         let db: tauri::State<'_, Database> = app.state();
         for (score, reasons, investor) in &scored {
             let inv_id = investor.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let inv_name = investor.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let inv_sector = investor.get("sector_focus").and_then(|v| v.as_str()).unwrap_or("");
-            let inv_stage = investor.get("stage_focus").and_then(|v| v.as_str()).unwrap_or("");
-            let inv_geo = investor.get("geo_focus").and_then(|v| v.as_str()).unwrap_or("");
+            let inv_name = investor.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let inv_attrs = investor.get("attributes").cloned().unwrap_or(json!({}));
+            let inv_sector = inv_attrs.get("sectors")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            let inv_stage = inv_attrs.get("stage_focus")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            let inv_geo = inv_attrs.get("geo_focus")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
             let reasons_text = reasons.join("; ");
 
             match db.save_investor_match(
-                company_id, inv_id, inv_name, inv_sector, inv_stage, inv_geo, *score, &reasons_text,
+                company_id, inv_id, inv_name, &inv_sector, &inv_stage, &inv_geo, *score, &reasons_text,
             ) {
                 Ok(_) => {}
                 Err(e) => {

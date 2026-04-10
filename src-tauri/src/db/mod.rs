@@ -73,6 +73,7 @@ impl Database {
             include_str!("migrations/026_directory_search.sql"),
             include_str!("migrations/027_push_to_forgeos.sql"),
             include_str!("migrations/028_investor_matches.sql"),
+            include_str!("migrations/029_error_count.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -570,7 +571,7 @@ impl Database {
     pub fn set_company_error(&self, id: &str, error: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE companies SET status = 'error', last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
+            "UPDATE companies SET status = 'error', last_error = ?1, error_count = COALESCE(error_count, 0) + 1, updated_at = datetime('now') WHERE id = ?2",
             [error, id],
         )?;
         Ok(())
@@ -644,18 +645,19 @@ impl Database {
     pub fn reset_error_companies(&self) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE companies SET status = 'discovered', last_error = NULL, updated_at = datetime('now') WHERE status = 'error'",
+            "UPDATE companies SET status = 'discovered', last_error = NULL, updated_at = datetime('now') WHERE status = 'error' AND COALESCE(error_count, 0) < 3",
             [],
         )?;
         Ok(conn.changes() as i64)
     }
 
     /// Reset error companies for a specific search profile back to discovered for retry.
+    /// Only retries companies with fewer than 3 errors — permanent failures stay as errors.
     pub fn reset_error_companies_for_profile(&self, profile_id: &str) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE companies SET status = 'discovered', last_error = NULL, updated_at = datetime('now') \
-             WHERE status = 'error' AND search_profile_id = ?1",
+             WHERE status = 'error' AND COALESCE(error_count, 0) < 3 AND search_profile_id = ?1",
             [profile_id],
         )?;
         Ok(conn.changes() as i64)
