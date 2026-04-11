@@ -57,12 +57,33 @@ function DownArrow({ active }: { active: boolean }) {
   );
 }
 
+// All stages in pipeline order
+const ALL_STAGES = [...ROW1, ...ROW2];
+
 export default function FlowChart({ nodes }: FlowChartProps) {
   // Check if the connection between two stages is active
   function isConnectionActive(fromId: string, toId: string): boolean {
     const fromStatus = nodes[fromId]?.status ?? "idle";
     const toStatus = nodes[toId]?.status ?? "idle";
     return fromStatus === "completed" && toStatus === "running";
+  }
+
+  // Adjust displayed state: if a stage shows "completed" but an earlier
+  // stage is still "running", show it as idle (not green tick).
+  // This prevents confusing display when research + enrich run in parallel.
+  function getAdjustedState(stageId: string): PipelineNodeEvent | null {
+    const state = nodes[stageId] ?? null;
+    if (!state || state.status !== "completed") return state;
+
+    const stageIndex = ALL_STAGES.findIndex(s => s.id === stageId);
+    for (let i = 0; i < stageIndex; i++) {
+      const earlierStatus = nodes[ALL_STAGES[i].id]?.status;
+      if (earlierStatus === "running") {
+        // Earlier stage still running — don't show this one as "completed"
+        return null; // show as idle
+      }
+    }
+    return state;
   }
 
   return (
@@ -76,7 +97,7 @@ export default function FlowChart({ nodes }: FlowChartProps) {
                 nodeId={stage.id}
                 label={stage.label}
                 tooltip={stage.tooltip}
-                state={nodes[stage.id] ?? null}
+                state={getAdjustedState(stage.id)}
               />
             </div>
             {i < ROW1.length - 1 && (
@@ -98,7 +119,7 @@ export default function FlowChart({ nodes }: FlowChartProps) {
                 nodeId={stage.id}
                 label={stage.label}
                 tooltip={stage.tooltip}
-                state={nodes[stage.id] ?? null}
+                state={getAdjustedState(stage.id)}
               />
             </div>
             {i < ROW2.length - 1 && (
