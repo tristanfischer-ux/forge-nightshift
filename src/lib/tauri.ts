@@ -302,6 +302,71 @@ export async function setActiveProfile(id: string): Promise<void> {
   return invoke("set_active_profile", { id });
 }
 
+// --- Deal Tracking ---
+
+export interface Deal {
+  id: number;
+  company_id: string;
+  deal_type: "ma_target" | "fundraise_candidate";
+  status: string;
+  priority: string;
+  notes: string | null;
+  assigned_to: string | null;
+  estimated_value: string | null;
+  next_action: string | null;
+  next_action_date: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined from companies table (in get_deals)
+  company_name?: string | null;
+  subcategory?: string | null;
+  country?: string | null;
+  contact_email?: string | null;
+  relevance_score?: number | null;
+  enrichment_quality?: number | null;
+  company_status?: string | null;
+}
+
+export async function saveDeal(params: {
+  companyId: string;
+  dealType: string;
+  status: string;
+  priority: string;
+  notes?: string;
+  assignedTo?: string;
+  estimatedValue?: string;
+  nextAction?: string;
+  nextActionDate?: string;
+}) {
+  return invoke<Deal>("save_deal", {
+    companyId: params.companyId,
+    dealType: params.dealType,
+    status: params.status,
+    priority: params.priority,
+    notes: params.notes,
+    assignedTo: params.assignedTo,
+    estimatedValue: params.estimatedValue,
+    nextAction: params.nextAction,
+    nextActionDate: params.nextActionDate,
+  });
+}
+
+export async function getDeals(dealType?: string, status?: string) {
+  return invoke<Deal[]>("get_deals", { dealType, status });
+}
+
+export async function getCompanyDeals(companyId: string) {
+  return invoke<Deal[]>("get_company_deals", { companyId });
+}
+
+export async function updateDealStatus(id: number, status: string) {
+  return invoke("update_deal_status", { id, status });
+}
+
+export async function deleteDeal(id: number) {
+  return invoke("delete_deal", { id });
+}
+
 // Event listeners
 export function onPipelineStatus(
   callback: (payload: Record<string, unknown>) => void

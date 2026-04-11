@@ -12,6 +12,7 @@ import Review from "./pages/Review";
 import Outreach from "./pages/Outreach";
 import Settings from "./pages/Settings";
 import Pipeline from "./pages/Pipeline";
+import Deals from "./pages/Deals";
 import CommandPalette from "./components/CommandPalette";
 
 function NotFound() {
@@ -58,6 +59,7 @@ function App() {
               <Route path="/research" element={<Research />} />
               <Route path="/map" element={<MapPage />} />
               <Route path="/review" element={<Review />} />
+              <Route path="/deals" element={<Deals />} />
               <Route path="/outreach" element={<Outreach />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<NotFound />} />

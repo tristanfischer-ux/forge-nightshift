@@ -74,6 +74,7 @@ impl Database {
             include_str!("migrations/027_push_to_forgeos.sql"),
             include_str!("migrations/028_investor_matches.sql"),
             include_str!("migrations/029_error_count.sql"),
+            include_str!("migrations/030_deal_tracking.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -3582,6 +3583,134 @@ impl Database {
             .filter_map(|r| r.ok())
             .next();
         Ok(row)
+    }
+
+    // ── Deal Tracking ──────────────────────────────────────────────────
+
+    /// Upsert a deal (insert or update on conflict of company_id + deal_type).
+    pub fn save_deal(
+        &self,
+        company_id: &str,
+        deal_type: &str,
+        status: &str,
+        priority: &str,
+        notes: Option<&str>,
+        assigned_to: Option<&str>,
+        estimated_value: Option<&str>,
+        next_action: Option<&str>,
+        next_action_date: Option<&str>,
+    ) -> Result<Value> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO deal_tracking (company_id, deal_type, status, priority, notes, assigned_to, estimated_value, next_action, next_action_date)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(company_id, deal_type) DO UPDATE SET
+               status = excluded.status,
+               priority = excluded.priority,
+               notes = excluded.notes,
+               assigned_to = excluded.assigned_to,
+               estimated_value = excluded.estimated_value,
+               next_action = excluded.next_action,
+               next_action_date = excluded.next_action_date,
+               updated_at = datetime('now')",
+            rusqlite::params![
+                company_id, deal_type, status, priority,
+                notes, assigned_to, estimated_value, next_action, next_action_date,
+            ],
+        )?;
+        // Return the saved deal
+        let mut stmt = conn.prepare(
+            "SELECT * FROM deal_tracking WHERE company_id = ?1 AND deal_type = ?2",
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let row = stmt.query_row(rusqlite::params![company_id, deal_type], |row| {
+            let mut obj = serde_json::Map::new();
+            for (i, col) in columns.iter().enumerate() {
+                let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                obj.insert(col.clone(), sqlite_to_json(val));
+            }
+            Ok(Value::Object(obj))
+        })?;
+        Ok(row)
+    }
+
+    /// Get deals, optionally filtered by deal_type and/or status.
+    pub fn get_deals(&self, deal_type: Option<&str>, status: Option<&str>) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = String::from(
+            "SELECT d.*, c.name as company_name, c.subcategory, c.country, c.contact_email, c.relevance_score, c.enrichment_quality, c.status as company_status \
+             FROM deal_tracking d \
+             LEFT JOIN companies c ON d.company_id = c.id \
+             WHERE 1=1",
+        );
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut param_idx = 1;
+
+        if let Some(dt) = deal_type {
+            sql.push_str(&format!(" AND d.deal_type = ?{}", param_idx));
+            params.push(Box::new(dt.to_string()));
+            param_idx += 1;
+        }
+        if let Some(s) = status {
+            sql.push_str(&format!(" AND d.status = ?{}", param_idx));
+            params.push(Box::new(s.to_string()));
+            let _ = param_idx; // suppress unused warning
+        }
+        sql.push_str(" ORDER BY d.updated_at DESC");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Get all deals for a specific company.
+    pub fn get_company_deals(&self, company_id: &str) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT * FROM deal_tracking WHERE company_id = ?1 ORDER BY updated_at DESC",
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let rows = stmt
+            .query_map([company_id], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Update deal status by id.
+    pub fn update_deal_status(&self, id: i64, status: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE deal_tracking SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
+            rusqlite::params![status, id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a deal by id.
+    pub fn delete_deal(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM deal_tracking WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     /// Get verification data for a specific company.

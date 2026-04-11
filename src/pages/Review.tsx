@@ -71,6 +71,10 @@ import {
   getSearchProfiles,
   getActiveProfile,
   getExtendedStats,
+  getCompanyDeals,
+  getDeals,
+  saveDeal,
+  type Deal,
 } from "../lib/tauri";
 import type { SearchProfile } from "../lib/tauri";
 import { useError } from "../contexts/ErrorContext";
@@ -172,6 +176,129 @@ function leadScoreColor(score: number): string {
   if (score >= 25) return "text-orange-700 bg-orange-100";
   return "text-gray-500 bg-gray-100";
 }
+
+/** M&A Score (0-100): small, aging directors, single owner, niche specialist, quality, contact, stable. */
+function computeMAScore(company: Record<string, unknown>): number {
+  const quality = Number(company.enrichment_quality || 0);
+  const hasEmail = Boolean(company.contact_email);
+  let attrs: Record<string, unknown> = {};
+  try {
+    attrs = company.attributes_json ? JSON.parse(String(company.attributes_json)) : {};
+  } catch { /* empty */ }
+
+  let sizeStr = String(attrs.employees || company.company_size || "").toLowerCase();
+  let score = 0;
+
+  // Small company (1-49 employees): +25
+  if (sizeStr.includes("1-9") || sizeStr.includes("1 to 9") || sizeStr.includes("10-49") || sizeStr.includes("10 to 49") || sizeStr === "micro" || sizeStr === "small") {
+    score += 25;
+  }
+
+  // Has CH directors with age data: +15
+  const chData = company.ch_directors_json || company.fractional_signals_json;
+  if (chData && String(chData) !== "null" && String(chData).length > 10) {
+    score += 15;
+  }
+
+  // Single owner / few directors: +15
+  try {
+    const directors = chData ? JSON.parse(String(chData)) : null;
+    if (Array.isArray(directors) && directors.length <= 2 && directors.length > 0) {
+      score += 15;
+    } else if (directors && typeof directors === "object" && !Array.isArray(directors)) {
+      const ownerCount = (directors as Record<string, unknown>).director_count || (directors as Record<string, unknown>).officers_count;
+      if (ownerCount && Number(ownerCount) <= 2) score += 15;
+    }
+  } catch { /* empty */ }
+
+  // Niche specialist subcategory: +10
+  const subcat = String(company.subcategory || "").toLowerCase();
+  const nicheSubcats = ["precision_grinding", "toolmaking", "optics_photonics", "springs_fasteners", "ceramics_glass", "wire_cable", "rubber_seals"];
+  if (nicheSubcats.some((n) => subcat.includes(n))) score += 10;
+
+  // High quality (>60): +15
+  if (quality > 60) score += 15;
+
+  // Has contact email: +10
+  if (hasEmail) score += 10;
+
+  // Low growth signals (stable, acquirable): +10
+  // If no recent activity and company is enriched/pushed, it's likely stable
+  const hasSynthesis = Boolean(company.synthesis_public_json);
+  if (hasSynthesis) {
+    try {
+      const synth = JSON.parse(String(company.synthesis_public_json));
+      const narrative = String(synth?.narrative || synth?.summary || "").toLowerCase();
+      if (narrative.includes("established") || narrative.includes("traditional") || narrative.includes("family") || narrative.includes("long-standing")) {
+        score += 10;
+      }
+    } catch { /* empty */ }
+  }
+
+  return Math.min(100, score);
+}
+
+/** Fundraise Score (0-100): early stage, innovative, relevant, growth narrative, capital-intensive, contact, recent activity. */
+function computeFundraiseScore(company: Record<string, unknown>): number {
+  const relevance = Number(company.relevance_score || 0);
+  const hasEmail = Boolean(company.contact_email);
+  const hasSynthesis = Boolean(company.synthesis_public_json);
+  let attrs: Record<string, unknown> = {};
+  try {
+    attrs = company.attributes_json ? JSON.parse(String(company.attributes_json)) : {};
+  } catch { /* empty */ }
+
+  let sizeStr = String(attrs.employees || company.company_size || "").toLowerCase();
+  let score = 0;
+
+  // Early stage / small (1-49): +20
+  if (sizeStr.includes("1-9") || sizeStr.includes("1 to 9") || sizeStr.includes("10-49") || sizeStr.includes("10 to 49") || sizeStr === "micro" || sizeStr === "small") {
+    score += 20;
+  }
+
+  // Innovative subcategory: +20
+  const subcat = String(company.subcategory || "").toLowerCase();
+  const innovativeSubcats = ["3d_printing", "ai_compute", "quantum", "robotics_autonomous", "space_tech", "battery_energy", "cleantech", "hydrogen", "carbon_capture"];
+  if (innovativeSubcats.some((n) => subcat.includes(n))) score += 20;
+
+  // High relevance (>60): +15
+  if (relevance > 60) score += 15;
+
+  // Has synthesis with growth narrative: +15
+  if (hasSynthesis) {
+    try {
+      const synth = JSON.parse(String(company.synthesis_public_json));
+      const narrative = String(synth?.narrative || synth?.summary || "").toLowerCase();
+      if (narrative.includes("growing") || narrative.includes("expansion") || narrative.includes("scaling") || narrative.includes("innovative") || narrative.includes("patent") || narrative.includes("r&d")) {
+        score += 15;
+      }
+    } catch { /* empty */ }
+  }
+
+  // Capital-intensive sector: +15
+  const capitalIntensiveSubcats = ["casting_forging", "injection_molding", "process_vessels", "battery_energy", "cleantech", "space_tech", "motors_drives"];
+  if (capitalIntensiveSubcats.some((n) => subcat.includes(n))) score += 15;
+
+  // Has contact email: +10
+  if (hasEmail) score += 10;
+
+  // Recent activity/news: +5
+  // We don't have activity data here but check if company has activities count
+  if (company.activity_count && Number(company.activity_count) > 0) score += 5;
+
+  return Math.min(100, score);
+}
+
+const DEAL_STATUS_LABELS: Record<string, string> = {
+  identified: "Identified",
+  researching: "Researching",
+  contacted: "Contacted",
+  in_discussion: "In Discussion",
+  engaged: "Engaged",
+  closed: "Closed",
+  passed: "Passed",
+};
+
 
 function TagPills({ items, color }: { items: string[]; color: string }) {
   if (items.length === 0) return null;
@@ -289,6 +416,21 @@ export default function Review() {
   const [verificationData, setVerificationData] = useState<Record<string, unknown> | null>(null);
   const [verificationLoading, setVerificationLoading] = useState(false);
 
+  // Deal tracking
+  const [companyDeals, setCompanyDeals] = useState<Deal[]>([]);
+  const [dealDialogOpen, setDealDialogOpen] = useState<"ma_target" | "fundraise_candidate" | null>(null);
+  const [dealForm, setDealForm] = useState({
+    priority: "medium",
+    notes: "",
+    assignedTo: "",
+    estimatedValue: "",
+    nextAction: "",
+    nextActionDate: "",
+  });
+  const [dealSaving, setDealSaving] = useState(false);
+  // Cache of company_id -> deal types for badges in the list
+  const [dealBadges, setDealBadges] = useState<Record<string, string[]>>({});
+
   // Enhancement 12: Side-by-side comparison
   const [compareMode, setCompareMode] = useState(false);
   const [compareList, setCompareList] = useState<string[]>([]);
@@ -301,6 +443,22 @@ export default function Review() {
   pageRef.current = page;
   const filterRef = useRef(filter);
   filterRef.current = filter;
+
+  // Auto-select company from URL param (e.g. from Deals page link)
+  const urlCompanyId = searchParams.get("company");
+  useEffect(() => {
+    if (!urlCompanyId) return;
+    // Try to find it in the loaded companies first
+    const found = companies.find((c) => String(c.id) === urlCompanyId);
+    if (found) {
+      setSelected(found);
+    } else {
+      // Load the company directly
+      import("../lib/tauri").then(m => m.getCompany(urlCompanyId))
+        .then((c) => { if (c) setSelected(c as Record<string, unknown>); })
+        .catch(() => {});
+    }
+  }, [urlCompanyId, companies.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Drill-down filters from URL params
   const drillSubcategory = searchParams.get("subcategory");
@@ -494,6 +652,37 @@ export default function Review() {
       .catch(() => setActivities([]))
       .finally(() => setActivitiesLoading(false));
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load deals for selected company
+  useEffect(() => {
+    if (!selected) {
+      setCompanyDeals([]);
+      return;
+    }
+    const companyId = String(selected.id || "");
+    if (!companyId) return;
+    getCompanyDeals(companyId)
+      .then(setCompanyDeals)
+      .catch(() => setCompanyDeals([]));
+  }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load deal badges for all tracked companies
+  useEffect(() => {
+    if (companies.length === 0) return;
+    async function loadBadges() {
+      try {
+        const allDeals = await getDeals();
+        const badges: Record<string, string[]> = {};
+        for (const deal of allDeals) {
+          const cid = String(deal.company_id);
+          if (!badges[cid]) badges[cid] = [];
+          badges[cid].push(String(deal.deal_type));
+        }
+        setDealBadges(badges);
+      } catch { /* empty */ }
+    }
+    loadBadges();
+  }, [companies]); // reload when companies change
 
   async function loadCounts() {
     try {
@@ -1504,6 +1693,17 @@ export default function Review() {
                           </span>
                         ) : null;
                       })()}
+                      {/* Deal badges */}
+                      {dealBadges[companyId]?.includes("ma_target") && (
+                        <span className="px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-600" title="M&A Target">
+                          M&A
+                        </span>
+                      )}
+                      {dealBadges[companyId]?.includes("fundraise_candidate") && (
+                        <span className="px-1 py-0.5 rounded text-[10px] bg-green-100 text-green-600" title="Fundraise Candidate">
+                          FR
+                        </span>
+                      )}
                       {cStatus === "approved" && (
                         <button
                           onClick={(e) => {
@@ -1631,7 +1831,7 @@ export default function Review() {
                   {/* Scores */}
                   {(Number(selected.relevance_score) > 0 ||
                     Number(selected.enrichment_quality) > 0) && (
-                    <div className="flex gap-4">
+                    <div className="flex gap-4 flex-wrap">
                       <div className="text-center">
                         <div className="text-2xl font-bold text-yellow-600">
                           {String(selected.relevance_score || 0)}
@@ -1650,8 +1850,92 @@ export default function Review() {
                         </div>
                         <div className="text-xs text-gray-400">Lead Score</div>
                       </div>
+                      <div className="text-center">
+                        <div className={`text-2xl font-bold ${computeMAScore(selected) >= 60 ? "text-orange-600" : computeMAScore(selected) >= 40 ? "text-orange-400" : "text-gray-400"}`}>
+                          {computeMAScore(selected)}
+                        </div>
+                        <div className="text-xs text-gray-400">M&A</div>
+                      </div>
+                      <div className="text-center">
+                        <div className={`text-2xl font-bold ${computeFundraiseScore(selected) >= 60 ? "text-green-600" : computeFundraiseScore(selected) >= 40 ? "text-green-400" : "text-gray-400"}`}>
+                          {computeFundraiseScore(selected)}
+                        </div>
+                        <div className="text-xs text-gray-400">Fundraise</div>
+                      </div>
                     </div>
                   )}
+
+                  {/* Deal tracking buttons */}
+                  <div className="flex gap-2 flex-wrap items-center">
+                    {(() => {
+                      const maDeal = companyDeals.find((d) => d.deal_type === "ma_target");
+                      const frDeal = companyDeals.find((d) => d.deal_type === "fundraise_candidate");
+                      return (
+                        <>
+                          {maDeal ? (
+                            <button
+                              onClick={() => {
+                                setDealForm({
+                                  priority: maDeal.priority || "medium",
+                                  notes: maDeal.notes || "",
+                                  assignedTo: maDeal.assigned_to || "",
+                                  estimatedValue: maDeal.estimated_value || "",
+                                  nextAction: maDeal.next_action || "",
+                                  nextActionDate: maDeal.next_action_date || "",
+                                });
+                                setDealDialogOpen("ma_target");
+                              }}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-orange-100 text-orange-700 border border-orange-200 hover:bg-orange-200 transition-colors"
+                            >
+                              <Target className="w-3.5 h-3.5" />
+                              M&A: {DEAL_STATUS_LABELS[maDeal.status] || maDeal.status}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setDealForm({ priority: "medium", notes: "", assignedTo: "", estimatedValue: "", nextAction: "", nextActionDate: "" });
+                                setDealDialogOpen("ma_target");
+                              }}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-orange-500 text-white hover:bg-orange-600 transition-colors"
+                            >
+                              <Target className="w-3.5 h-3.5" />
+                              Track as M&A Target
+                            </button>
+                          )}
+                          {frDeal ? (
+                            <button
+                              onClick={() => {
+                                setDealForm({
+                                  priority: frDeal.priority || "medium",
+                                  notes: frDeal.notes || "",
+                                  assignedTo: frDeal.assigned_to || "",
+                                  estimatedValue: frDeal.estimated_value || "",
+                                  nextAction: frDeal.next_action || "",
+                                  nextActionDate: frDeal.next_action_date || "",
+                                });
+                                setDealDialogOpen("fundraise_candidate");
+                              }}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-100 text-green-700 border border-green-200 hover:bg-green-200 transition-colors"
+                            >
+                              <TrendingUp className="w-3.5 h-3.5" />
+                              Fundraise: {DEAL_STATUS_LABELS[frDeal.status] || frDeal.status}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setDealForm({ priority: "medium", notes: "", assignedTo: "", estimatedValue: "", nextAction: "", nextActionDate: "" });
+                                setDealDialogOpen("fundraise_candidate");
+                              }}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 text-white hover:bg-green-700 transition-colors"
+                            >
+                              <TrendingUp className="w-3.5 h-3.5" />
+                              Track as Fundraise
+                            </button>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
 
                   {/* Error detail */}
                   {status === "error" && !!selected.last_error && (
@@ -3197,6 +3481,136 @@ export default function Review() {
         onConfirm={() => confirmDialog?.onConfirm()}
         onCancel={() => setConfirmDialog(null)}
       />
+
+      {/* Deal tracking dialog */}
+      {dealDialogOpen && selected && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-5 space-y-4">
+            <h3 className="text-sm font-semibold text-gray-900">
+              {dealDialogOpen === "ma_target" ? "Track as M&A Target" : "Track as Fundraise Candidate"}
+              : {String(selected.name || "")}
+            </h3>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gray-500">Priority</label>
+                <select
+                  value={dealForm.priority}
+                  onChange={(e) => setDealForm({ ...dealForm, priority: e.target.value })}
+                  className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5"
+                >
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500">Assigned To</label>
+                <select
+                  value={dealForm.assignedTo}
+                  onChange={(e) => setDealForm({ ...dealForm, assignedTo: e.target.value })}
+                  className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5"
+                >
+                  <option value="">Unassigned</option>
+                  <option value="tristan">Tristan</option>
+                  <option value="fraser">Fraser</option>
+                </select>
+              </div>
+              <div className="col-span-2">
+                <label className="text-xs text-gray-500">Estimated Value</label>
+                <input
+                  type="text"
+                  value={dealForm.estimatedValue}
+                  onChange={(e) => setDealForm({ ...dealForm, estimatedValue: e.target.value })}
+                  placeholder={dealDialogOpen === "ma_target" ? "e.g. \u00a32-5M" : "e.g. \u00a3500K-1M fee"}
+                  className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">Next Action</label>
+              <input
+                type="text"
+                value={dealForm.nextAction}
+                onChange={(e) => setDealForm({ ...dealForm, nextAction: e.target.value })}
+                placeholder="e.g. Schedule intro call"
+                className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">Next Action Date</label>
+              <input
+                type="date"
+                value={dealForm.nextActionDate}
+                onChange={(e) => setDealForm({ ...dealForm, nextActionDate: e.target.value })}
+                className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">Notes</label>
+              <textarea
+                rows={3}
+                value={dealForm.notes}
+                onChange={(e) => setDealForm({ ...dealForm, notes: e.target.value })}
+                placeholder="Internal notes about this deal..."
+                className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 resize-none"
+              />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setDealDialogOpen(null)}
+                className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={dealSaving}
+                onClick={async () => {
+                  setDealSaving(true);
+                  try {
+                    // Determine existing deal status or default to 'identified'
+                    const existing = companyDeals.find((d) => d.deal_type === dealDialogOpen);
+                    await saveDeal({
+                      companyId: String(selected.id),
+                      dealType: dealDialogOpen,
+                      status: existing?.status || "identified",
+                      priority: dealForm.priority,
+                      notes: dealForm.notes || undefined,
+                      assignedTo: dealForm.assignedTo || undefined,
+                      estimatedValue: dealForm.estimatedValue || undefined,
+                      nextAction: dealForm.nextAction || undefined,
+                      nextActionDate: dealForm.nextActionDate || undefined,
+                    });
+                    // Refresh deals for this company
+                    const updated = await getCompanyDeals(String(selected.id));
+                    setCompanyDeals(updated);
+                    // Refresh deal badges
+                    const allDeals = await getDeals();
+                    const badges: Record<string, string[]> = {};
+                    for (const deal of allDeals) {
+                      const cid = String(deal.company_id);
+                      if (!badges[cid]) badges[cid] = [];
+                      badges[cid].push(String(deal.deal_type));
+                    }
+                    setDealBadges(badges);
+                    setDealDialogOpen(null);
+                  } catch (err) {
+                    console.error("Failed to save deal:", err);
+                  } finally {
+                    setDealSaving(false);
+                  }
+                }}
+                className={`px-4 py-1.5 text-xs rounded-lg text-white transition-colors ${
+                  dealDialogOpen === "ma_target"
+                    ? "bg-orange-500 hover:bg-orange-600"
+                    : "bg-green-600 hover:bg-green-700"
+                } ${dealSaving ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                {dealSaving ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

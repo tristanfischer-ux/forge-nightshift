@@ -1657,6 +1657,87 @@ fn set_active_profile(db: tauri::State<'_, Database>, id: String) -> Result<(), 
     db.set_config("active_profile_id", &id).map_err(|e| e.to_string())
 }
 
+// ── Deal Tracking Commands ──────────────────────────────────────────
+
+#[tauri::command]
+fn save_deal(
+    db: tauri::State<'_, Database>,
+    company_id: String,
+    deal_type: String,
+    status: String,
+    priority: String,
+    notes: Option<String>,
+    assigned_to: Option<String>,
+    estimated_value: Option<String>,
+    next_action: Option<String>,
+    next_action_date: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let valid_types = ["ma_target", "fundraise_candidate"];
+    if !valid_types.contains(&deal_type.as_str()) {
+        return Err(format!("Invalid deal_type: {}", deal_type));
+    }
+    let valid_statuses = [
+        "identified", "researching", "contacted", "in_discussion", "engaged", "closed", "passed",
+    ];
+    if !valid_statuses.contains(&status.as_str()) {
+        return Err(format!("Invalid deal status: {}", status));
+    }
+    let valid_priorities = ["high", "medium", "low"];
+    if !valid_priorities.contains(&priority.as_str()) {
+        return Err(format!("Invalid priority: {}", priority));
+    }
+    db.save_deal(
+        &company_id,
+        &deal_type,
+        &status,
+        &priority,
+        notes.as_deref(),
+        assigned_to.as_deref(),
+        estimated_value.as_deref(),
+        next_action.as_deref(),
+        next_action_date.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_deals(
+    db: tauri::State<'_, Database>,
+    deal_type: Option<String>,
+    status: Option<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    db.get_deals(deal_type.as_deref(), status.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_company_deals(
+    db: tauri::State<'_, Database>,
+    company_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    db.get_company_deals(&company_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_deal_status(
+    db: tauri::State<'_, Database>,
+    id: i64,
+    status: String,
+) -> Result<(), String> {
+    let valid_statuses = [
+        "identified", "researching", "contacted", "in_discussion", "engaged", "closed", "passed",
+    ];
+    if !valid_statuses.contains(&status.as_str()) {
+        return Err(format!("Invalid deal status: {}", status));
+    }
+    db.update_deal_status(id, &status).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_deal(db: tauri::State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_deal(id).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -1775,6 +1856,11 @@ pub fn run() {
             delete_search_profile,
             get_active_profile,
             set_active_profile,
+            save_deal,
+            get_deals,
+            get_company_deals,
+            update_deal_status,
+            delete_deal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

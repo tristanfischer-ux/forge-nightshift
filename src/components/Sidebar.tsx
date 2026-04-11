@@ -12,6 +12,7 @@ import {
   Hammer,
   Workflow,
   Rows3,
+  Crosshair,
 } from "lucide-react";
 import { getPipelineStatus, getStats, getSearchProfiles, getActiveProfile, setActiveProfile } from "../lib/tauri";
 import type { SearchProfile } from "../lib/tauri";
@@ -22,6 +23,7 @@ const navItems = [
   { path: "/research", label: "Research", icon: Search },
   { path: "/map", label: "Map", icon: MapPin },
   { path: "/review", label: "Review", icon: CheckSquare },
+  { path: "/deals", label: "Deals", icon: Crosshair },
   { path: "/outreach", label: "Outreach", icon: Mail },
   { path: "/settings", label: "Settings", icon: Settings },
 ];
