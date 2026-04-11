@@ -354,10 +354,25 @@ pub async fn enrich_company(api_key: &str, company_name: &str) -> Result<Option<
     let directors_json: Vec<Value> = active_officers
         .iter()
         .map(|o| {
+            let age = o.date_of_birth.as_ref().and_then(|dob| {
+                dob.year.map(|y| {
+                    let now = chrono::Utc::now();
+                    let current_year = now.year();
+                    let current_month = now.month();
+                    let birth_month = dob.month.unwrap_or(6);
+                    let mut a = current_year - y;
+                    if current_month < birth_month { a -= 1; }
+                    a
+                })
+            });
             json!({
                 "name": o.name,
                 "role": o.officer_role,
                 "appointed_on": o.appointed_on,
+                "age": age,
+                "nationality": o.nationality,
+                "occupation": o.occupation,
+                "country_of_residence": o.country_of_residence,
             })
         })
         .collect();

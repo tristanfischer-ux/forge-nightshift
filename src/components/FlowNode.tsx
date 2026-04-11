@@ -6,8 +6,8 @@ interface FlowNodeProps {
   label: string;
   tooltip?: string;
   state: PipelineNodeEvent | null;
-  x: number;
-  y: number;
+  x?: number;
+  y?: number;
 }
 
 function StatusIcon({ status }: { status: string }) {
@@ -59,8 +59,8 @@ export default function FlowNode({ nodeId, label, tooltip, state, x, y }: FlowNo
 
   return (
     <div
-      className={`absolute w-48 rounded-xl border shadow-sm p-3 transition-all duration-300 ${borderClass} ${bgClass}`}
-      style={{ left: x, top: y }}
+      className={`rounded-xl border shadow-sm p-3 transition-all duration-300 ${borderClass} ${bgClass} ${x != null ? 'absolute w-48' : 'w-full'}`}
+      style={x != null ? { left: x, top: y } : undefined}
       data-node-id={nodeId}
       title={tooltip}
     >
