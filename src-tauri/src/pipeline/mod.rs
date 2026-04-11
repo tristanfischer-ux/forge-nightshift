@@ -216,33 +216,33 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
             db.get_companies_count(Some("discovered"), Some(&profile_id)).unwrap_or(0) as usize
         };
 
-        if !is_cancelled() && discovered_backlog < batch_size {
-            log::info!("[Batch] Wave {}: {} discovered in backlog (< {}), running research", wave, discovered_backlog, batch_size);
-            let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "running"}));
-            let res = research::run(app, job_id, &wave_config).await;
-            let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "completed"}));
-            if let Err(e) = &res {
-                let db: tauri::State<'_, Database> = app.state();
-                let _ = db.log_activity(job_id, "batch", "warn", &format!("Research error in wave {}: {}", wave, e));
-            }
-        } else if discovered_backlog >= batch_size {
-            log::info!("[Batch] Wave {}: {} discovered in backlog (>= {}), skipping research", wave, discovered_backlog, batch_size);
-            let db: tauri::State<'_, Database> = app.state();
-            let _ = db.log_activity(job_id, "batch", "info",
-                &format!("Skipping research — {} companies already discovered (backlog >= batch size {})", discovered_backlog, batch_size));
-        }
-
-        // Step 2: Enrich discovered companies (v2 — combines old enrich + deep_enrich)
+        // Steps 1+2: Research and Enrich run IN PARALLEL
+        // Research finds new companies while enrichment processes discovered ones simultaneously
         if !is_cancelled() {
-            let discovered_count = {
-                let db: tauri::State<'_, Database> = app.state();
-                let profile_id = db.get_active_profile_id();
-                db.get_companies_count(Some("discovered"), Some(&profile_id)).unwrap_or(0)
-            };
-            log::info!("[Batch] Wave {}: Starting enrich ({} discovered)", wave, discovered_count);
-            let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "running"}));
-            let _ = enrich_v2::run(app, job_id, &wave_config).await;
-            let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "completed"}));
+            let run_research = discovered_backlog < batch_size;
+
+            if run_research {
+                log::info!("[Batch] Wave {}: Running research + enrich in PARALLEL", wave);
+                let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "running"}));
+                let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "running"}));
+
+                let research_fut = research::run(app, job_id, &wave_config);
+                let enrich_fut = enrich_v2::run(app, job_id, &wave_config);
+                let (research_res, _enrich_res) = tokio::join!(research_fut, enrich_fut);
+
+                let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "completed"}));
+                let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "completed"}));
+
+                if let Err(e) = &research_res {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(job_id, "batch", "warn", &format!("Research error in wave {}: {}", wave, e));
+                }
+            } else {
+                log::info!("[Batch] Wave {}: {} in backlog, running enrich only", wave, discovered_backlog);
+                let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "running"}));
+                let _ = enrich_v2::run(app, job_id, &wave_config).await;
+                let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "completed"}));
+            }
         }
 
         // Step 3: Verify
