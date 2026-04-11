@@ -22,12 +22,13 @@ async fn fetch_investors_from_supabase(url: &str, key: &str) -> Result<Vec<Value
             .get(format!("{}/rest/v1/marketplace_listings", url))
             .header("apikey", key)
             .header("Authorization", format!("Bearer {}", key))
-            .header("Range", format!("{}-{}", offset, offset + page_size - 1))
+            .header("Prefer", "count=exact")
             .query(&[
                 ("select", "id,title,subcategory,attributes"),
                 ("category", "eq.Finance"),
                 ("approval_status", "eq.approved"),
-                ("limit", "1000"),
+                ("limit", &page_size.to_string()),
+                ("offset", &offset.to_string()),
             ])
             .timeout(std::time::Duration::from_secs(30))
             .send()

@@ -735,7 +735,35 @@ fn generate_directory_queries(
         queries.push(format!("{} {}", kw, country_name));
     }
 
+    // Add cleantech-specific directory queries (real directories and certification schemes)
+    if domain == "cleantech" {
+        let cleantech_queries = get_cleantech_directory_queries(country_name);
+        queries.extend(cleantech_queries);
+    }
+
     queries
+}
+
+/// Cleantech-specific directory search queries targeting real industry directories,
+/// certification bodies, and membership organisations.
+fn get_cleantech_directory_queries(country_name: &str) -> Vec<String> {
+    vec![
+        format!("cleantech directory {} companies", country_name),
+        format!("renewable energy company directory {}", country_name),
+        format!("clean energy companies list {}", country_name),
+        format!("green business directory {}", country_name),
+        format!("REA members directory {}", country_name),
+        "Solar Energy UK member directory".to_string(),
+        "Energy UK members".to_string(),
+        "Clean Growth UK companies".to_string(),
+        "Innovate UK clean energy funded companies".to_string(),
+        "Carbon Trust certified companies".to_string(),
+        "MCS certified installer directory".to_string(),
+        "NAPIT registered installer directory".to_string(),
+        "NICEIC registered contractor directory".to_string(),
+        format!("heat pump installer directory {}", country_name),
+        format!("EV charging installer directory {}", country_name),
+    ]
 }
 
 /// Domain-aware directory search terms.

@@ -44,7 +44,11 @@ export default function Sidebar() {
   const [dense, setDense] = useState(() => localStorage.getItem("nightshift-density") === "dense");
   const [profiles, setProfiles] = useState<SearchProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string>("");
-  const [heartbeat, setHeartbeat] = useState<string>("");
+  const [heartbeatStage, setHeartbeatStage] = useState<string>("");
+  const [heartbeatRate, setHeartbeatRate] = useState<string>("");
+  const [heartbeatItem, setHeartbeatItem] = useState<string>("");
+  const [heartbeatProgress, setHeartbeatProgress] = useState<string>("");
+  const [heartbeatCompleted, setHeartbeatCompleted] = useState<string>("");
 
   useEffect(() => {
     getVersion().then(setVersion);
@@ -87,7 +91,11 @@ export default function Sidebar() {
       (event) => {
         setPipelineRunning(event.payload.status === "running");
         if (event.payload.status !== "running") {
-          setHeartbeat("");
+          setHeartbeatStage("");
+          setHeartbeatRate("");
+          setHeartbeatItem("");
+          setHeartbeatProgress("");
+          setHeartbeatCompleted("");
         }
         loadBadges();
       }
@@ -100,17 +108,35 @@ export default function Sidebar() {
         const node = event.payload;
         if (node.status === "running") {
           const stage = stageLabel(node.node_id);
-          const item = node.progress?.current_item;
-          const rate = node.progress?.rate;
-          let text = stage;
-          if (item) text += ` — ${item}`;
-          else if (rate) text += ` (${rate})`;
-          setHeartbeat(text);
-          // heartbeat updated
+          setHeartbeatStage(stage);
+          setHeartbeatCompleted("");
+
+          // Rate display (items/min)
+          if (node.progress?.rate != null && node.progress.rate > 0) {
+            const perMin = Math.round(node.progress.rate / 60);
+            setHeartbeatRate(perMin > 0 ? `${perMin}/min` : "<1/min");
+          } else {
+            setHeartbeatRate("");
+          }
+
+          // Progress display (current/total)
+          if (node.progress?.current != null && node.progress.current > 0) {
+            const cur = node.progress.current;
+            const total = node.progress.total;
+            setHeartbeatProgress(total ? `${cur}/${total}` : `${cur}`);
+          } else {
+            setHeartbeatProgress("");
+          }
+
+          // Current item
+          setHeartbeatItem(node.progress?.current_item ?? "");
         } else if (node.status === "completed") {
           const stage = stageLabel(node.node_id);
-          setHeartbeat(`${stage} ✓`);
-          // heartbeat updated
+          setHeartbeatCompleted(`${stage} \u2713`);
+          setHeartbeatStage("");
+          setHeartbeatRate("");
+          setHeartbeatItem("");
+          setHeartbeatProgress("");
         }
       }
     );
@@ -233,9 +259,29 @@ export default function Sidebar() {
             <div className={`w-2 h-2 rounded-full ${statusColor}`} />
             <span className="text-xs text-gray-500">{statusText}</span>
           </div>
-          {pipelineRunning && heartbeat && (
-            <p className="text-[10px] text-gray-400 truncate pl-4" title={heartbeat}>
-              {heartbeat}
+          {pipelineRunning && heartbeatStage && (
+            <div className="pl-4 space-y-0.5">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] font-semibold text-forge-700">
+                  {heartbeatStage}
+                </span>
+                {heartbeatProgress && (
+                  <span className="text-[10px] text-gray-400">{heartbeatProgress}</span>
+                )}
+                {heartbeatRate && (
+                  <span className="text-[10px] text-forge-500 font-medium">{heartbeatRate}</span>
+                )}
+              </div>
+              {heartbeatItem && (
+                <p className="text-[10px] text-gray-400 truncate" title={heartbeatItem}>
+                  {heartbeatItem}
+                </p>
+              )}
+            </div>
+          )}
+          {pipelineRunning && heartbeatCompleted && !heartbeatStage && (
+            <p className="text-[10px] text-green-600 pl-4">
+              {heartbeatCompleted}
             </p>
           )}
         </div>
