@@ -322,7 +322,10 @@ impl Database {
         }
 
         let total = count_query!(profile_filter_where);
-        let discovered = count_query!(&format!(" WHERE status = 'discovered'{}", profile_filter));
+        // Cumulative: "Found" = total minus permanently removed (everyone ever discovered)
+        let discovered = count_query!(&format!(" WHERE status NOT IN ('removed_no_website'){}", profile_filter));
+        // Current queue (waiting for enrichment)
+        let discovered_queue = count_query!(&format!(" WHERE status = 'discovered'{}", profile_filter));
         let enriching = count_query!(&format!(" WHERE status = 'enriching'{}", profile_filter));
         // Cumulative: "Researched" = everyone who completed enrichment (enriched + approved + pushed)
         let enriched = count_query!(&format!(" WHERE status IN ('enriched','approved','pushed'){}", profile_filter));
@@ -431,7 +434,8 @@ impl Database {
 
         Ok(json!({
             "total": total,
-            "discovered": discovered,
+            "discovered": discovered,  // cumulative: all minus removed
+            "discovered_queue": discovered_queue,  // current queue waiting for enrichment
             "enriching": enriching,
             "enriched": enriched,  // cumulative: enriched + approved + pushed
             "enriched_only": enriched_only,  // just status='enriched'
