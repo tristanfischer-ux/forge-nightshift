@@ -147,7 +147,8 @@ pub fn is_cancelled() -> bool {
 }
 
 /// Batch pipeline mode: processes companies in waves of N.
-/// Each wave runs research (capped) → enrich_v2 → verify → synthesize → director_intel → embeddings sequentially.
+/// Each wave runs research (capped) → enrich_v2 → verify → synthesize → embeddings sequentially.
+/// Director data is captured during enrichment via Companies House API (ch_directors in attributes_json).
 /// Stops when research finds nothing new or pipeline is cancelled.
 async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result<Value> {
     let batch_size: usize = config
@@ -270,13 +271,9 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
             let _ = app.emit("pipeline:stage", json!({"stage": "synthesize", "status": "completed"}));
         }
 
-        // Step 5: Director intel
-        if !is_cancelled() {
-            log::info!("[Batch] Wave {}: Starting director_intel", wave);
-            let _ = app.emit("pipeline:stage", json!({"stage": "director_intel", "status": "running"}));
-            let _ = director_intel::run(app, job_id, &wave_config).await;
-            let _ = app.emit("pipeline:stage", json!({"stage": "director_intel", "status": "completed"}));
-        }
+        // Step 5: Director intel — REMOVED (merged into enrichment via CH API)
+        // Director data (ch_directors, ch_psc) is now captured during enrich_v2
+        // via companies_house::enrich_company() and stored in attributes_json.
 
         // Step 6: Generate embeddings for semantic search
         if !is_cancelled() {

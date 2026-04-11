@@ -21,7 +21,6 @@ export const STAGE_LABELS: Record<string, string> = {
   enrich: "Research",
   verify: "Fact-Check",
   synthesize: "Analyse",
-  director_intel: "Leadership",
   embeddings: "Search Index",
   push: "Publish",
   outreach: "Outreach",
@@ -32,6 +31,7 @@ export const STAGE_LABELS: Record<string, string> = {
   synthesized_public: "Analysed (Public)",
   synthesized_private: "Analysed (Private)",
   investor_matches: "Investor Fit",
+  activities: "News & Updates",
 };
 
 /** Tooltip descriptions shown on hover */
@@ -58,8 +58,6 @@ export const STAGE_TOOLTIPS: Record<string, string> = {
     "Compare each company\u2019s data against their live website to confirm accuracy. Corrections are applied automatically.",
   synthesize:
     "Generate an AI summary of each company including marketplace positioning, competitive analysis, and acquisition intelligence.",
-  director_intel:
-    "Directors, ownership structure, succession signals, and acquisition readiness score from Companies House data.",
   embeddings:
     "Vector embeddings generated for semantic search \u2014 enables finding companies by describing what you need, not just keywords.",
   push: "Push qualified companies to the ForgeOS marketplace where buyers can discover them.",
@@ -76,6 +74,8 @@ export const STAGE_TOOLTIPS: Record<string, string> = {
     "AI-generated private summary including acquisition intelligence and readiness signals.",
   investor_matches:
     "Cross-referenced against the ForgeOS investor database to find which investors are most likely to fund this company.",
+  activities:
+    "Companies with recent news, funding, contract wins, or hiring activity fetched from Brave Search.",
 };
 
 /**

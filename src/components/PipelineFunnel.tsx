@@ -15,14 +15,15 @@ interface FunnelRow {
 
 const FUNNEL_ROWS: FunnelRow[] = [
   { label: "Total", key: "total", color: "bg-gray-400" },
+  { label: stageLabel("discovered"), key: "discovered", color: "bg-blue-400", filter: "status=discovered" },
   { label: stageLabel("enriched"), key: "enriched", color: "bg-purple-500", filter: "status=enriched" },
   { label: stageLabel("with_process_capabilities"), key: "with_process_capabilities", color: "bg-blue-500" },
   { label: stageLabel("verified"), key: "verified", color: "bg-teal-500" },
   { label: stageLabel("synthesized_public"), key: "synthesized_public", color: "bg-indigo-500" },
-  { label: stageLabel("synthesized_private"), key: "synthesized_private", color: "bg-indigo-400" },
-  { label: stageLabel("director_intel"), key: "director_intel", color: "bg-yellow-500" },
-  { label: stageLabel("embeddings"), key: "embeddings", color: "bg-cyan-500" },
   { label: stageLabel("approved"), key: "approved", color: "bg-green-500", filter: "status=approved" },
+  { label: stageLabel("embeddings"), key: "embeddings", color: "bg-cyan-500" },
+  { label: stageLabel("activity"), key: "activities", color: "bg-orange-500" },
+  { label: stageLabel("investor_matches"), key: "investor_matches", color: "bg-yellow-500" },
   { label: stageLabel("pushed"), key: "pushed", color: "bg-green-600", filter: "status=pushed" },
   { label: "Errors", key: "error", color: "bg-red-500", filter: "status=error" },
 ];

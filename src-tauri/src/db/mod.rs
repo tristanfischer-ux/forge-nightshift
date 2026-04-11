@@ -350,21 +350,6 @@ impl Database {
             profile_filter
         ));
 
-        // Director intel — join to nightshift_intel table
-        let director_intel: i64 = if let Some(pid) = profile_id {
-            conn.query_row(
-                "SELECT COUNT(*) FROM nightshift_intel ni JOIN companies c ON ni.company_id = c.id WHERE c.search_profile_id = ?1",
-                [pid],
-                |row| row.get(0),
-            ).unwrap_or(0)
-        } else {
-            conn.query_row(
-                "SELECT COUNT(*) FROM nightshift_intel",
-                [],
-                |row| row.get(0),
-            ).unwrap_or(0)
-        };
-
         // Embeddings — check if supplier_embeddings table exists
         let embeddings: i64 = {
             let table_exists: bool = conn.query_row(
@@ -391,6 +376,58 @@ impl Database {
             }
         };
 
+        // Activities — check if activity_feed table exists
+        let activities: i64 = {
+            let table_exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='activity_feed'",
+                [],
+                |row| row.get::<_, i64>(0),
+            ).unwrap_or(0) > 0;
+            if table_exists {
+                if let Some(pid) = profile_id {
+                    conn.query_row(
+                        "SELECT COUNT(DISTINCT af.company_id) FROM activity_feed af JOIN companies c ON af.company_id = c.id WHERE c.search_profile_id = ?1",
+                        [pid],
+                        |row| row.get(0),
+                    ).unwrap_or(0)
+                } else {
+                    conn.query_row(
+                        "SELECT COUNT(DISTINCT company_id) FROM activity_feed",
+                        [],
+                        |row| row.get(0),
+                    ).unwrap_or(0)
+                }
+            } else {
+                0
+            }
+        };
+
+        // Investor matches — check if investor_matches table exists
+        let investor_matches: i64 = {
+            let table_exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='investor_matches'",
+                [],
+                |row| row.get::<_, i64>(0),
+            ).unwrap_or(0) > 0;
+            if table_exists {
+                if let Some(pid) = profile_id {
+                    conn.query_row(
+                        "SELECT COUNT(DISTINCT im.company_id) FROM investor_matches im JOIN companies c ON im.company_id = c.id WHERE c.search_profile_id = ?1",
+                        [pid],
+                        |row| row.get(0),
+                    ).unwrap_or(0)
+                } else {
+                    conn.query_row(
+                        "SELECT COUNT(DISTINCT company_id) FROM investor_matches",
+                        [],
+                        |row| row.get(0),
+                    ).unwrap_or(0)
+                }
+            } else {
+                0
+            }
+        };
+
         Ok(json!({
             "total": total,
             "discovered": discovered,
@@ -405,8 +442,9 @@ impl Database {
             "verified": verified,
             "synthesized_public": synthesized_public,
             "synthesized_private": synthesized_private,
-            "director_intel": director_intel,
             "embeddings": embeddings,
+            "activities": activities,
+            "investor_matches": investor_matches,
         }))
     }
 

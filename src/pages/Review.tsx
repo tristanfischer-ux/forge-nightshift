@@ -122,6 +122,57 @@ function parseAttributesJson(value: unknown): Record<string, unknown> {
   }
 }
 
+/** Compute a lead score (0-100) based on quality, relevance, size, contact, and synthesis. */
+function computeLeadScore(company: Record<string, unknown>): number {
+  const quality = Number(company.enrichment_quality || 0);
+  const relevance = Number(company.relevance_score || 0);
+  const hasEmail = Boolean(company.contact_email);
+  const hasSynthesis = Boolean(company.synthesis_public_json);
+
+  // Parse company size from attributes
+  let sizeStr = "";
+  try {
+    const attrs = company.attributes_json ? JSON.parse(String(company.attributes_json)) : {};
+    sizeStr = String(attrs.employees || company.company_size || "").toLowerCase();
+  } catch {
+    sizeStr = String(company.company_size || "").toLowerCase();
+  }
+
+  // Quality score (0-30)
+  let qualityPts = 0;
+  if (quality >= 80) qualityPts = 30;
+  else if (quality >= 60) qualityPts = 20;
+  else if (quality >= 40) qualityPts = 10;
+
+  // Relevance (0-25)
+  let relevancePts = 0;
+  if (relevance >= 80) relevancePts = 25;
+  else if (relevance >= 60) relevancePts = 15;
+  else if (relevance >= 40) relevancePts = 10;
+
+  // Company size fit (0-20)
+  let sizePts = 5; // default for unknown/100+
+  if (sizeStr.includes("10-49") || sizeStr.includes("10 to 49")) sizePts = 20;
+  else if (sizeStr.includes("50-99") || sizeStr.includes("50 to 99")) sizePts = 15;
+  else if (sizeStr.includes("1-9") || sizeStr.includes("1 to 9") || sizeStr === "micro" || sizeStr === "small") sizePts = 10;
+  else if (sizeStr.includes("100") || sizeStr.includes("250") || sizeStr.includes("500")) sizePts = 5;
+
+  // Has contact email (0-15)
+  const emailPts = hasEmail ? 15 : 0;
+
+  // Has synthesis (0-10)
+  const synthPts = hasSynthesis ? 10 : 0;
+
+  return qualityPts + relevancePts + sizePts + emailPts + synthPts;
+}
+
+function leadScoreColor(score: number): string {
+  if (score >= 75) return "text-green-700 bg-green-100";
+  if (score >= 50) return "text-yellow-700 bg-yellow-100";
+  if (score >= 25) return "text-orange-700 bg-orange-100";
+  return "text-gray-500 bg-gray-100";
+}
+
 function TagPills({ items, color }: { items: string[]; color: string }) {
   if (items.length === 0) return null;
   return (
@@ -1255,6 +1306,7 @@ export default function Review() {
               <div key={id} className="flex-1 bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
                 <h4 className="text-sm font-semibold text-gray-900 truncate">{String(c.name)}</h4>
                 <div className="mt-2 space-y-1 text-xs text-gray-600">
+                  <p>Lead Score: <span className="font-bold">{computeLeadScore(c)}</span>/100</p>
                   <p>Relevance: {String(c.relevance_score || "\u2014")}</p>
                   <p>Quality: {String(c.enrichment_quality || "\u2014")}</p>
                   <p>Category: {String(c.subcategory || "\u2014")}</p>
@@ -1440,6 +1492,18 @@ export default function Review() {
                             </span>
                           </div>
                         )}
+                      {/* Lead Score */}
+                      {(() => {
+                        const score = computeLeadScore(company);
+                        return score > 0 ? (
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-xs font-bold tabular-nums ${leadScoreColor(score)}`}
+                            title={`Lead Score: ${score}/100`}
+                          >
+                            {score}
+                          </span>
+                        ) : null;
+                      })()}
                       {cStatus === "approved" && (
                         <button
                           onClick={(e) => {
@@ -1579,6 +1643,12 @@ export default function Review() {
                           {String(selected.enrichment_quality || 0)}
                         </div>
                         <div className="text-xs text-gray-400">Quality</div>
+                      </div>
+                      <div className="text-center">
+                        <div className={`text-2xl font-bold ${computeLeadScore(selected) >= 75 ? "text-green-600" : computeLeadScore(selected) >= 50 ? "text-yellow-600" : "text-gray-500"}`}>
+                          {computeLeadScore(selected)}
+                        </div>
+                        <div className="text-xs text-gray-400">Lead Score</div>
                       </div>
                     </div>
                   )}

@@ -255,8 +255,9 @@ export interface PipelineFunnelData {
   verified: number;
   synthesized_public: number;
   synthesized_private: number;
-  director_intel: number;
   embeddings: number;
+  activities: number;
+  investor_matches: number;
 }
 
 export async function getPipelineFunnel() {
