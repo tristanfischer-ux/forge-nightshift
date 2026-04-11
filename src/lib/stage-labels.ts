@@ -7,14 +7,14 @@
 
 /** Map from backend status / stage key → human-friendly label */
 export const STAGE_LABELS: Record<string, string> = {
-  // Company statuses (DB `status` column values)
-  discovered: "Found",
-  enriched: "Researched",
-  verified: "Fact-Checked",
-  synthesized: "Analysed",
-  approved: "Qualified",
-  pushed: "Published",
-  enriching: "Researching",
+  // Company statuses — use SAME labels as pipeline stages for consistency
+  discovered: "Research",
+  enriched: "Enrich",
+  verified: "Fact-Check",
+  synthesized: "Analyse",
+  approved: "Qualify",
+  pushed: "Publish",
+  enriching: "Enriching",
 
   // Pipeline node / flow-chart IDs
   research: "Research",

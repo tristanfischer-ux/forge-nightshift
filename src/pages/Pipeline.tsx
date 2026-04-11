@@ -494,7 +494,9 @@ export default function Pipeline() {
               <div ref={activityRef} className="divide-y divide-gray-50 max-h-56 overflow-y-auto">
                 {activity.length === 0 ? (
                   <div className="p-4 text-sm text-gray-400 text-center">
-                    No activity yet. Start a pipeline to see events.
+                    {running
+                      ? "Pipeline running — events will appear as stages complete..."
+                      : "No activity yet. Start a pipeline to see events."}
                   </div>
                 ) : (
                   activity.map((entry) => (

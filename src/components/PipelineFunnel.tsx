@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { RotateCcw } from "lucide-react";
 import { resetErrorCompanies } from "../lib/tauri";
 import type { PipelineFunnelData } from "../lib/tauri";
-import { stageLabel, stageTooltip } from "../lib/stage-labels";
+import { stageTooltip } from "../lib/stage-labels";
 
 interface FunnelRow {
   label: string;
@@ -13,17 +13,18 @@ interface FunnelRow {
   filter?: string;
 }
 
+// Labels MATCH the FlowChart exactly — same names, same order
 const FUNNEL_ROWS: FunnelRow[] = [
   { label: "Total", key: "total", color: "bg-gray-400" },
-  { label: stageLabel("discovered"), key: "discovered", color: "bg-blue-400", filter: "status=discovered" },
-  { label: stageLabel("enriched"), key: "enriched", color: "bg-purple-500", filter: "status=enriched" },
-  { label: stageLabel("verified"), key: "verified", color: "bg-teal-500" },
-  { label: "Analysed", key: "synthesized_public", color: "bg-indigo-500" },
-  { label: stageLabel("approved"), key: "approved", color: "bg-green-500", filter: "status=approved" },
-  { label: stageLabel("activities"), key: "activities", color: "bg-orange-500" },
-  { label: stageLabel("embeddings"), key: "embeddings", color: "bg-cyan-500" },
-  { label: stageLabel("investor_matches"), key: "investor_matches", color: "bg-yellow-500" },
-  { label: stageLabel("pushed"), key: "pushed", color: "bg-green-600", filter: "status=pushed" },
+  { label: "Research", key: "discovered", color: "bg-blue-400", filter: "status=discovered" },
+  { label: "Enrich", key: "enriched", color: "bg-purple-500", filter: "status=enriched" },
+  { label: "Fact-Check", key: "verified", color: "bg-teal-500" },
+  { label: "Analyse", key: "synthesized_public", color: "bg-indigo-500" },
+  { label: "Qualify", key: "approved", color: "bg-green-500", filter: "status=approved" },
+  { label: "News & Updates", key: "activities", color: "bg-orange-500" },
+  { label: "Search Index", key: "embeddings", color: "bg-cyan-500" },
+  { label: "Investor Fit", key: "investor_matches", color: "bg-yellow-500" },
+  { label: "Publish", key: "pushed", color: "bg-green-600", filter: "status=pushed" },
   { label: "Errors", key: "error", color: "bg-red-500", filter: "status=error" },
 ];
 
