@@ -114,6 +114,21 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             }
         }
 
+        // Add recent news/activity if available
+        {
+            let db: tauri::State<'_, Database> = app.state();
+            if let Ok(activities) = db.get_company_activities(&id, 5) {
+                for act in activities {
+                    if let Some(title) = act.get("title").and_then(|v| v.as_str()) {
+                        text_parts.push(title.to_string());
+                    }
+                    if let Some(snippet) = act.get("snippet").and_then(|v| v.as_str()) {
+                        text_parts.push(snippet.to_string());
+                    }
+                }
+            }
+        }
+
         let embed_text = text_parts.join(". ");
         if embed_text.len() < 10 {
             continue;

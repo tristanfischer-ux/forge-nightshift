@@ -8,19 +8,19 @@ interface FlowChartProps {
 }
 
 // Layout: 8-node pipeline flow (2 rows of 4)
-// research → enrich → verify → synthesize → director_intel → embeddings → push → outreach
+// research → enrich → fact-check → analyse → news → search index → investor fit → publish
 //
 // Row 1 (y=20):  research, enrich, verify, synthesize
-// Row 2 (y=140): director_intel, embeddings, push, outreach
+// Row 2 (y=140): activity, embeddings, investor_match, push
 const NODE_DEFS = [
-  { id: "research",       label: stageLabel("research"),       tooltip: stageTooltip("research"),       x: 15,  y: 20 },
-  { id: "enrich",         label: stageLabel("enrich"),         tooltip: stageTooltip("enrich"),         x: 175, y: 20 },
-  { id: "verify",         label: stageLabel("verify"),         tooltip: stageTooltip("verify"),         x: 335, y: 20 },
-  { id: "synthesize",     label: stageLabel("synthesize"),     tooltip: stageTooltip("synthesize"),     x: 495, y: 20 },
-  { id: "director_intel", label: stageLabel("director_intel"), tooltip: stageTooltip("director_intel"), x: 15,  y: 140 },
-  { id: "embeddings",     label: stageLabel("embeddings"),     tooltip: stageTooltip("embeddings"),     x: 175, y: 140 },
-  { id: "push",           label: stageLabel("push"),           tooltip: stageTooltip("push"),           x: 335, y: 140 },
-  { id: "outreach",       label: stageLabel("outreach"),       tooltip: stageTooltip("outreach"),       x: 495, y: 140 },
+  { id: "research",       label: stageLabel("research"),         tooltip: stageTooltip("research"),         x: 15,  y: 20 },
+  { id: "enrich",         label: stageLabel("enrich"),           tooltip: stageTooltip("enrich"),           x: 175, y: 20 },
+  { id: "verify",         label: stageLabel("verify"),           tooltip: stageTooltip("verify"),           x: 335, y: 20 },
+  { id: "synthesize",     label: stageLabel("synthesize"),       tooltip: stageTooltip("synthesize"),       x: 495, y: 20 },
+  { id: "activity",       label: stageLabel("activities"),       tooltip: stageTooltip("activities"),       x: 15,  y: 140 },
+  { id: "embeddings",     label: stageLabel("embeddings"),       tooltip: stageTooltip("embeddings"),       x: 175, y: 140 },
+  { id: "investor_match", label: stageLabel("investor_matches"), tooltip: stageTooltip("investor_matches"), x: 335, y: 140 },
+  { id: "push",           label: stageLabel("push"),             tooltip: stageTooltip("push"),             x: 495, y: 140 },
 ];
 
 // Node dimensions for connector math

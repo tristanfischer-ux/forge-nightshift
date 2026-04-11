@@ -275,20 +275,21 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
         // Director data (ch_directors, ch_psc) is now captured during enrich_v2
         // via companies_house::enrich_company() and stored in attributes_json.
 
-        // Step 6: Generate embeddings for semantic search
-        if !is_cancelled() {
-            log::info!("[Batch] Wave {}: Starting embeddings", wave);
-            let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "running"}));
-            let _ = embeddings::run(app, job_id, &wave_config).await;
-            let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "completed"}));
-        }
-
-        // Step 7: Activity feed (company news)
+        // Step 5: Activity feed (company news) — runs BEFORE embeddings
+        // so that news content can be included in the embedding vectors
         if !is_cancelled() {
             log::info!("[Batch] Wave {}: Starting activity feed", wave);
             let _ = app.emit("pipeline:stage", json!({"stage": "activity", "status": "running"}));
             let _ = activity::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "activity", "status": "completed"}));
+        }
+
+        // Step 6: Generate embeddings for semantic search (after news, so news is included)
+        if !is_cancelled() {
+            log::info!("[Batch] Wave {}: Starting embeddings", wave);
+            let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "running"}));
+            let _ = embeddings::run(app, job_id, &wave_config).await;
+            let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "completed"}));
         }
 
         // Step 8: Investor matching (cross-reference with ForgeOS investors)
