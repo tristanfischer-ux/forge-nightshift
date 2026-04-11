@@ -337,12 +337,30 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
 
         wave += 1;
 
-        // Don't exit if there are companies waiting for verify/synthesize/intel/embeddings
+        // Only exit if user cancels. Otherwise keep cycling —
+        // research will search new countries/categories, activity will refresh news,
+        // and new companies will flow through the full pipeline.
+        if is_cancelled() {
+            break;
+        }
+
         let needs_processing = discovered_remaining > 0
             || enriched_needing_verify > 0
             || verified_needing_synthesis > 0;
-        if !needs_processing || is_cancelled() {
-            break;
+
+        if !needs_processing {
+            // Nothing to process right now — pause 5 minutes before next wave
+            // to avoid hammering APIs when idle
+            log::info!("[Batch] Wave {} complete, no pending work. Pausing 5 minutes before next wave...", wave);
+            {
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, "batch", "info",
+                    &format!("Wave {} complete. Pausing 5 minutes before next discovery cycle.", wave));
+            }
+            for _ in 0..60 {
+                if is_cancelled() { break; }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
         }
     }
 
