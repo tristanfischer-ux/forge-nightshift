@@ -15,7 +15,8 @@ import {
   Crosshair,
 } from "lucide-react";
 import { getPipelineStatus, getStats, getSearchProfiles, getActiveProfile, setActiveProfile } from "../lib/tauri";
-import type { SearchProfile } from "../lib/tauri";
+import type { SearchProfile, PipelineNodeEvent } from "../lib/tauri";
+import { stageLabel } from "../lib/stage-labels";
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -43,6 +44,7 @@ export default function Sidebar() {
   const [dense, setDense] = useState(() => localStorage.getItem("nightshift-density") === "dense");
   const [profiles, setProfiles] = useState<SearchProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string>("");
+  const [heartbeat, setHeartbeat] = useState<string>("");
 
   useEffect(() => {
     getVersion().then(setVersion);
@@ -84,13 +86,39 @@ export default function Sidebar() {
       "pipeline:status",
       (event) => {
         setPipelineRunning(event.payload.status === "running");
+        if (event.payload.status !== "running") {
+          setHeartbeat("");
+        }
         loadBadges();
+      }
+    );
+
+    // Live heartbeat from pipeline node events
+    const unlistenNode = listen<PipelineNodeEvent>(
+      "pipeline:node",
+      (event) => {
+        const node = event.payload;
+        if (node.status === "running") {
+          const stage = stageLabel(node.node_id);
+          const item = node.progress?.current_item;
+          const rate = node.progress?.rate;
+          let text = stage;
+          if (item) text += ` — ${item}`;
+          else if (rate) text += ` (${rate})`;
+          setHeartbeat(text);
+          // heartbeat updated
+        } else if (node.status === "completed") {
+          const stage = stageLabel(node.node_id);
+          setHeartbeat(`${stage} ✓`);
+          // heartbeat updated
+        }
       }
     );
 
     return () => {
       unlistenOllama.then((fn) => fn()).catch(() => {});
       unlistenPipeline.then((fn) => fn()).catch(() => {});
+      unlistenNode.then((fn) => fn()).catch(() => {});
     };
   }, []);
 
@@ -200,9 +228,16 @@ export default function Sidebar() {
           <Rows3 className="w-3.5 h-3.5" />
           {dense ? "Comfortable" : "Compact"}
         </button>
-        <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${statusColor}`} />
-          <span className="text-xs text-gray-500">{statusText}</span>
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${statusColor}`} />
+            <span className="text-xs text-gray-500">{statusText}</span>
+          </div>
+          {pipelineRunning && heartbeat && (
+            <p className="text-[10px] text-gray-400 truncate pl-4" title={heartbeat}>
+              {heartbeat}
+            </p>
+          )}
         </div>
       </div>
     </aside>
