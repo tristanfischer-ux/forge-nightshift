@@ -289,11 +289,19 @@ impl Database {
             ).unwrap_or(0)
         };
 
-        let activities: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM activity_feed",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let activities: i64 = if let Some(pid) = profile_id {
+            conn.query_row(
+                "SELECT COUNT(*) FROM activity_feed af JOIN companies c ON af.company_id = c.id WHERE c.search_profile_id = ?1",
+                [pid],
+                |row| row.get(0),
+            ).unwrap_or(0)
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM activity_feed",
+                [],
+                |row| row.get(0),
+            ).unwrap_or(0)
+        };
 
         Ok(json!({
             "verified": verified,
