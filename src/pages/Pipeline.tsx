@@ -10,6 +10,7 @@ import {
   getPipelineNodes,
   onPipelineNode,
   onPipelineStatus,
+  onPipelineStage,
   getStats,
   getRunHistory,
   getConfig,
@@ -65,7 +66,7 @@ const ADVANCED_PRESETS: { label: string; stages: string[]; icon: React.ReactNode
 
 function stagesToDescription(stages: string[]): string {
   if (stages.length === 1 && stages[0] === "batch") {
-    return `${stageLabel("research")} \u2192 ${stageLabel("enrich")} \u2192 ${stageLabel("verify")} \u2192 ${stageLabel("synthesize")} \u2192 ${stageLabel("director_intel")} \u2192 ${stageLabel("embeddings")}`;
+    return `${stageLabel("research")} \u2192 ${stageLabel("enrich")} \u2192 ${stageLabel("verify")} \u2192 ${stageLabel("synthesize")} \u2192 ${stageLabel("activities")} \u2192 ${stageLabel("embeddings")} \u2192 ${stageLabel("investor_matches")} \u2192 ${stageLabel("push")}`;
   }
   return stages.map((s) => stageLabel(s)).join(" \u2192 ");
 }
@@ -136,6 +137,20 @@ export default function Pipeline() {
       });
     });
 
+    // Subscribe to stage transitions (batch_pipeline emits these for each stage start/complete)
+    const unStage = onPipelineStage((payload) => {
+      setActivity((prev) => {
+        const entry: ActivityEntry = {
+          id: ++activityCounterRef.current,
+          time: new Date().toLocaleTimeString(),
+          nodeId: payload.stage,
+          status: payload.status,
+          item: null,
+        };
+        return [entry, ...prev].slice(0, 50);
+      });
+    });
+
     const unStatus = onPipelineStatus((payload) => {
       const status = payload.status as string;
       setRunning(status === "running");
@@ -149,6 +164,7 @@ export default function Pipeline() {
 
     return () => {
       unNode.then((fn) => fn());
+      unStage.then((fn) => fn());
       unStatus.then((fn) => fn());
     };
   }, []);
@@ -490,7 +506,7 @@ export default function Pipeline() {
                         entry.status === "failed" ? "bg-red-500" :
                         "bg-gray-300"
                       }`} />
-                      <span className="font-medium text-gray-700 w-28 shrink-0 truncate">{entry.nodeId.replace(/_/g, " ")}</span>
+                      <span className="font-medium text-gray-700 w-28 shrink-0 truncate">{stageLabel(entry.nodeId)}</span>
                       <span className="text-gray-500 capitalize w-16 shrink-0">{entry.status}</span>
                       {entry.item && (
                         <span className="text-gray-400 truncate">{entry.item}</span>

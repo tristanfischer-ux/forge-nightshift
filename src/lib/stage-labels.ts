@@ -18,20 +18,19 @@ export const STAGE_LABELS: Record<string, string> = {
 
   // Pipeline node / flow-chart IDs
   research: "Research",
-  enrich: "Research",
+  enrich: "Enrich",
   verify: "Fact-Check",
   synthesize: "Analyse",
   embeddings: "Search Index",
   push: "Publish",
   outreach: "Outreach",
   activity: "News & Updates",
+  activities: "News & Updates",
+  investor_matches: "Investor Fit",
 
   // Funnel-only keys
-  with_process_capabilities: "Capabilities",
   synthesized_public: "Analysed (Public)",
   synthesized_private: "Analysed (Private)",
-  investor_matches: "Investor Fit",
-  activities: "News & Updates",
 };
 
 /** Tooltip descriptions shown on hover */

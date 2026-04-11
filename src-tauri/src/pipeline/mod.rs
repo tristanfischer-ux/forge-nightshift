@@ -159,6 +159,7 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
 
     let mut wave = 1u32;
     let mut total_processed: usize = 0;
+    let mut total_new_discovered: usize = 0;
 
     // Step 0: Auto-retry errors from previous runs
     if !is_cancelled() {
@@ -233,9 +234,17 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
                 let _ = app.emit("pipeline:stage", json!({"stage": "research", "status": "completed"}));
                 let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "completed"}));
 
-                if let Err(e) = &research_res {
-                    let db: tauri::State<'_, Database> = app.state();
-                    let _ = db.log_activity(job_id, "batch", "warn", &format!("Research error in wave {}: {}", wave, e));
+                match &research_res {
+                    Ok(val) => {
+                        let wave_discovered = val.get("companies_discovered")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        total_new_discovered += wave_discovered;
+                    }
+                    Err(e) => {
+                        let db: tauri::State<'_, Database> = app.state();
+                        let _ = db.log_activity(job_id, "batch", "warn", &format!("Research error in wave {}: {}", wave, e));
+                    }
                 }
             } else {
                 log::info!("[Batch] Wave {}: {} in backlog, running enrich only", wave, discovered_backlog);
@@ -332,8 +341,24 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
             "wave": wave,
             "batch_size": batch_size,
             "total_processed": total_processed,
+            "total_new_discovered": total_new_discovered,
             "discovered_remaining": discovered_remaining
         }));
+
+        // Auto-switch profile after 500 new discoveries
+        if total_new_discovered >= 500 {
+            let db: tauri::State<'_, Database> = app.state();
+            let current_profile = db.get_active_profile_id();
+            if current_profile == "cleantech-uk" {
+                db.set_config("active_profile_id", "fischer-farms-customers").unwrap_or(());
+                log::info!("[Batch] Reached {} new companies — switching to Fischer Farms Customers", total_new_discovered);
+                let _ = db.log_activity(job_id, "batch", "info",
+                    &format!("Auto-switched to Fischer Farms Customers after {} new discoveries", total_new_discovered));
+                let _ = app.emit("pipeline:status", json!({"status": "profile_switched", "new_profile": "fischer-farms-customers"}));
+                // Reset counter for the new profile
+                total_new_discovered = 0;
+            }
+        }
 
         wave += 1;
 

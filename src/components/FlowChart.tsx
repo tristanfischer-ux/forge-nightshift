@@ -28,13 +28,16 @@ const NODE_W = 192; // w-48 = 12rem = 192px
 const NODE_H = 80;  // approximate height
 
 const CONNECTORS = [
+  // Row 1: left to right
   { from: "research", to: "enrich" },
   { from: "enrich", to: "verify" },
   { from: "verify", to: "synthesize" },
-  { from: "synthesize", to: "director_intel" },
-  { from: "director_intel", to: "embeddings" },
-  { from: "embeddings", to: "push" },
-  { from: "push", to: "outreach" },
+  // Row 1 last → Row 2 first (drop down)
+  { from: "synthesize", to: "activity" },
+  // Row 2: left to right
+  { from: "activity", to: "embeddings" },
+  { from: "embeddings", to: "investor_match" },
+  { from: "investor_match", to: "push" },
 ];
 
 function getNodePos(id: string) {
@@ -51,11 +54,20 @@ export default function FlowChart({ nodes }: FlowChartProps) {
           const fromStatus = nodes[conn.from]?.status ?? "idle";
           const toStatus = nodes[conn.to]?.status ?? "idle";
           const active = fromStatus === "completed" && toStatus === "running";
+          const sameRow = from.y === to.y;
+          // Same row: connect right edge → left edge (horizontal)
+          // Different row: connect center-bottom → center-top (vertical)
+          const fromPt = sameRow
+            ? { x: from.x + NODE_W, y: from.y + NODE_H / 2 }
+            : { x: from.x + NODE_W / 2, y: from.y + NODE_H };
+          const toPt = sameRow
+            ? { x: to.x, y: to.y + NODE_H / 2 }
+            : { x: to.x + NODE_W / 2, y: to.y };
           return (
             <FlowConnector
               key={`${conn.from}-${conn.to}`}
-              from={{ x: from.x + NODE_W / 2, y: from.y + NODE_H }}
-              to={{ x: to.x + NODE_W / 2, y: to.y }}
+              from={fromPt}
+              to={toPt}
               active={active}
             />
           );

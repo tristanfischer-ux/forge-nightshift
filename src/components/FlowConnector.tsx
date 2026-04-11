@@ -5,8 +5,14 @@ interface FlowConnectorProps {
 }
 
 export default function FlowConnector({ from, to, active }: FlowConnectorProps) {
-  const midY = (from.y + to.y) / 2;
-  const d = `M ${from.x} ${from.y} C ${from.x} ${midY}, ${to.x} ${midY}, ${to.x} ${to.y}`;
+  const sameRow = from.y === to.y;
+  // Horizontal: straight line. Vertical: S-curve via cubic bezier.
+  const d = sameRow
+    ? `M ${from.x} ${from.y} L ${to.x} ${to.y}`
+    : (() => {
+        const midY = (from.y + to.y) / 2;
+        return `M ${from.x} ${from.y} C ${from.x} ${midY}, ${to.x} ${midY}, ${to.x} ${to.y}`;
+      })();
 
   return (
     <path
