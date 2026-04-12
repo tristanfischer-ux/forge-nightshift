@@ -77,14 +77,20 @@ pub fn run_audit(app: &tauri::AppHandle, profile_id: &str) -> Value {
     }
 
     // CHECK 6: Companies with error_count >= 3 still in error state (should be archived)
-    // These have failed 3+ times and will never succeed — stop retrying them
     match db.archive_permanent_errors(profile_id) {
         Ok(count) if count > 0 => {
             fixes.push(format!("Archived {} permanent errors (3+ failures)", count));
         }
-        Err(e) => {
-            log::warn!("[Audit] Failed to archive permanent errors: {}", e);
+        Err(e) => { log::warn!("[Audit] Failed to archive permanent errors: {}", e); }
+        _ => {}
+    }
+
+    // CHECK 7: Companies in liquidation/dissolved/administration — remove from active pipeline
+    match db.archive_dead_companies(profile_id) {
+        Ok(count) if count > 0 => {
+            fixes.push(format!("Removed {} dead companies (liquidation/dissolved/administration)", count));
         }
+        Err(e) => { log::warn!("[Audit] Failed to archive dead companies: {}", e); }
         _ => {}
     }
 

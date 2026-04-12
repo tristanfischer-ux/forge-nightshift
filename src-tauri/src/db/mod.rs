@@ -75,6 +75,7 @@ impl Database {
             include_str!("migrations/028_investor_matches.sql"),
             include_str!("migrations/029_error_count.sql"),
             include_str!("migrations/030_deal_tracking.sql"),
+            include_str!("migrations/031_scoring_reasoning.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -3846,6 +3847,19 @@ impl Database {
             "UPDATE companies SET status = 'removed_no_website', updated_at = datetime('now')
              WHERE status = 'error'
                AND COALESCE(error_count, 0) >= 3
+               AND search_profile_id = ?1",
+            rusqlite::params![profile_id],
+        )?;
+        Ok(conn.changes() as i64)
+    }
+
+    /// Archive companies in liquidation/dissolved/administration — dead companies shouldn't be in the pipeline.
+    pub fn archive_dead_companies(&self, profile_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET status = 'removed_no_website', updated_at = datetime('now')
+             WHERE json_extract(attributes_json, '$.ch_company_status') IN ('liquidation', 'dissolved', 'administration', 'voluntary-arrangement', 'insolvency-proceedings')
+               AND status IN ('enriched', 'approved', 'discovered', 'error')
                AND search_profile_id = ?1",
             rusqlite::params![profile_id],
         )?;
