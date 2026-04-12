@@ -75,6 +75,11 @@ import {
   getDeals,
   saveDeal,
   type Deal,
+  getCompanyContacts,
+  saveContact,
+  deleteContact,
+  updateContactOutreachStatus,
+  type Contact,
 } from "../lib/tauri";
 import type { SearchProfile } from "../lib/tauri";
 import { useError } from "../contexts/ErrorContext";
@@ -431,6 +436,19 @@ export default function Review() {
   // Cache of company_id -> deal types for badges in the list
   const [dealBadges, setDealBadges] = useState<Record<string, string[]>>({});
 
+  // Contacts (Decision Makers)
+  const [companyContacts, setCompanyContacts] = useState<Contact[]>([]);
+  const [contactFormOpen, setContactFormOpen] = useState(false);
+  const [contactForm, setContactForm] = useState({
+    name: "",
+    title: "",
+    email: "",
+    linkedinUrl: "",
+    roleType: "decision_maker",
+    department: "executive",
+  });
+  const [contactSaving, setContactSaving] = useState(false);
+
   // Enhancement 12: Side-by-side comparison
   const [compareMode, setCompareMode] = useState(false);
   const [compareList, setCompareList] = useState<string[]>([]);
@@ -664,6 +682,19 @@ export default function Review() {
     getCompanyDeals(companyId)
       .then(setCompanyDeals)
       .catch(() => setCompanyDeals([]));
+  }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load contacts for selected company
+  useEffect(() => {
+    if (!selected) {
+      setCompanyContacts([]);
+      return;
+    }
+    const companyId = String(selected.id || "");
+    if (!companyId) return;
+    getCompanyContacts(companyId)
+      .then(setCompanyContacts)
+      .catch(() => setCompanyContacts([]));
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load deal badges for all tracked companies
@@ -3079,6 +3110,205 @@ export default function Review() {
               {/* === CONTACT TAB === */}
               {detailTab === "contact" && (
                 <div className="space-y-5">
+                  {/* Decision Makers */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-xs text-gray-400 uppercase flex items-center gap-1">
+                        <Target className="w-3 h-3" /> Decision Makers
+                      </h4>
+                      <button
+                        onClick={() => {
+                          setContactForm({ name: "", title: "", email: "", linkedinUrl: "", roleType: "decision_maker", department: "executive" });
+                          setContactFormOpen(true);
+                        }}
+                        className="text-xs text-forge-600 hover:text-forge-700 font-medium"
+                      >
+                        + Add Contact
+                      </button>
+                    </div>
+                    {companyContacts.length > 0 ? (
+                      <div className="space-y-2">
+                        {companyContacts.map((contact) => {
+                          const roleColors: Record<string, string> = {
+                            decision_maker: "bg-red-100 text-red-700",
+                            influencer: "bg-blue-100 text-blue-700",
+                            champion: "bg-green-100 text-green-700",
+                            gatekeeper: "bg-yellow-100 text-yellow-700",
+                          };
+                          const outreachColors: Record<string, string> = {
+                            not_contacted: "bg-gray-100 text-gray-600",
+                            researching: "bg-purple-100 text-purple-700",
+                            contacted: "bg-blue-100 text-blue-700",
+                            responded: "bg-green-100 text-green-700",
+                            meeting: "bg-emerald-100 text-emerald-700",
+                            declined: "bg-red-100 text-red-600",
+                          };
+                          const outreachLabels: Record<string, string> = {
+                            not_contacted: "Not Contacted",
+                            researching: "Researching",
+                            contacted: "Contacted",
+                            responded: "Responded",
+                            meeting: "Meeting",
+                            declined: "Declined",
+                          };
+                          return (
+                            <div key={contact.id} className="p-2 bg-gray-50 rounded-lg border border-gray-100 group">
+                              <div className="flex items-start justify-between">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-sm font-medium text-gray-900">{contact.name}</span>
+                                    {contact.is_primary === 1 && (
+                                      <span className="text-[10px] bg-forge-100 text-forge-700 px-1.5 py-0.5 rounded font-medium">Primary</span>
+                                    )}
+                                    {contact.role_type && (
+                                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${roleColors[contact.role_type] || "bg-gray-100 text-gray-600"}`}>
+                                        {contact.role_type.replace("_", " ")}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {contact.title && (
+                                    <p className="text-xs text-gray-500 mt-0.5">{contact.title}</p>
+                                  )}
+                                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                    {contact.email && (
+                                      <a href={`mailto:${contact.email}`} className="text-xs text-forge-600 hover:text-forge-700 flex items-center gap-0.5">
+                                        <Mail className="w-3 h-3" /> {contact.email}
+                                      </a>
+                                    )}
+                                    {contact.linkedin_url && (
+                                      <a href={contact.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-xs text-forge-600 hover:text-forge-700 flex items-center gap-0.5">
+                                        <ExternalLink className="w-3 h-3" /> LinkedIn
+                                      </a>
+                                    )}
+                                    <select
+                                      value={contact.outreach_status}
+                                      onChange={async (e) => {
+                                        try {
+                                          await updateContactOutreachStatus(contact.id, e.target.value);
+                                          const updated = await getCompanyContacts(String(selected.id));
+                                          setCompanyContacts(updated);
+                                        } catch { /* empty */ }
+                                      }}
+                                      className={`text-[10px] px-1.5 py-0.5 rounded border-0 cursor-pointer ${outreachColors[contact.outreach_status] || "bg-gray-100 text-gray-600"}`}
+                                    >
+                                      {Object.entries(outreachLabels).map(([val, label]) => (
+                                        <option key={val} value={val}>{label}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={async () => {
+                                    if (confirm(`Remove ${contact.name}?`)) {
+                                      try {
+                                        await deleteContact(contact.id);
+                                        const updated = await getCompanyContacts(String(selected.id));
+                                        setCompanyContacts(updated);
+                                      } catch { /* empty */ }
+                                    }
+                                  }}
+                                  className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity ml-2"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-400">No decision makers identified yet. Run the Contacts pipeline stage or add manually.</p>
+                    )}
+
+                    {/* Add Contact Form */}
+                    {contactFormOpen && (
+                      <div className="mt-3 p-3 bg-white border border-gray-200 rounded-lg space-y-2">
+                        <input
+                          placeholder="Name *"
+                          value={contactForm.name}
+                          onChange={(e) => setContactForm({ ...contactForm, name: e.target.value })}
+                          className="w-full text-sm border border-gray-200 rounded px-2 py-1.5"
+                        />
+                        <input
+                          placeholder="Title (e.g. Head of Procurement)"
+                          value={contactForm.title}
+                          onChange={(e) => setContactForm({ ...contactForm, title: e.target.value })}
+                          className="w-full text-sm border border-gray-200 rounded px-2 py-1.5"
+                        />
+                        <input
+                          placeholder="Email"
+                          value={contactForm.email}
+                          onChange={(e) => setContactForm({ ...contactForm, email: e.target.value })}
+                          className="w-full text-sm border border-gray-200 rounded px-2 py-1.5"
+                        />
+                        <input
+                          placeholder="LinkedIn URL"
+                          value={contactForm.linkedinUrl}
+                          onChange={(e) => setContactForm({ ...contactForm, linkedinUrl: e.target.value })}
+                          className="w-full text-sm border border-gray-200 rounded px-2 py-1.5"
+                        />
+                        <div className="flex gap-2">
+                          <select
+                            value={contactForm.roleType}
+                            onChange={(e) => setContactForm({ ...contactForm, roleType: e.target.value })}
+                            className="flex-1 text-sm border border-gray-200 rounded px-2 py-1.5"
+                          >
+                            <option value="decision_maker">Decision Maker</option>
+                            <option value="influencer">Influencer</option>
+                            <option value="champion">Champion</option>
+                            <option value="gatekeeper">Gatekeeper</option>
+                          </select>
+                          <select
+                            value={contactForm.department}
+                            onChange={(e) => setContactForm({ ...contactForm, department: e.target.value })}
+                            className="flex-1 text-sm border border-gray-200 rounded px-2 py-1.5"
+                          >
+                            <option value="executive">Executive</option>
+                            <option value="procurement">Procurement</option>
+                            <option value="sustainability">Sustainability</option>
+                            <option value="operations">Operations</option>
+                            <option value="fresh_produce">Fresh Produce</option>
+                            <option value="innovation">Innovation</option>
+                          </select>
+                        </div>
+                        <div className="flex gap-2 pt-1">
+                          <button
+                            onClick={() => setContactFormOpen(false)}
+                            className="px-3 py-1 text-xs text-gray-500 hover:text-gray-700"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            disabled={!contactForm.name.trim() || contactSaving}
+                            onClick={async () => {
+                              setContactSaving(true);
+                              try {
+                                await saveContact({
+                                  companyId: String(selected.id),
+                                  name: contactForm.name.trim(),
+                                  title: contactForm.title || undefined,
+                                  email: contactForm.email || undefined,
+                                  linkedinUrl: contactForm.linkedinUrl || undefined,
+                                  roleType: contactForm.roleType,
+                                  department: contactForm.department,
+                                  source: "manual",
+                                });
+                                const updated = await getCompanyContacts(String(selected.id));
+                                setCompanyContacts(updated);
+                                setContactFormOpen(false);
+                                setContactForm({ name: "", title: "", email: "", linkedinUrl: "", roleType: "decision_maker", department: "executive" });
+                              } catch { /* empty */ }
+                              setContactSaving(false);
+                            }}
+                            className="px-3 py-1 text-xs bg-forge-600 text-white rounded hover:bg-forge-700 disabled:opacity-50"
+                          >
+                            {contactSaving ? "Saving..." : "Save Contact"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Contact */}
                   {!!(selected.contact_name ||
                     selected.contact_email ||

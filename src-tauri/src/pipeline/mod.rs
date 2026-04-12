@@ -18,6 +18,7 @@ mod activity;
 mod audit;
 mod embeddings;
 mod investor_match;
+mod contacts;
 
 use anyhow::Result;
 use chrono::{Datelike, Timelike};
@@ -292,6 +293,14 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
             let _ = app.emit("pipeline:stage", json!({"stage": "activity", "status": "running"}));
             let _ = activity::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "activity", "status": "completed"}));
+        }
+
+        // Step 5b: Extract decision maker contacts from company websites
+        if !is_cancelled() {
+            log::info!("[Batch] Wave {}: Starting contact extraction", wave);
+            let _ = app.emit("pipeline:stage", json!({"stage": "contacts", "status": "running"}));
+            let _ = contacts::run(app, job_id, &wave_config).await;
+            let _ = app.emit("pipeline:stage", json!({"stage": "contacts", "status": "completed"}));
         }
 
         // Step 6: Generate embeddings for semantic search (after news, so news is included)
@@ -572,6 +581,7 @@ async fn run_single_stage(
         "director_intel" => director_intel::run(app, job_id, config).await,
         "embeddings" => embeddings::run(app, job_id, config).await,
         "investor_match" => investor_match::run(app, job_id, config).await,
+        "contacts" => contacts::run(app, job_id, config).await,
         "learn_outreach" => outreach_learner::run_learning_cycle(app, job_id, config).await,
         s if s.starts_with("template_outreach:") => {
             let template_id = &s["template_outreach:".len()..];

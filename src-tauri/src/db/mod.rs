@@ -76,6 +76,7 @@ impl Database {
             include_str!("migrations/029_error_count.sql"),
             include_str!("migrations/030_deal_tracking.sql"),
             include_str!("migrations/031_scoring_reasoning.sql"),
+            include_str!("migrations/032_contacts.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -3864,6 +3865,163 @@ impl Database {
             rusqlite::params![profile_id],
         )?;
         Ok(conn.changes() as i64)
+    }
+
+    // ── Contacts ─────────────────────────────────────────────────────
+
+    /// Upsert a contact for a company. ON CONFLICT(company_id, name) updates.
+    pub fn save_contact(
+        &self,
+        company_id: &str,
+        name: &str,
+        title: Option<&str>,
+        email: Option<&str>,
+        phone: Option<&str>,
+        linkedin_url: Option<&str>,
+        role_type: Option<&str>,
+        department: Option<&str>,
+        seniority: Option<&str>,
+        source: Option<&str>,
+        notes: Option<&str>,
+        is_primary: bool,
+    ) -> Result<Value> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO contacts (company_id, name, title, email, phone, linkedin_url, role_type, department, seniority, source, notes, is_primary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(company_id, name) DO UPDATE SET
+               title = COALESCE(excluded.title, contacts.title),
+               email = COALESCE(excluded.email, contacts.email),
+               phone = COALESCE(excluded.phone, contacts.phone),
+               linkedin_url = COALESCE(excluded.linkedin_url, contacts.linkedin_url),
+               role_type = COALESCE(excluded.role_type, contacts.role_type),
+               department = COALESCE(excluded.department, contacts.department),
+               seniority = COALESCE(excluded.seniority, contacts.seniority),
+               source = COALESCE(excluded.source, contacts.source),
+               notes = COALESCE(excluded.notes, contacts.notes),
+               is_primary = excluded.is_primary,
+               updated_at = datetime('now')",
+            rusqlite::params![
+                company_id, name, title, email, phone, linkedin_url,
+                role_type, department, seniority, source, notes,
+                is_primary as i32,
+            ],
+        )?;
+        // Return the saved contact
+        let mut stmt = conn.prepare(
+            "SELECT * FROM contacts WHERE company_id = ?1 AND name = ?2",
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let row = stmt.query_row(rusqlite::params![company_id, name], |row| {
+            let mut obj = serde_json::Map::new();
+            for (i, col) in columns.iter().enumerate() {
+                let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                obj.insert(col.clone(), sqlite_to_json(val));
+            }
+            Ok(Value::Object(obj))
+        })?;
+        Ok(row)
+    }
+
+    /// Get all contacts for a specific company.
+    pub fn get_company_contacts(&self, company_id: &str) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT * FROM contacts WHERE company_id = ?1 ORDER BY is_primary DESC, name ASC",
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let rows = stmt
+            .query_map([company_id], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Get all contacts across all companies for the active profile, optionally filtered by role_type.
+    /// Joins with companies table to include company name.
+    pub fn get_all_contacts(&self, profile_id: &str, role_type_filter: Option<&str>) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = String::from(
+            "SELECT ct.*, c.name as company_name, c.subcategory, c.country \
+             FROM contacts ct \
+             JOIN companies c ON ct.company_id = c.id \
+             WHERE c.search_profile_id = ?1",
+        );
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        params.push(Box::new(profile_id.to_string()));
+
+        if let Some(rt) = role_type_filter {
+            sql.push_str(" AND ct.role_type = ?2");
+            params.push(Box::new(rt.to_string()));
+        }
+        sql.push_str(" ORDER BY ct.is_primary DESC, c.name ASC, ct.name ASC");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Get companies that need contact extraction (enriched/approved/pushed with 0 contacts and a website).
+    pub fn get_companies_needing_contacts(&self, profile_id: &str, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.name, c.website_url, c.description \
+             FROM companies c \
+             WHERE c.status IN ('enriched', 'approved', 'pushed') \
+               AND c.website_url IS NOT NULL AND c.website_url != '' \
+               AND c.search_profile_id = ?1 \
+               AND c.id NOT IN (SELECT DISTINCT company_id FROM contacts) \
+             ORDER BY c.relevance_score DESC NULLS LAST \
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![profile_id, limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, Option<String>>(1)?,
+                    "website_url": row.get::<_, Option<String>>(2)?,
+                    "description": row.get::<_, Option<String>>(3)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Update outreach_status for a contact.
+    pub fn update_contact_outreach_status(&self, id: i64, status: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE contacts SET outreach_status = ?1, updated_at = datetime('now') WHERE id = ?2",
+            rusqlite::params![status, id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a contact by id.
+    pub fn delete_contact(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM contacts WHERE id = ?1", [id])?;
+        Ok(())
     }
 }
 

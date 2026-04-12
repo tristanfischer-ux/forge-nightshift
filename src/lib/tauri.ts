@@ -367,6 +367,77 @@ export async function deleteDeal(id: number) {
   return invoke("delete_deal", { id });
 }
 
+// --- Contacts ---
+
+export interface Contact {
+  id: number;
+  company_id: string;
+  name: string;
+  title: string | null;
+  email: string | null;
+  phone: string | null;
+  linkedin_url: string | null;
+  role_type: string | null; // 'decision_maker' | 'influencer' | 'champion' | 'gatekeeper'
+  department: string | null;
+  seniority: string | null; // 'c_suite' | 'director' | 'head_of' | 'manager' | 'other'
+  source: string | null;
+  notes: string | null;
+  is_primary: number;
+  outreach_status: string; // 'not_contacted' | 'researching' | 'contacted' | 'responded' | 'meeting' | 'declined'
+  created_at: string;
+  updated_at: string;
+  // Joined fields (from get_all_contacts)
+  company_name?: string | null;
+  subcategory?: string | null;
+  country?: string | null;
+}
+
+export async function saveContact(params: {
+  companyId: string;
+  name: string;
+  title?: string;
+  email?: string;
+  phone?: string;
+  linkedinUrl?: string;
+  roleType?: string;
+  department?: string;
+  seniority?: string;
+  source?: string;
+  notes?: string;
+  isPrimary?: boolean;
+}) {
+  return invoke<Contact>("save_contact", {
+    companyId: params.companyId,
+    name: params.name,
+    title: params.title,
+    email: params.email,
+    phone: params.phone,
+    linkedinUrl: params.linkedinUrl,
+    roleType: params.roleType,
+    department: params.department,
+    seniority: params.seniority,
+    source: params.source,
+    notes: params.notes,
+    isPrimary: params.isPrimary,
+  });
+}
+
+export async function getCompanyContacts(companyId: string) {
+  return invoke<Contact[]>("get_company_contacts", { companyId });
+}
+
+export async function getAllContacts(roleTypeFilter?: string) {
+  return invoke<Contact[]>("get_all_contacts", { roleTypeFilter });
+}
+
+export async function deleteContact(id: number) {
+  return invoke("delete_contact", { id });
+}
+
+export async function updateContactOutreachStatus(id: number, status: string) {
+  return invoke("update_contact_outreach_status", { id, status });
+}
+
 // Event listeners
 export function onPipelineStatus(
   callback: (payload: Record<string, unknown>) => void

@@ -1738,6 +1738,83 @@ fn delete_deal(db: tauri::State<'_, Database>, id: i64) -> Result<(), String> {
     db.delete_deal(id).map_err(|e| e.to_string())
 }
 
+// ── Contacts ─────────────────────────────────────────────────────
+
+#[tauri::command]
+fn save_contact(
+    db: tauri::State<'_, Database>,
+    company_id: String,
+    name: String,
+    title: Option<String>,
+    email: Option<String>,
+    phone: Option<String>,
+    linkedin_url: Option<String>,
+    role_type: Option<String>,
+    department: Option<String>,
+    seniority: Option<String>,
+    source: Option<String>,
+    notes: Option<String>,
+    is_primary: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let valid_roles = ["decision_maker", "influencer", "champion", "gatekeeper"];
+    if let Some(ref rt) = role_type {
+        if !valid_roles.contains(&rt.as_str()) {
+            return Err(format!("Invalid role_type: {}", rt));
+        }
+    }
+    db.save_contact(
+        &company_id,
+        &name,
+        title.as_deref(),
+        email.as_deref(),
+        phone.as_deref(),
+        linkedin_url.as_deref(),
+        role_type.as_deref(),
+        department.as_deref(),
+        seniority.as_deref(),
+        source.as_deref(),
+        notes.as_deref(),
+        is_primary.unwrap_or(false),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_company_contacts(
+    db: tauri::State<'_, Database>,
+    company_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    db.get_company_contacts(&company_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_all_contacts(
+    db: tauri::State<'_, Database>,
+    role_type_filter: Option<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let profile_id = db.get_active_profile_id();
+    db.get_all_contacts(&profile_id, role_type_filter.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_contact(db: tauri::State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_contact(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_contact_outreach_status(
+    db: tauri::State<'_, Database>,
+    id: i64,
+    status: String,
+) -> Result<(), String> {
+    let valid = ["not_contacted", "researching", "contacted", "responded", "meeting", "declined"];
+    if !valid.contains(&status.as_str()) {
+        return Err(format!("Invalid outreach status: {}", status));
+    }
+    db.update_contact_outreach_status(id, &status).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -1861,6 +1938,11 @@ pub fn run() {
             get_company_deals,
             update_deal_status,
             delete_deal,
+            save_contact,
+            get_company_contacts,
+            get_all_contacts,
+            delete_contact,
+            update_contact_outreach_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
