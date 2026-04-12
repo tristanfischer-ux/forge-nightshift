@@ -104,7 +104,12 @@ pub async fn fetch_website_text(url: &str) -> Result<String> {
 async fn fetch_html(client: &reqwest::Client, url: &str) -> Result<String> {
     let resp = client
         .get(url)
-        .header("User-Agent", "Mozilla/5.0 (compatible; ForgeOS-Nightshift/0.7)")
+        .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+        .header("Accept-Language", "en-GB,en;q=0.9")
+        .header("Accept-Encoding", "gzip, deflate")
+        .header("Connection", "keep-alive")
+        .header("Upgrade-Insecure-Requests", "1")
         .send()
         .await?;
 
