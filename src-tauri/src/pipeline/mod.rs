@@ -15,6 +15,7 @@ mod verify;
 mod synthesize;
 mod director_intel;
 mod activity;
+mod audit;
 mod embeddings;
 mod investor_match;
 
@@ -313,6 +314,25 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
                 let _ = app.emit("pipeline:stage", json!({"stage": "investor_match", "status": "running"}));
                 let _ = investor_match::run(app, job_id, &wave_config).await;
                 let _ = app.emit("pipeline:stage", json!({"stage": "investor_match", "status": "completed"}));
+            }
+        }
+
+        // Self-audit: check pipeline health and auto-fix safe issues
+        if !is_cancelled() {
+            let profile_id = {
+                let db: tauri::State<'_, Database> = app.state();
+                db.get_active_profile_id()
+            };
+            let audit_result = audit::run_audit(app, &profile_id);
+            let findings = audit_result.get("findings").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            let fixes_count = audit_result.get("fixes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            if findings > 0 || fixes_count > 0 {
+                log::info!("[Audit] Wave {}: {} findings, {} auto-fixes applied", wave, findings, fixes_count);
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, "audit", "info",
+                    &format!("Self-audit: {} findings, {} fixes. {}",
+                        findings, fixes_count,
+                        serde_json::to_string(&audit_result).unwrap_or_default()));
             }
         }
 

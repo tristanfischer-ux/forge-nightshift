@@ -3743,6 +3743,114 @@ impl Database {
 
         Ok(row)
     }
+
+    // ── Audit helpers ────────────────────────────────────────────────
+
+    /// Count errors in the most recent N companies for a profile.
+    pub fn count_recent_errors(&self, profile_id: &str, limit: i64) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM (
+                SELECT status FROM companies
+                WHERE search_profile_id = ?1
+                ORDER BY updated_at DESC
+                LIMIT ?2
+            ) WHERE status = 'error'",
+            rusqlite::params![profile_id, limit],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Count total in the most recent N companies for a profile.
+    pub fn count_recent_total(&self, profile_id: &str, limit: i64) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM (
+                SELECT 1 FROM companies
+                WHERE search_profile_id = ?1
+                ORDER BY updated_at DESC
+                LIMIT ?2
+            )",
+            rusqlite::params![profile_id, limit],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Average enrichment_quality of recent enriched companies for a profile.
+    pub fn avg_recent_quality(&self, profile_id: &str, limit: i64) -> Result<f64> {
+        let conn = self.conn.lock().unwrap();
+        let avg: f64 = conn.query_row(
+            "SELECT COALESCE(AVG(enrichment_quality), 0.0) FROM (
+                SELECT enrichment_quality FROM companies
+                WHERE search_profile_id = ?1
+                  AND status IN ('enriched', 'approved', 'pushed')
+                  AND enrichment_quality IS NOT NULL
+                ORDER BY updated_at DESC
+                LIMIT ?2
+            )",
+            rusqlite::params![profile_id, limit],
+            |row| row.get(0),
+        )?;
+        Ok(avg)
+    }
+
+    /// Count domains appearing more than once for a profile.
+    pub fn count_duplicate_domains(&self, profile_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM (
+                SELECT domain FROM companies
+                WHERE search_profile_id = ?1
+                  AND domain IS NOT NULL AND domain != ''
+                GROUP BY domain
+                HAVING COUNT(*) > 1
+            )",
+            rusqlite::params![profile_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Reset companies stuck in 'enriching' status for > 30 minutes back to 'discovered'.
+    pub fn reset_orphaned_enriching(&self, profile_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET status = 'discovered', updated_at = datetime('now')
+             WHERE status = 'enriching'
+               AND updated_at < datetime('now', '-30 minutes')
+               AND search_profile_id = ?1",
+            rusqlite::params![profile_id],
+        )?;
+        Ok(conn.changes() as i64)
+    }
+
+    /// Archive error companies that have no website (can never be enriched).
+    pub fn archive_no_website_errors(&self, profile_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET status = 'removed_no_website', updated_at = datetime('now')
+             WHERE status = 'error'
+               AND (website_url IS NULL OR website_url = '')
+               AND search_profile_id = ?1",
+            rusqlite::params![profile_id],
+        )?;
+        Ok(conn.changes() as i64)
+    }
+
+    /// Archive error companies with 3+ failures (permanent errors).
+    pub fn archive_permanent_errors(&self, profile_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET status = 'removed_no_website', updated_at = datetime('now')
+             WHERE status = 'error'
+               AND COALESCE(error_count, 0) >= 3
+               AND search_profile_id = ?1",
+            rusqlite::params![profile_id],
+        )?;
+        Ok(conn.changes() as i64)
+    }
 }
 
 /// Normalize a company name for dedup: lowercase, strip common legal suffixes, trim.
