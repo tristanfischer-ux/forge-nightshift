@@ -125,16 +125,22 @@ export default function Pipeline() {
     // Subscribe to events
     const unNode = onPipelineNode((payload) => {
       setNodes((prev) => ({ ...prev, [payload.node_id]: payload }));
-      setActivity((prev) => {
-        const entry: ActivityEntry = {
-          id: ++activityCounterRef.current,
-          time: new Date().toLocaleTimeString(),
-          nodeId: payload.node_id,
-          status: payload.status,
-          item: payload.progress?.current_item ?? null,
-        };
-        return [entry, ...prev].slice(0, 50);
-      });
+      // Add every event to activity feed — throttled to every 10th event to avoid flooding
+      activityCounterRef.current++;
+      if (activityCounterRef.current % 10 === 0 || payload.status === "completed" || payload.status === "failed" || activityCounterRef.current <= 3) {
+        setActivity((prev) => [
+          {
+            id: activityCounterRef.current,
+            time: new Date().toLocaleTimeString(),
+            nodeId: payload.node_id,
+            status: payload.status,
+            item: payload.status === "completed"
+              ? `Done in ${payload.elapsed_secs ?? 0}s`
+              : (payload.progress?.current_item ?? null),
+          },
+          ...prev,
+        ].slice(0, 50));
+      }
     });
 
     // Subscribe to stage transitions (batch_pipeline emits these for each stage start/complete)
