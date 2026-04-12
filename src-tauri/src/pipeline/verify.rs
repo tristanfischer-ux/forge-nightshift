@@ -44,7 +44,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .get("verify_concurrency")
         .and_then(|v| v.as_str())
         .and_then(|v| v.parse().ok())
-        .unwrap_or(3)
+        .unwrap_or(6)
         .max(1)
         .min(10);
 

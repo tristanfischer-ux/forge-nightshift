@@ -19,6 +19,7 @@ export const STAGE_LABELS: Record<string, string> = {
   // Pipeline node / flow-chart IDs
   research: "Research",
   enrich: "Enrich",
+  contacts: "Contacts",
   verify: "Fact-Check",
   synthesize: "Analyse",
   embeddings: "Search Index",
@@ -53,6 +54,8 @@ export const STAGE_TOOLTIPS: Record<string, string> = {
   research: "Discover new companies via Brave Search and industry directories.",
   enrich:
     "Extract company data from their website including description, certifications, capabilities, contact info, and quality score.",
+  contacts:
+    "Find decision makers by scraping team/leadership pages and LinkedIn Sales Navigator lookups.",
   verify:
     "Compare each company\u2019s data against their live website to confirm accuracy. Corrections are applied automatically.",
   synthesize:

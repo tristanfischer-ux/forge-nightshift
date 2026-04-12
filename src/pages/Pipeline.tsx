@@ -11,6 +11,7 @@ import {
   onPipelineNode,
   onPipelineStatus,
   onPipelineStage,
+  onPipelineProgress,
   getStats,
   getRunHistory,
   getConfig,
@@ -127,7 +128,7 @@ export default function Pipeline() {
       setNodes((prev) => ({ ...prev, [payload.node_id]: payload }));
       // Add every event to activity feed — throttled to every 10th event to avoid flooding
       activityCounterRef.current++;
-      if (activityCounterRef.current % 10 === 0 || payload.status === "completed" || payload.status === "failed" || activityCounterRef.current <= 3) {
+      if (activityCounterRef.current % 5 === 0 || payload.status === "completed" || payload.status === "failed" || activityCounterRef.current <= 3) {
         setActivity((prev) => [
           {
             id: activityCounterRef.current,
@@ -157,6 +158,22 @@ export default function Pipeline() {
       });
     });
 
+    const unProgress = onPipelineProgress((payload) => {
+      activityCounterRef.current++;
+      if (activityCounterRef.current % 5 === 0 || activityCounterRef.current <= 3) {
+        setActivity((prev) => [
+          {
+            id: activityCounterRef.current,
+            time: new Date().toLocaleTimeString(),
+            nodeId: (payload.stage as string) ?? "pipeline",
+            status: "running",
+            item: (payload.company as string) ?? (payload.current_item as string) ?? null,
+          },
+          ...prev,
+        ].slice(0, 50));
+      }
+    });
+
     const unStatus = onPipelineStatus((payload) => {
       const status = payload.status as string;
       setRunning(status === "running");
@@ -171,6 +188,7 @@ export default function Pipeline() {
     return () => {
       unNode.then((fn) => fn());
       unStage.then((fn) => fn());
+      unProgress.then((fn) => fn());
       unStatus.then((fn) => fn());
     };
   }, []);

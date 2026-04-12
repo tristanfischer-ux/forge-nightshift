@@ -77,6 +77,7 @@ impl Database {
             include_str!("migrations/030_deal_tracking.sql"),
             include_str!("migrations/031_scoring_reasoning.sql"),
             include_str!("migrations/032_contacts.sql"),
+            include_str!("migrations/033_contacts_work_history.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -442,6 +443,32 @@ impl Database {
             }
         };
 
+        // Contacts — check if contacts table exists
+        let contacts: i64 = {
+            let table_exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='contacts'",
+                [],
+                |row| row.get::<_, i64>(0),
+            ).unwrap_or(0) > 0;
+            if table_exists {
+                if let Some(pid) = profile_id {
+                    conn.query_row(
+                        "SELECT COUNT(DISTINCT ct.company_id) FROM contacts ct JOIN companies c ON ct.company_id = c.id WHERE c.search_profile_id = ?1",
+                        [pid],
+                        |row| row.get(0),
+                    ).unwrap_or(0)
+                } else {
+                    conn.query_row(
+                        "SELECT COUNT(DISTINCT company_id) FROM contacts",
+                        [],
+                        |row| row.get(0),
+                    ).unwrap_or(0)
+                }
+            } else {
+                0
+            }
+        };
+
         Ok(json!({
             "total": total,
             "discovered": discovered,  // cumulative: all minus removed
@@ -460,6 +487,7 @@ impl Database {
             "embeddings": embeddings,
             "activities": activities,
             "investor_matches": investor_matches,
+            "contacts": contacts,
         }))
     }
 
@@ -3796,6 +3824,17 @@ impl Database {
             |row| row.get(0),
         )?;
         Ok(avg)
+    }
+
+    /// Count companies waiting for fact-check (enriched/approved/pushed but not yet verified).
+    pub fn count_verify_backlog(&self, profile_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM companies WHERE search_profile_id = ?1 AND status IN ('enriched', 'approved', 'pushed') AND verified_v2_at IS NULL",
+            [profile_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
     }
 
     /// Count domains appearing more than once for a profile.

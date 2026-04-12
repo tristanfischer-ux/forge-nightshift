@@ -6,10 +6,11 @@ interface FlowChartProps {
   nodes: Record<string, PipelineNodeEvent | null>;
 }
 
-// Pipeline stages in order (2 rows of 4)
+// Pipeline stages in order (row 1 = 5 nodes, row 2 = 4 nodes)
 const ROW1 = [
   { id: "research",   label: stageLabel("research"),   tooltip: stageTooltip("research") },
   { id: "enrich",     label: stageLabel("enrich"),     tooltip: stageTooltip("enrich") },
+  { id: "contacts",   label: stageLabel("contacts"),   tooltip: stageTooltip("contacts") },
   { id: "verify",     label: stageLabel("verify"),     tooltip: stageTooltip("verify") },
   { id: "synthesize", label: stageLabel("synthesize"), tooltip: stageTooltip("synthesize") },
 ];
@@ -92,7 +93,7 @@ export default function FlowChart({ nodes }: FlowChartProps) {
       <div className="flex items-stretch gap-0">
         {ROW1.map((stage, i) => (
           <div key={stage.id} className="flex items-stretch">
-            <div className="w-[150px] shrink-0">
+            <div className="w-[130px] shrink-0">
               <FlowNode
                 nodeId={stage.id}
                 label={stage.label}
@@ -114,7 +115,7 @@ export default function FlowChart({ nodes }: FlowChartProps) {
       <div className="flex items-stretch gap-0">
         {ROW2.map((stage, i) => (
           <div key={stage.id} className="flex items-stretch">
-            <div className="w-[150px] shrink-0">
+            <div className="w-[130px] shrink-0">
               <FlowNode
                 nodeId={stage.id}
                 label={stage.label}

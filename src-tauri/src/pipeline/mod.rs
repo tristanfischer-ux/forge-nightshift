@@ -219,10 +219,21 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
             db.get_companies_count(Some("discovered"), Some(&profile_id)).unwrap_or(0) as usize
         };
 
+        // Check verify backlog — pause research if too many companies waiting for fact-check
+        let verify_backlog = {
+            let db: tauri::State<'_, Database> = app.state();
+            let profile_id = db.get_active_profile_id();
+            db.count_verify_backlog(&profile_id).unwrap_or(0)
+        };
+        let skip_research = verify_backlog > 200;
+        if skip_research {
+            log::info!("[Pipeline] Pausing research: {} companies waiting for fact-check (backlog > 200)", verify_backlog);
+        }
+
         // Steps 1+2: Research and Enrich run IN PARALLEL
         // Research finds new companies while enrichment processes discovered ones simultaneously
         if !is_cancelled() {
-            let run_research = discovered_backlog < batch_size;
+            let run_research = !skip_research && discovered_backlog < batch_size;
 
             if run_research {
                 log::info!("[Batch] Wave {}: Running research + enrich in PARALLEL", wave);
@@ -254,6 +265,15 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
                 let _ = enrich_v2::run(app, job_id, &wave_config).await;
                 let _ = app.emit("pipeline:stage", json!({"stage": "enrich", "status": "completed"}));
             }
+        }
+
+        // Step 2b: Extract decision maker contacts from company websites
+        // Contacts only need enriched companies with website URLs — no verification needed
+        if !is_cancelled() {
+            log::info!("[Batch] Wave {}: Starting contact extraction", wave);
+            let _ = app.emit("pipeline:stage", json!({"stage": "contacts", "status": "running"}));
+            let _ = contacts::run(app, job_id, &wave_config).await;
+            let _ = app.emit("pipeline:stage", json!({"stage": "contacts", "status": "completed"}));
         }
 
         // Step 3: Verify
@@ -293,14 +313,6 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
             let _ = app.emit("pipeline:stage", json!({"stage": "activity", "status": "running"}));
             let _ = activity::run(app, job_id, &wave_config).await;
             let _ = app.emit("pipeline:stage", json!({"stage": "activity", "status": "completed"}));
-        }
-
-        // Step 5b: Extract decision maker contacts from company websites
-        if !is_cancelled() {
-            log::info!("[Batch] Wave {}: Starting contact extraction", wave);
-            let _ = app.emit("pipeline:stage", json!({"stage": "contacts", "status": "running"}));
-            let _ = contacts::run(app, job_id, &wave_config).await;
-            let _ = app.emit("pipeline:stage", json!({"stage": "contacts", "status": "completed"}));
         }
 
         // Step 6: Generate embeddings for semantic search (after news, so news is included)

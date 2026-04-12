@@ -7,17 +7,26 @@ import { stageTooltip } from "../lib/stage-labels";
 
 interface FunnelRow {
   label: string;
-  key: keyof PipelineFunnelData;
+  key: keyof PipelineFunnelData | "_verify_backlog";
   color: string;
   /** URL search params for drill-down navigation to /review */
   filter?: string;
+  /** Sub-row styling (indented, smaller text) */
+  indent?: boolean;
+  /** For computed rows that derive value from other fields */
+  computeValue?: (data: PipelineFunnelData) => number;
 }
 
 // Labels MATCH the FlowChart exactly — same names, same order
+// Sub-rows (indented) show losses between stages
 const FUNNEL_ROWS: FunnelRow[] = [
   { label: "Total", key: "total", color: "bg-gray-400" },
   { label: "Research", key: "discovered", color: "bg-blue-400", filter: "status=discovered" },
+  { label: "\u21b3 No website", key: "removed_no_website", color: "bg-gray-300", indent: true },
+  { label: "\u21b3 Errors", key: "error", color: "bg-red-400", filter: "status=error", indent: true },
   { label: "Enrich", key: "enriched", color: "bg-purple-500", filter: "status=enriched" },
+  { label: "\u21b3 Awaiting fact-check", key: "_verify_backlog" as keyof PipelineFunnelData, color: "bg-amber-300", indent: true, computeValue: (d) => Math.max(0, d.enriched - d.verified) },
+  { label: "Contacts", key: "contacts", color: "bg-pink-500" },
   { label: "Fact-Check", key: "verified", color: "bg-teal-500" },
   { label: "Analyse", key: "synthesized_public", color: "bg-indigo-500" },
   { label: "Qualify", key: "approved", color: "bg-green-500", filter: "status=approved" },
@@ -25,7 +34,6 @@ const FUNNEL_ROWS: FunnelRow[] = [
   { label: "Search Index", key: "embeddings", color: "bg-cyan-500" },
   { label: "Investor Fit", key: "investor_matches", color: "bg-yellow-500" },
   { label: "Publish", key: "pushed", color: "bg-green-600", filter: "status=pushed" },
-  { label: "Errors", key: "error", color: "bg-red-500", filter: "status=error" },
 ];
 
 interface Props {
@@ -100,7 +108,7 @@ export default function PipelineFunnel({ data, profileName, compact = false, onR
         </thead>
         <tbody>
           {FUNNEL_ROWS.map((row) => {
-            const count = data[row.key];
+            const count = row.computeValue ? row.computeValue(data) : data[row.key as keyof PipelineFunnelData];
             const pct = maxCount > 0 ? (count / maxCount) * 100 : 0;
             const isClickable = !!row.filter;
             const isError = row.key === "error";
@@ -109,21 +117,21 @@ export default function PipelineFunnel({ data, profileName, compact = false, onR
               <tr
                 key={row.key}
                 onClick={() => handleRowClick(row)}
-                title={stageTooltip(row.key) ?? undefined}
+                title={stageTooltip(row.key as keyof PipelineFunnelData) ?? undefined}
                 className={`group ${
                   isClickable
                     ? "cursor-pointer hover:bg-gray-50 transition-colors"
                     : ""
                 } ${compact ? "h-7" : "h-9"}`}
               >
-                <td className={`${compact ? "text-xs" : "text-sm"} font-medium ${
+                <td className={`${row.indent ? "pl-4 text-xs text-gray-500" : `${compact ? "text-xs" : "text-sm"} font-medium ${
                   isError && count > 0 ? "text-red-600" : "text-gray-700"
-                } ${isClickable ? "group-hover:text-forge-600" : ""}`}>
+                }`} ${isClickable ? "group-hover:text-forge-600" : ""}`}>
                   {row.label}
                 </td>
-                <td className={`${compact ? "text-xs" : "text-sm"} font-bold text-right pr-3 tabular-nums ${
+                <td className={`${row.indent ? "text-xs text-gray-500" : `${compact ? "text-xs" : "text-sm"} font-bold ${
                   isError && count > 0 ? "text-red-600" : "text-gray-900"
-                }`}>
+                }`} text-right pr-3 tabular-nums`}>
                   <span className="inline-flex items-center gap-1.5">
                     {count.toLocaleString()}
                     {isError && count > 0 && (

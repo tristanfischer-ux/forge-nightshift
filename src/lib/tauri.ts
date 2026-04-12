@@ -258,6 +258,7 @@ export interface PipelineFunnelData {
   embeddings: number;
   activities: number;
   investor_matches: number;
+  contacts: number;
 }
 
 export async function getPipelineFunnel() {
