@@ -100,9 +100,9 @@ pub async fn fetch_website_text(url: &str) -> Result<String> {
     Ok(truncate_text(&combined, 3000, url))
 }
 
-/// Fetch raw HTML from a URL.
-async fn fetch_html(client: &reqwest::Client, url: &str) -> Result<String> {
-    let resp = client
+/// Build a request with realistic browser headers.
+fn browser_request(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
+    client
         .get(url)
         .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
         .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
@@ -110,14 +110,67 @@ async fn fetch_html(client: &reqwest::Client, url: &str) -> Result<String> {
         .header("Accept-Encoding", "gzip, deflate")
         .header("Connection", "keep-alive")
         .header("Upgrade-Insecure-Requests", "1")
-        .send()
-        .await?;
+        .header("Sec-Fetch-Dest", "document")
+        .header("Sec-Fetch-Mode", "navigate")
+        .header("Sec-Fetch-Site", "none")
+        .header("Sec-Fetch-User", "?1")
+}
 
-    if !resp.status().is_success() {
-        anyhow::bail!("HTTP {}", resp.status());
+/// Fetch raw HTML from a URL. If the main URL fails (403/blocked), try corporate/about alternatives.
+async fn fetch_html(client: &reqwest::Client, url: &str) -> Result<String> {
+    // Try the original URL first
+    match browser_request(client, url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            return Ok(resp.text().await?);
+        }
+        Ok(resp) if resp.status().as_u16() == 403 || resp.status().as_u16() == 429 => {
+            log::info!("[Scraper] {} returned {} — trying alternative URLs", url, resp.status());
+        }
+        Ok(resp) => {
+            anyhow::bail!("HTTP {}", resp.status());
+        }
+        Err(e) => {
+            log::info!("[Scraper] {} failed ({}) — trying alternative URLs", url, e);
+        }
     }
 
-    Ok(resp.text().await?)
+    // Generate alternative corporate/about URLs to try
+    let domain = url.trim_end_matches('/')
+        .replace("https://www.", "")
+        .replace("https://", "")
+        .replace("http://www.", "")
+        .replace("http://", "")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
+
+    let base = domain.split('.').next().unwrap_or("");
+    let tld = if domain.ends_with(".co.uk") { "co.uk" } else if domain.ends_with(".com") { "com" } else { "co.uk" };
+
+    let alternatives = vec![
+        format!("https://www.{}/about", domain),
+        format!("https://www.{}/about-us", domain),
+        format!("https://about.{}", domain),
+        format!("https://corporate.{}", domain),
+        format!("https://www.{}plc.com/", base),
+        format!("https://www.{}group.{}/", base, tld),
+    ];
+
+    for alt in &alternatives {
+        if let Ok(resp) = browser_request(client, alt).send().await {
+            if resp.status().is_success() {
+                if let Ok(text) = resp.text().await {
+                    if text.len() > 500 {
+                        log::info!("[Scraper] Alternative URL worked: {}", alt);
+                        return Ok(text);
+                    }
+                }
+            }
+        }
+    }
+
+    anyhow::bail!("All URLs failed for domain {}", domain)
 }
 
 /// Extract email addresses from raw HTML before it gets stripped.
