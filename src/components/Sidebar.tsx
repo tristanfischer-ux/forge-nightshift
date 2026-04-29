@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -13,6 +13,7 @@ import {
   Workflow,
   Rows3,
   Crosshair,
+  Plus,
 } from "lucide-react";
 import { getPipelineStatus, getStats, getSearchProfiles, getActiveProfile, setActiveProfile } from "../lib/tauri";
 import type { SearchProfile, PipelineNodeEvent } from "../lib/tauri";
@@ -37,6 +38,7 @@ function domainDot(domain: string): string {
 }
 
 export default function Sidebar() {
+  const navigate = useNavigate();
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [version, setVersion] = useState("");
@@ -176,8 +178,8 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {profiles.length > 0 && (
-        <div className="px-3 py-2 border-b border-gray-200">
+      <div className="px-3 py-2 border-b border-gray-200 space-y-1.5">
+        {profiles.length > 0 && (
           <select
             value={activeProfileId}
             onChange={async (e) => {
@@ -198,8 +200,16 @@ export default function Sidebar() {
               </option>
             ))}
           </select>
-        </div>
-      )}
+        )}
+        <button
+          type="button"
+          onClick={() => navigate("/settings?tab=profiles")}
+          className="flex items-center gap-1.5 w-full px-2 py-1 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded transition-colors"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          New Profile
+        </button>
+      </div>
 
       <nav className="flex-1 p-2">
         {navItems.map((item) => (

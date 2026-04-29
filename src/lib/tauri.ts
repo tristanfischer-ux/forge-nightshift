@@ -134,14 +134,33 @@ export interface ChartDataPoint {
   count: number;
 }
 
+export interface AnalyticsStats {
+  total_companies?: number;
+  companies_with_email?: number;
+  reachability_pct?: number;
+  [key: string]: number | undefined;
+}
+
+export interface AnalyticsWidget {
+  title: string;
+  kind: string;
+  type?: "bar" | "pie";
+  attribute?: string;
+  data: ChartDataPoint[];
+}
+
 export interface AnalyticsData {
-  by_subcategory: ChartDataPoint[];
-  by_country: ChartDataPoint[];
-  pipeline_funnel: ChartDataPoint[];
-  by_equipment: ChartDataPoint[];
-  by_material: ChartDataPoint[];
-  by_certification: ChartDataPoint[];
-  by_industry: ChartDataPoint[];
+  // New shape (per-profile widget config)
+  stats?: AnalyticsStats;
+  widgets?: AnalyticsWidget[];
+  // Legacy keys — still returned for backward-compat with drill-downs / other consumers
+  by_subcategory?: ChartDataPoint[];
+  by_country?: ChartDataPoint[];
+  pipeline_funnel?: ChartDataPoint[];
+  by_equipment?: ChartDataPoint[];
+  by_material?: ChartDataPoint[];
+  by_certification?: ChartDataPoint[];
+  by_industry?: ChartDataPoint[];
 }
 
 export async function getAnalytics() {

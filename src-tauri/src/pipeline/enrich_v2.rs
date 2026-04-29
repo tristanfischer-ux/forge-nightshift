@@ -79,18 +79,19 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         .max(1)
         .min(10);
 
-    // Load active profile domain for prompt customization
-    let active_domain = {
+    // Load active profile domain + id for prompt customization
+    let (active_domain, active_profile_id) = {
         let db: tauri::State<'_, Database> = app.state();
         let profile_id = db.get_active_profile_id();
-        match db.get_search_profile(&profile_id) {
+        let domain = match db.get_search_profile(&profile_id) {
             Ok(Some(profile)) => profile
                 .get("domain")
                 .and_then(|v| v.as_str())
                 .unwrap_or("manufacturing")
                 .to_string(),
             _ => "manufacturing".to_string(),
-        }
+        };
+        (domain, profile_id)
     };
 
     // Reset stuck 'enriching' companies from a previous crashed run
@@ -169,10 +170,48 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             );
         }
 
-        // Load next batch (smaller batches = faster pickup of new discoveries)
+        // FIX 2026-04-22 (v0.57.0): scope the queue to the active profile when set,
+        // so enrichment for one profile doesn't get starved by busier profiles. If
+        // no companies are in 'discovered' status for this profile, fall back to
+        // re-enriching companies that were enriched from snippets only (status =
+        // 'enriched' but no real deep_website_text). That backfill case is the
+        // whole reason this v0.57.0 change exists — Fischer Farms profiles ended
+        // up with snippet-only enrichment because the global queue starved them.
+        let profile_filter: Option<&str> = if active_profile_id.is_empty() {
+            None
+        } else {
+            Some(active_profile_id.as_str())
+        };
         let companies = {
             let db: tauri::State<'_, Database> = app.state();
-            db.get_enrichable_companies(50)?
+            let mut batch = db.get_enrichable_companies(profile_filter, 50)?;
+            if batch.is_empty() {
+                if let Some(pid) = profile_filter {
+                    let backfill = db.get_companies_needing_deep_enrichment(pid, 50)?;
+                    if !backfill.is_empty() {
+                        let _ = db.log_activity(
+                            job_id,
+                            "enrich",
+                            "info",
+                            &format!(
+                                "Queue empty for profile '{}' — backfilling {} companies that have status='enriched' but no deep website scrape",
+                                pid,
+                                backfill.len()
+                            ),
+                        );
+                        // For backfill, we need to flip status back to 'discovered' so
+                        // the per-company enrichment writes complete (update_company_enrichment
+                        // expects to transition discovered → enriched). Re-mark each one.
+                        for c in &backfill {
+                            if let Some(id) = c.get("id").and_then(|v| v.as_str()) {
+                                let _ = db.update_company_status(id, "discovered");
+                            }
+                        }
+                        batch = backfill;
+                    }
+                }
+            }
+            batch
         };
 
         if companies.is_empty() {
@@ -238,6 +277,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 let ch_api_key = ch_api_key.clone();
                 let oc_api_key = oc_api_key.clone();
                 let active_domain = active_domain.clone();
+                let active_profile_id = active_profile_id.clone();
                 let enriched_count = Arc::clone(&enriched_count);
                 let approved_count = Arc::clone(&approved_count);
                 let error_count = Arc::clone(&error_count);
@@ -354,35 +394,60 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                         return;
                     }
 
-                    // ── Step B: Two PARALLEL LLM calls ─────────────────────────────
+                    // ── Step B: LLM calls ──────────────────────────────────────────
+                    // For plant-domain profiles we skip the manufacturing-process
+                    // extraction call entirely (it's CNC/injection-moulding specific
+                    // and produces nonsense for plant retailers).
+                    let plants_profile = is_plants_profile(&active_domain, &active_profile_id);
                     let metadata_prompt = build_metadata_prompt(
                         &active_domain,
+                        &active_profile_id,
                         &name,
                         &website,
                         &website_text,
                         &snippet,
                     );
-                    let processes_prompt =
-                        build_processes_prompt(&name, &website, &website_text, &active_domain);
 
-                    let (metadata_result, processes_result) = tokio::join!(
-                        llm_call(
+                    let (metadata_result, processes_result) = if plants_profile {
+                        let m = llm_call(
                             &llm_backend,
                             &anthropic_api_key,
                             &deepseek_api_key,
                             &ollama_url,
                             &enrich_model,
                             &metadata_prompt,
-                        ),
-                        llm_call(
-                            &llm_backend,
-                            &anthropic_api_key,
-                            &deepseek_api_key,
-                            &ollama_url,
-                            &enrich_model,
-                            &processes_prompt,
-                        ),
-                    );
+                        )
+                        .await;
+                        // Synthesise an empty processes payload so the rest of the
+                        // pipeline (parse → persist) keeps working unchanged.
+                        let p: Result<String> = Ok(r#"{"processes":[]}"#.to_string());
+                        (m, p)
+                    } else {
+                        let processes_prompt = build_processes_prompt(
+                            &name,
+                            &website,
+                            &website_text,
+                            &active_domain,
+                        );
+                        tokio::join!(
+                            llm_call(
+                                &llm_backend,
+                                &anthropic_api_key,
+                                &deepseek_api_key,
+                                &ollama_url,
+                                &enrich_model,
+                                &metadata_prompt,
+                            ),
+                            llm_call(
+                                &llm_backend,
+                                &anthropic_api_key,
+                                &deepseek_api_key,
+                                &ollama_url,
+                                &enrich_model,
+                                &processes_prompt,
+                            ),
+                        )
+                    };
 
                     // Handle LLM call failures gracefully
                     let metadata_ok = metadata_result.is_ok();
@@ -597,6 +662,35 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                         "security_clearances": enriched.get("security_clearances").unwrap_or(&json!([])),
                         "social_media": social_media,
                     });
+
+                    // Plant-domain attributes — persisted alongside the manufacturing
+                    // ones so dashboards can branch on profile type without a schema
+                    // change. Only present when the LLM was asked for them (plants
+                    // prompt). Non-plants profiles keep these absent.
+                    if plants_profile {
+                        if let Some(attrs) = attributes.as_object_mut() {
+                            attrs.insert(
+                                "channel_type".to_string(),
+                                enriched.get("channel_type").cloned().unwrap_or(json!([])),
+                            );
+                            attrs.insert(
+                                "plant_categories".to_string(),
+                                enriched.get("plant_categories").cloned().unwrap_or(json!([])),
+                            );
+                            attrs.insert(
+                                "tier".to_string(),
+                                enriched.get("tier").cloned().unwrap_or(Value::Null),
+                            );
+                            attrs.insert(
+                                "outlet_count_band".to_string(),
+                                enriched.get("outlet_count_band").cloned().unwrap_or(Value::Null),
+                            );
+                            attrs.insert(
+                                "primary_market".to_string(),
+                                enriched.get("primary_market").cloned().unwrap_or(Value::Null),
+                            );
+                        }
+                    }
 
                     // Companies House enrichment for UK companies
                     if (country == "GB" || country == "UK") && !ch_api_key.is_empty() {
@@ -965,19 +1059,32 @@ async fn llm_call(
     }
 }
 
-/// Build the metadata extraction prompt (same fields as enrich.rs).
+/// Returns true when the active profile is a plant/horticulture profile and the
+/// LLM should be asked for plant-retail attributes instead of manufacturing ones.
+fn is_plants_profile(active_domain: &str, active_profile_id: &str) -> bool {
+    active_domain == "plants" || active_profile_id.starts_with("fischer-farms")
+}
+
+/// Build the metadata extraction prompt. Branches on profile domain so that
+/// plant-retail companies are not asked for CNC-shop fields like `materials`
+/// or `key_equipment` (which produces nonsense like "Silk" / "Plastic" tags).
 fn build_metadata_prompt(
     active_domain: &str,
+    active_profile_id: &str,
     name: &str,
     website: &str,
     website_text: &str,
     snippet: &str,
 ) -> String {
+    if is_plants_profile(active_domain, active_profile_id) {
+        return build_plants_metadata_prompt(name, website, website_text, snippet);
+    }
+    let relevance_rubric = relevance_rubric_for_domain(active_domain);
     format!(
         r#"Analyze this {} company for a B2B marketplace. Return JSON with these fields:
-description (2-3 sentences, English), description_original (original language if not English, else null), snippet_english (English translation of snippet, null if already English), category ("Products"/"Services"), subcategory, capabilities (array), industries (array), materials (array of specific materials with grades/alloys, e.g. ["Aluminium 6061-T6", "Stainless Steel 316L", "Titanium Ti-6Al-4V", "ABS", "Carbon Fibre", "PA12 Nylon", "Brass CZ121", "Mild Steel S275"]), key_equipment (array with brand+model), production_capacity (string or null), certifications (array), company_size ("1-9"/"10-49"/"50-99"/"100-249"/"250-499"/"500+"), employee_count_exact (int or null), key_people (array of name+title, max 5), founded_year (int or null), contact_name, contact_email (extract from mailto: links, contact/about pages, footer — prefer sales@, info@, contact@ — if listed in CONTACT EMAILS FOUND above, USE IT), contact_title, address (full with postcode or null), products (array), lead_time (string or null), minimum_order (string or null), quality_systems (string or null), export_controls (string or null), security_clearances (array), social_media (object with keys: linkedin_company, twitter, facebook, instagram, youtube — each a URL string or null — extract from social links in page headers/footers), relevance_score (0-100, 80+=clearly manufacturing), enrichment_quality (0-100).
+description (2-3 sentences, English), description_original (original language if not English, else null), snippet_english (English translation of snippet, null if already English), category ("Products"/"Services"), subcategory, capabilities (array), industries (array), materials (array of specific materials with grades/alloys, e.g. ["Aluminium 6061-T6", "Stainless Steel 316L", "Titanium Ti-6Al-4V", "ABS", "Carbon Fibre", "PA12 Nylon", "Brass CZ121", "Mild Steel S275"]), key_equipment (array with brand+model), production_capacity (string or null), certifications (array), company_size ("1-9"/"10-49"/"50-99"/"100-249"/"250-499"/"500+"), employee_count_exact (int or null), key_people (array of name+title, max 5), founded_year (int or null), contact_name, contact_email (extract from mailto: links, contact/about pages, footer — prefer sales@, info@, contact@ — if listed in CONTACT EMAILS FOUND above, USE IT), contact_title, address (full with postcode or null), products (array), lead_time (string or null), minimum_order (string or null), quality_systems (string or null), export_controls (string or null), security_clearances (array), social_media (object with keys: linkedin_company, twitter, facebook, instagram, youtube — each a URL string or null — extract from social links in page headers/footers), relevance_score (0-100, {}), enrichment_quality (0-100).
 
-CRITICAL: Return null if no evidence. Do NOT guess. All text in English.
+CRITICAL: Return null if no evidence. Do NOT guess. All text in English. Fields that don't apply to this company type (e.g. materials/key_equipment for a non-manufacturing company) should be null or empty arrays — do NOT invent values.
 
 Company: {}
 Website: {}
@@ -987,8 +1094,88 @@ Data:
 Snippet: {}
 
 Return ONLY valid JSON. /no_think"#,
-        active_domain, name, website, website_text, snippet
+        active_domain, relevance_rubric, name, website, website_text, snippet
     )
+}
+
+/// Plant/horticulture-specific metadata prompt. Reuses the profile-agnostic
+/// fields the dashboard already reads (country, city, employees, founded_year,
+/// products, key_people, social_media, industries) and adds plant-channel
+/// classification fields. Manufacturing-only fields (materials, key_equipment,
+/// certifications) are explicitly told to stay null.
+fn build_plants_metadata_prompt(
+    name: &str,
+    website: &str,
+    website_text: &str,
+    snippet: &str,
+) -> String {
+    format!(
+        r#"Analyze this plant / horticulture business for a B2B marketplace.
+The company sells, distributes, retails, or specifies plants (live or artificial),
+flowers, or related botanical products. Return JSON with these fields:
+
+PROFILE-AGNOSTIC (keep these — the dashboard reads them):
+- description (2-3 sentences, English)
+- description_original (original language if not English, else null)
+- snippet_english (English translation of snippet, null if already English)
+- category ("Products"/"Services")
+- subcategory (string or null)
+- industries (array — e.g. ["Horticulture", "Retail", "Hospitality Supply"])
+- company_size ("1-9"/"10-49"/"50-99"/"100-249"/"250-499"/"500+")
+- employee_count_exact (int or null)
+- founded_year (int or null)
+- key_people (array of {{name, title}}, max 5)
+- contact_name, contact_email (prefer sales@/info@/contact@), contact_title
+- address (full with postcode or null)
+- products (array — e.g. ["Indoor potted plants", "Cut roses", "Artificial bouquets"])
+- social_media (object with keys: linkedin_company, twitter, facebook, instagram, youtube — each a URL string or null)
+- relevance_score (0-100; 80+=clearly a plant/flower retailer, wholesaler, garden centre, florist, plantscaper, hotel/events plant supplier or hypermarket plant buyer; 50-79=adjacent horticulture business; 20-49=weak plant connection; <20=no plant relevance)
+- enrichment_quality (0-100)
+
+PLANT-DOMAIN (new — extract these for plant retailers/distributors):
+- channel_type (array of: "garden_centre", "hypermarket", "supermarket", "florist", "plantscaper", "online", "hotel_supplier", "wholesaler", "events", "other")
+- plant_categories (array of: "live_potted", "live_outdoor", "live_indoor", "cut_flowers", "artificial", "edibles", "ornamental", "trees_shrubs", "succulents", "houseplants")
+- tier (one of: "mass", "mid", "premium", "luxury")
+- outlet_count_band (one of: "single", "small_chain_2-5", "regional_chain_6-20", "national_chain_21+", "online_only")
+- primary_market (one of: "B2C", "B2B", "both")
+
+DO NOT EXTRACT (leave null / empty array — these are manufacturing-only):
+- materials: []
+- key_equipment: []
+- certifications: []
+- production_capacity: null
+- lead_time: null
+- minimum_order: null
+- quality_systems: null
+- export_controls: null
+- security_clearances: []
+- capabilities: []
+
+CRITICAL:
+- Return null / empty array if no evidence. Do NOT guess.
+- "Silk" or "Plastic" are NOT materials for a plant retailer — leave materials [].
+- All text in English.
+
+Company: {}
+Website: {}
+Data:
+{}
+
+Snippet: {}
+
+Return ONLY valid JSON. /no_think"#,
+        name, website, website_text, snippet
+    )
+}
+
+/// Domain-aware relevance scoring rubric for the metadata prompt.
+/// Matches the search_profiles.domain values: manufacturing, cleantech, vertical-farming.
+fn relevance_rubric_for_domain(active_domain: &str) -> &'static str {
+    match active_domain {
+        "vertical-farming" => "80+=clearly a garden centre, plant nursery, plant wholesaler, florist, supermarket/big-box plant buyer, vertical farm/CEA operator, or landscape architect/specifier; 50-79=adjacent horticulture business; 20-49=food or produce business with weak plant connection; <20=no plant/horticulture relevance",
+        "cleantech" => "80+=clearly a clean-tech company (renewables, storage, EV infrastructure, circular economy, carbon capture, green hydrogen); 50-79=adjacent sustainability/environmental business; <20=no clean-tech relevance",
+        _ => "80+=clearly manufacturing",
+    }
 }
 
 /// Build the process capabilities extraction prompt (same as deep_enrich.rs).
@@ -1071,7 +1258,11 @@ fn validate_enrichment(enriched: &mut Value) -> Option<String> {
             .min(20));
     }
 
-    // If no capabilities AND no key_equipment AND no materials, cap quality
+    // If no capabilities AND no key_equipment AND no materials, cap quality —
+    // but only for manufacturing-shaped responses. Plant responses correctly
+    // leave those fields empty and instead populate channel_type / plant_categories
+    // / products, so we treat any of those as a "this profile delivered useful
+    // data" signal and skip the cap.
     let has_capabilities = enriched
         .get("capabilities")
         .and_then(|v| v.as_array())
@@ -1087,8 +1278,23 @@ fn validate_enrichment(enriched: &mut Value) -> Option<String> {
         .and_then(|v| v.as_array())
         .map(|a| !a.is_empty())
         .unwrap_or(false);
+    let has_plant_signal = enriched
+        .get("channel_type")
+        .and_then(|v| v.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
+        || enriched
+            .get("plant_categories")
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false)
+        || enriched
+            .get("products")
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
 
-    if !has_capabilities && !has_equipment && !has_materials {
+    if !has_capabilities && !has_equipment && !has_materials && !has_plant_signal {
         enriched["enrichment_quality"] = json!(enriched
             .get("enrichment_quality")
             .and_then(|v| v.as_i64())

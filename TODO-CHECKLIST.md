@@ -44,3 +44,31 @@
 
 ### 10. Pipeline running
 - [x] Batch mode, Fischer Farms Customers, new commercial categories
+
+### 11. LinkedIn Sales Navigator integration
+- [x] Login + 2FA verified via agent-browser
+- [x] Found decision makers at 4 top companies (Brakes, Bidfood, Sodexo, Fresca) — 18 contacts
+- [x] Created LinkedIn Navigator skill file (~/.claude/skills/linkedin-navigator.md)
+
+### 12. LinkedIn backfill — Fischer Farms batch 1 (score 85-100)
+- [x] 66 contacts found across 18 companies via Sonnet subagent
+- [x] Top prospects identified: Oliver Kay, Daylesford, Hunt's Food Group, Reynolds, Nationwide Produce
+- [x] Warm leads identified: Scott Hollins (20 mutual), Beth Emmens (18), Ed Rowlands (16)
+
+### 13. Pipeline flow improvements (v0.50.0)
+- [x] Auto-pause research when verify backlog > 200 companies
+- [x] Funnel redesigned: losses shown inline (no-website, errors, awaiting fact-check)
+- [x] Contacts node added to FlowChart (9 nodes, 5+4 layout)
+- [x] Contacts row added to funnel table
+- [x] Contacts stage moved earlier (after Enrich, before Verify)
+- [x] Verify concurrency increased 3→6
+- [x] Activity Live Feed fixed (subscribes to pipeline:progress events)
+- [x] Migration 033: work_history_json column on contacts table
+
+### 14. LinkedIn backfill — Fischer Farms batch 2 (score 70-80)
+- [ ] 19 companies queued (Sonnet subagent running)
+
+### 15. Forge Capital — LinkedIn investor enrichment
+- [ ] Phase 1: 12 zero-partner UK investors (Sonnet subagent running)
+- [ ] Phase 2: LinkedIn URLs for 4,110 partners at 368 UK investors
+- [ ] Phase 3: Career history enrichment for 3,877 partners

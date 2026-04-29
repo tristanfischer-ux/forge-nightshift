@@ -185,11 +185,18 @@ export default function Pipeline() {
       }
     });
 
+    // Auto-refresh funnel every 30 seconds while pipeline is running
+    const refreshInterval = setInterval(() => {
+      getPipelineFunnel().then(setFunnel).catch(() => {});
+      getExtendedStats().then(setExtStats).catch(() => {});
+    }, 30_000);
+
     return () => {
       unNode.then((fn) => fn());
       unStage.then((fn) => fn());
       unProgress.then((fn) => fn());
       unStatus.then((fn) => fn());
+      clearInterval(refreshInterval);
     };
   }, []);
 

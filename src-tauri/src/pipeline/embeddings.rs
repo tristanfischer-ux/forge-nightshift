@@ -68,6 +68,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
 
     let mut embedded = 0;
     let mut errors = 0;
+    let mut first_error_logged = false;
 
     for (i, company) in companies.iter().enumerate() {
         if super::is_cancelled() {
@@ -98,7 +99,8 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             text_parts.push(city.to_string());
         }
         // Add specialties, certifications, industries from JSON arrays
-        for field in &["specialties", "certifications", "industries", "materials"] {
+        // NOTE: `materials` removed — column does not exist on companies table
+        for field in &["specialties", "certifications", "industries"] {
             if let Some(val) = company.get(*field).and_then(|v| v.as_str()) {
                 if let Ok(arr) = serde_json::from_str::<Vec<String>>(val) {
                     text_parts.push(arr.join(", "));
@@ -147,6 +149,14 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
                 let db: tauri::State<'_, Database> = app.state();
                 if let Err(e) = db.save_embedding(id, &embedding_json) {
                     log::warn!("[Embeddings] Failed to save embedding for {}: {}", name, e);
+                    // FIX 2026-04-16: surface first save error to db so it's visible
+                    // in the dashboard. Previously this only logged to stderr, hiding
+                    // a NOT NULL constraint failure that affected every single insert.
+                    if !first_error_logged {
+                        let _ = db.log_activity(job_id, "embeddings", "error",
+                            &format!("First save error this run: {} (this error blocks all subsequent saves)", e));
+                        first_error_logged = true;
+                    }
                     errors += 1;
                 } else {
                     embedded += 1;
@@ -154,6 +164,12 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
             }
             Err(e) => {
                 log::warn!("[Embeddings] Failed to embed {}: {}", name, e);
+                if !first_error_logged {
+                    let db: tauri::State<'_, Database> = app.state();
+                    let _ = db.log_activity(job_id, "embeddings", "error",
+                        &format!("First embed error this run: {}", e));
+                    first_error_logged = true;
+                }
                 errors += 1;
             }
         }

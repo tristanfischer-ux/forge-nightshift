@@ -1,5 +1,6 @@
 pub mod ollama;
 pub mod anthropic;
+pub mod apollo;
 pub mod deepseek;
 pub mod brave;
 pub mod supabase;
@@ -10,3 +11,4 @@ pub mod scraper;
 pub mod postcodes;
 pub mod nominatim;
 pub mod openai;
+pub mod email_verify;

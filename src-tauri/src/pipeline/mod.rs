@@ -19,6 +19,7 @@ mod audit;
 mod embeddings;
 mod investor_match;
 mod contacts;
+mod raw_scraper;
 
 use anyhow::Result;
 use chrono::{Datelike, Timelike};
@@ -31,7 +32,7 @@ use tauri::{Emitter, Manager};
 use crate::db::Database;
 
 /// Drop guard that resets an AtomicBool to false when dropped (even on panic).
-struct AtomicGuard(&'static AtomicBool);
+pub(crate) struct AtomicGuard(&'static AtomicBool);
 impl Drop for AtomicGuard {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
@@ -85,6 +86,14 @@ pub fn reset_node_states() {
 
 pub fn is_research_active() -> bool {
     RESEARCH_ACTIVE.load(Ordering::SeqCst)
+}
+
+/// Returns an AtomicGuard that sets RESEARCH_ACTIVE=true for its lifetime.
+/// Use at the top of research::run so the parallel enrich stage knows to
+/// wait for new discoveries rather than exiting on a briefly-empty queue.
+pub(crate) fn research_active_guard() -> AtomicGuard {
+    RESEARCH_ACTIVE.store(true, Ordering::SeqCst);
+    AtomicGuard(&RESEARCH_ACTIVE)
 }
 
 pub fn is_enrich_active() -> bool {
@@ -319,7 +328,14 @@ async fn batch_pipeline(app: &tauri::AppHandle, job_id: &str, config: &Value) ->
         if !is_cancelled() {
             log::info!("[Batch] Wave {}: Starting embeddings", wave);
             let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "running"}));
-            let _ = embeddings::run(app, job_id, &wave_config).await;
+            // FIX 2026-04-16: log embeddings errors instead of silently dropping them.
+            // Previously a SQL column-not-found bug returned Err for every wave with no
+            // visible failure, leaving 0 Fischer Farms companies indexed for ~12 hours.
+            if let Err(e) = embeddings::run(app, job_id, &wave_config).await {
+                let db: tauri::State<'_, Database> = app.state();
+                let _ = db.log_activity(job_id, "embeddings", "error", &format!("Embeddings stage failed: {}", e));
+                log::error!("[Batch] Wave {}: Embeddings failed: {}", wave, e);
+            }
             let _ = app.emit("pipeline:stage", json!({"stage": "embeddings", "status": "completed"}));
         }
 
@@ -466,6 +482,7 @@ async fn run_stages(app: &tauri::AppHandle, job_id: &str, stages: &[String]) -> 
                         "info",
                         &format!("Auto-backup created: {}", backup_path.display()),
                     );
+                    crate::prune_backups(&backup_dir);
                 }
                 Err(e) => {
                     let _ = db.log_activity(
@@ -594,6 +611,7 @@ async fn run_single_stage(
         "embeddings" => embeddings::run(app, job_id, config).await,
         "investor_match" => investor_match::run(app, job_id, config).await,
         "contacts" => contacts::run(app, job_id, config).await,
+        "raw_scrape" => raw_scraper::run(app, job_id).await,
         "learn_outreach" => outreach_learner::run_learning_cycle(app, job_id, config).await,
         s if s.starts_with("template_outreach:") => {
             let template_id = &s["template_outreach:".len()..];

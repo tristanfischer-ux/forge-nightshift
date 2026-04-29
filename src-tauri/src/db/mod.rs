@@ -41,6 +41,14 @@ impl Database {
         Ok(db)
     }
 
+    /// Acquire the raw connection lock — test-only escape hatch so integration
+    /// tests can seed or read directly without building helper methods for every
+    /// case. Production code must use the typed helpers above.
+    #[cfg(test)]
+    pub fn raw_conn_for_test(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap()
+    }
+
     fn run_migrations(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(include_str!("migrations/001_initial.sql"))?;
@@ -78,6 +86,11 @@ impl Database {
             include_str!("migrations/031_scoring_reasoning.sql"),
             include_str!("migrations/032_contacts.sql"),
             include_str!("migrations/033_contacts_work_history.sql"),
+            include_str!("migrations/034_synthesis_v2.sql"),
+            include_str!("migrations/035_contact_attempts.sql"),
+            include_str!("migrations/036_email_source.sql"),
+            include_str!("migrations/037_profile_dashboard_schema.sql"),
+            include_str!("migrations/038_raw_pages.sql"),
         ] {
             for stmt in migration.split(';') {
                 let stmt = stmt.trim();
@@ -89,6 +102,24 @@ impl Database {
 
         // Seed default search profiles (idempotent — uses INSERT OR IGNORE)
         Self::seed_search_profiles(&conn);
+
+        // Seed dashboard widget config for plant-buying profiles only if not already set.
+        // Manufacturing & cleantech profiles fall back to the default manufacturing widget
+        // set inside get_analytics() when dashboard_widgets_json is NULL.
+        let plant_widgets = r#"[
+            {"title":"Country Distribution","kind":"country","type":"pie"},
+            {"title":"Pipeline Funnel","kind":"pipeline_funnel","type":"bar"},
+            {"title":"Reachability (% with email)","kind":"reachability","type":"bar"},
+            {"title":"Operator Size (employees)","kind":"attribute_string","attribute":"employees","type":"bar"},
+            {"title":"Channels","kind":"attribute_array","attribute":"industries","type":"bar"},
+            {"title":"Product Mix","kind":"attribute_array","attribute":"products","type":"bar"}
+        ]"#;
+        let _ = conn.execute(
+            "UPDATE search_profiles SET dashboard_widgets_json = ?1 \
+             WHERE dashboard_widgets_json IS NULL \
+             AND (id LIKE 'fischer-farms-plants-%' OR id = 'fischer-farms-customers')",
+            rusqlite::params![plant_widgets],
+        );
 
         Ok(())
     }
@@ -562,15 +593,64 @@ impl Database {
     }
 
     /// Get discovered companies that have a website (enrichable).
-    pub fn get_enrichable_companies(&self, limit: i64) -> Result<Vec<Value>> {
+    /// Get the next batch of companies in status='discovered' awaiting enrichment.
+    /// FIX 2026-04-22 (v0.57.0): added optional profile_id filter. Without it,
+    /// the queue is global FIFO across ALL profiles — meaning a busy profile
+    /// (BESS, manufacturing) can starve the active profile of enrichment work.
+    /// When profile_id is Some, only returns companies in that profile.
+    pub fn get_enrichable_companies(&self, profile_id: Option<&str>, limit: i64) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let (sql, params): (String, Vec<rusqlite::types::Value>) = if let Some(pid) = profile_id {
+            (
+                "SELECT * FROM companies WHERE status = 'discovered' AND website_url IS NOT NULL AND website_url != '' AND search_profile_id = ?1 ORDER BY created_at ASC LIMIT ?2".to_string(),
+                vec![rusqlite::types::Value::Text(pid.to_string()), rusqlite::types::Value::Integer(limit)],
+            )
+        } else {
+            (
+                "SELECT * FROM companies WHERE status = 'discovered' AND website_url IS NOT NULL AND website_url != '' ORDER BY created_at ASC LIMIT ?1".to_string(),
+                vec![rusqlite::types::Value::Integer(limit)],
+            )
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+
+        let rows: Vec<Value> = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(rows)
+    }
+
+    /// Get companies that have been enriched (status='enriched' or 'approved' or 'pushed')
+    /// but never had a successful deep website scrape (deep_website_text is NULL or
+    /// shorter than 1000 chars — anything shorter is just a Brave snippet, not a real
+    /// scrape). Re-running enrichment on these populates deep_website_text + refreshes
+    /// attributes_json with the v0.56.0 plant-aware prompt.
+    /// Added 2026-04-22 (v0.57.0) to backfill the ~5,000 Fischer Farms companies that
+    /// got snippet-only enrichment because cron was simplified to contacts-only mode.
+    pub fn get_companies_needing_deep_enrichment(&self, profile_id: &str, limit: i64) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT * FROM companies WHERE status = 'discovered' AND website_url IS NOT NULL AND website_url != '' ORDER BY created_at ASC LIMIT ?1"
+            "SELECT * FROM companies \
+             WHERE status IN ('enriched', 'approved', 'pushed') \
+               AND website_url IS NOT NULL AND website_url != '' \
+               AND search_profile_id = ?1 \
+               AND (deep_website_text IS NULL OR length(deep_website_text) < 1000) \
+             ORDER BY COALESCE(relevance_score, 0) DESC, COALESCE(enrichment_quality, 0) DESC \
+             LIMIT ?2"
         )?;
         let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
 
         let rows: Vec<Value> = stmt
-            .query_map([limit], |row| {
+            .query_map(rusqlite::params![profile_id, limit], |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col) in columns.iter().enumerate() {
                     let val: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
@@ -1325,12 +1405,211 @@ impl Database {
         Ok(())
     }
 
-    /// Get analytics data for dashboard charts
+    /// Get analytics data for dashboard charts.
+    ///
+    /// Returns a schema-driven payload `{stats, widgets}` where the widget set is
+    /// resolved from the profile's `dashboard_widgets_json` column (falling back
+    /// to the default manufacturing widget set if NULL or empty). Backward-compat
+    /// keys (`by_country`, `by_subcategory`, `pipeline_funnel`, `by_equipment`,
+    /// `by_material`, `by_certification`, `by_industry`) are also included so
+    /// existing frontend consumers keep working.
     pub fn get_analytics(&self, profile_id: Option<&str>) -> Result<Value> {
         let conn = self.conn.lock().unwrap();
 
         let profile_filter = if profile_id.is_some() { " AND search_profile_id = ?1" } else { "" };
         let profile_filter_where = if profile_id.is_some() { " WHERE search_profile_id = ?1" } else { "" };
+
+        // ── Resolve widget config ────────────────────────────────────────────
+        // Default widget set used when a profile has no dashboard_widgets_json
+        // and for the global (no-profile) view. Preserves backward-compat for
+        // the UK Manufacturing profile.
+        let default_widgets_json = r#"[
+            {"title":"Country Distribution","kind":"country","type":"pie"},
+            {"title":"Pipeline Funnel","kind":"pipeline_funnel","type":"bar"},
+            {"title":"Reachability","kind":"reachability","type":"bar"},
+            {"title":"Top Equipment","kind":"attribute_array","attribute":"key_equipment","type":"bar"},
+            {"title":"Materials","kind":"attribute_array","attribute":"materials","type":"bar"},
+            {"title":"Industry Sectors","kind":"attribute_array","attribute":"industries","type":"bar"},
+            {"title":"Certifications","kind":"attribute_array","attribute":"certifications","type":"bar"}
+        ]"#;
+
+        let widgets_config_raw: Option<String> = if let Some(pid) = profile_id {
+            conn.query_row(
+                "SELECT dashboard_widgets_json FROM search_profiles WHERE id = ?1",
+                [pid],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap_or(None)
+        } else {
+            None
+        };
+
+        let widgets_config: Vec<Value> = {
+            let raw = widgets_config_raw
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(default_widgets_json);
+            serde_json::from_str::<Vec<Value>>(raw)
+                .unwrap_or_else(|_| serde_json::from_str(default_widgets_json).unwrap_or_default())
+        };
+
+        // ── Pre-compute shared data sources ─────────────────────────────────
+        // attributes_json rows (one parse per company, reused across attribute_* widgets)
+        let attr_rows: Vec<String> = {
+            let q = format!(
+                "SELECT attributes_json FROM companies WHERE attributes_json IS NOT NULL AND attributes_json != ''{}",
+                profile_filter
+            );
+            let mut stmt = conn.prepare(&q)?;
+            if let Some(pid) = profile_id {
+                stmt.query_map([pid], |row| row.get::<_, String>(0))?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            } else {
+                stmt.query_map([], |row| row.get::<_, String>(0))?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            }
+        };
+
+        let parsed_attrs: Vec<Value> = attr_rows
+            .iter()
+            .filter_map(|raw| serde_json::from_str::<Value>(raw).ok())
+            .collect();
+
+        // Reachability: companies that have ≥1 contact row with a non-empty email
+        let total_companies: i64 = {
+            let q = format!("SELECT COUNT(*) FROM companies{}", profile_filter_where);
+            if let Some(pid) = profile_id {
+                conn.query_row(&q, [pid], |row| row.get::<_, i64>(0)).unwrap_or(0)
+            } else {
+                conn.query_row(&q, [], |row| row.get::<_, i64>(0)).unwrap_or(0)
+            }
+        };
+
+        let companies_with_email: i64 = {
+            let q = if profile_id.is_some() {
+                "SELECT COUNT(DISTINCT c.id) FROM companies c \
+                 JOIN contacts ct ON ct.company_id = c.id \
+                 WHERE c.search_profile_id = ?1 AND ct.email IS NOT NULL AND ct.email != ''"
+                    .to_string()
+            } else {
+                "SELECT COUNT(DISTINCT c.id) FROM companies c \
+                 JOIN contacts ct ON ct.company_id = c.id \
+                 WHERE ct.email IS NOT NULL AND ct.email != ''"
+                    .to_string()
+            };
+            if let Some(pid) = profile_id {
+                conn.query_row(&q, [pid], |row| row.get::<_, i64>(0)).unwrap_or(0)
+            } else {
+                conn.query_row(&q, [], |row| row.get::<_, i64>(0)).unwrap_or(0)
+            }
+        };
+
+        let reachability_pct = if total_companies > 0 {
+            (companies_with_email as f64 / total_companies as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        // ── Widget kind handlers ────────────────────────────────────────────
+        fn top_n(map: &HashMap<String, i64>, n: usize) -> Vec<Value> {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by(|a, b| b.1.cmp(a.1));
+            entries
+                .into_iter()
+                .take(n)
+                .map(|(name, count)| json!({ "name": name, "count": count }))
+                .collect()
+        }
+
+        let compute_country = || -> Vec<Value> {
+            let q = format!(
+                "SELECT country, COUNT(*) as count FROM companies WHERE country IS NOT NULL AND country != ''{} GROUP BY country ORDER BY count DESC",
+                profile_filter
+            );
+            let mut stmt = match conn.prepare(&q) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            if let Some(pid) = profile_id {
+                stmt.query_map([pid], |row| {
+                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+                })
+                .map(|i| i.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+            } else {
+                stmt.query_map([], |row| {
+                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+                })
+                .map(|i| i.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+            }
+        };
+
+        let compute_pipeline_funnel = || -> Vec<Value> {
+            let q = format!(
+                "SELECT status, COUNT(*) as count FROM companies{} GROUP BY status ORDER BY count DESC",
+                profile_filter_where
+            );
+            let mut stmt = match conn.prepare(&q) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            if let Some(pid) = profile_id {
+                stmt.query_map([pid], |row| {
+                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+                })
+                .map(|i| i.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+            } else {
+                stmt.query_map([], |row| {
+                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
+                })
+                .map(|i| i.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+            }
+        };
+
+        let compute_reachability = || -> Vec<Value> {
+            let unreachable = (total_companies - companies_with_email).max(0);
+            vec![
+                json!({ "name": "Reachable", "count": companies_with_email }),
+                json!({ "name": "Unreachable", "count": unreachable }),
+            ]
+        };
+
+        let compute_attribute_array = |attribute: &str| -> Vec<Value> {
+            let mut counts: HashMap<String, i64> = HashMap::new();
+            for attrs in &parsed_attrs {
+                if let Some(arr) = attrs.get(attribute).and_then(|v| v.as_array()) {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            if !s.is_empty() {
+                                *counts.entry(s.to_string()).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            top_n(&counts, 20)
+        };
+
+        let compute_attribute_string = |attribute: &str| -> Vec<Value> {
+            let mut counts: HashMap<String, i64> = HashMap::new();
+            for attrs in &parsed_attrs {
+                if let Some(s) = attrs.get(attribute).and_then(|v| v.as_str()) {
+                    if !s.is_empty() {
+                        *counts.entry(s.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+            top_n(&counts, 20)
+        };
+
+        // ── Backward-compat aggregates (always computed) ────────────────────
+        let by_country = compute_country();
+        let pipeline_funnel = compute_pipeline_funnel();
 
         let by_subcategory: Vec<Value> = {
             let q = format!(
@@ -1341,121 +1620,80 @@ impl Database {
             if let Some(pid) = profile_id {
                 stmt.query_map([pid], |row| {
                     Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
-                })?.filter_map(|r| r.ok()).collect()
+                })?
+                .filter_map(|r| r.ok())
+                .collect()
             } else {
                 stmt.query_map([], |row| {
                     Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
-                })?.filter_map(|r| r.ok()).collect()
+                })?
+                .filter_map(|r| r.ok())
+                .collect()
             }
         };
 
-        let by_country: Vec<Value> = {
-            let q = format!(
-                "SELECT country, COUNT(*) as count FROM companies WHERE country IS NOT NULL AND country != ''{} GROUP BY country ORDER BY count DESC",
-                profile_filter
-            );
-            let mut stmt = conn.prepare(&q)?;
-            if let Some(pid) = profile_id {
-                stmt.query_map([pid], |row| {
-                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
-                })?.filter_map(|r| r.ok()).collect()
-            } else {
-                stmt.query_map([], |row| {
-                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
-                })?.filter_map(|r| r.ok()).collect()
-            }
-        };
+        let by_equipment = compute_attribute_array("key_equipment");
+        let by_material = compute_attribute_array("materials");
+        let by_certification = compute_attribute_array("certifications");
+        let by_industry = compute_attribute_array("industries");
 
-        let pipeline_funnel: Vec<Value> = {
-            let q = format!(
-                "SELECT status, COUNT(*) as count FROM companies{} GROUP BY status ORDER BY count DESC",
-                profile_filter_where
-            );
-            let mut stmt = conn.prepare(&q)?;
-            if let Some(pid) = profile_id {
-                stmt.query_map([pid], |row| {
-                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
-                })?.filter_map(|r| r.ok()).collect()
-            } else {
-                stmt.query_map([], |row| {
-                    Ok(json!({ "name": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)? }))
-                })?.filter_map(|r| r.ok()).collect()
-            }
-        };
+        // ── Dispatch widgets per kind ───────────────────────────────────────
+        let mut widgets: Vec<Value> = Vec::new();
+        for cfg in &widgets_config {
+            let kind = cfg.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let title = cfg.get("title").and_then(|v| v.as_str()).unwrap_or("Widget");
+            let chart_type = cfg.get("type").and_then(|v| v.as_str()).unwrap_or("bar");
 
-        let attr_rows: Vec<String> = {
-            let q = format!(
-                "SELECT attributes_json FROM companies WHERE attributes_json IS NOT NULL AND attributes_json != ''{}",
-                profile_filter
-            );
-            let mut stmt = conn.prepare(&q)?;
-            if let Some(pid) = profile_id {
-                stmt.query_map([pid], |row| row.get::<_, String>(0))?.filter_map(|r| r.ok()).collect()
-            } else {
-                stmt.query_map([], |row| row.get::<_, String>(0))?.filter_map(|r| r.ok()).collect()
-            }
-        };
-
-        let mut equipment_counts: HashMap<String, i64> = HashMap::new();
-        let mut material_counts: HashMap<String, i64> = HashMap::new();
-        let mut cert_counts: HashMap<String, i64> = HashMap::new();
-        let mut industry_counts: HashMap<String, i64> = HashMap::new();
-
-        for raw in &attr_rows {
-            if let Ok(attrs) = serde_json::from_str::<Value>(raw) {
-                if let Some(arr) = attrs.get("key_equipment").and_then(|v| v.as_array()) {
-                    for item in arr {
-                        if let Some(s) = item.as_str() {
-                            if !s.is_empty() {
-                                *equipment_counts.entry(s.to_string()).or_insert(0) += 1;
-                            }
-                        }
+            let data: Vec<Value> = match kind {
+                "country" => by_country.clone(),
+                "pipeline_funnel" => pipeline_funnel.clone(),
+                "reachability" => compute_reachability(),
+                "attribute_array" => {
+                    let attribute = cfg.get("attribute").and_then(|v| v.as_str()).unwrap_or("");
+                    if attribute.is_empty() {
+                        Vec::new()
+                    } else {
+                        compute_attribute_array(attribute)
                     }
                 }
-                if let Some(arr) = attrs.get("materials").and_then(|v| v.as_array()) {
-                    for item in arr {
-                        if let Some(s) = item.as_str() {
-                            if !s.is_empty() {
-                                *material_counts.entry(s.to_string()).or_insert(0) += 1;
-                            }
-                        }
+                "attribute_string" => {
+                    let attribute = cfg.get("attribute").and_then(|v| v.as_str()).unwrap_or("");
+                    if attribute.is_empty() {
+                        Vec::new()
+                    } else {
+                        compute_attribute_string(attribute)
                     }
                 }
-                if let Some(arr) = attrs.get("certifications").and_then(|v| v.as_array()) {
-                    for item in arr {
-                        if let Some(s) = item.as_str() {
-                            if !s.is_empty() {
-                                *cert_counts.entry(s.to_string()).or_insert(0) += 1;
-                            }
-                        }
-                    }
-                }
-                if let Some(arr) = attrs.get("industries").and_then(|v| v.as_array()) {
-                    for item in arr {
-                        if let Some(s) = item.as_str() {
-                            if !s.is_empty() {
-                                *industry_counts.entry(s.to_string()).or_insert(0) += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+                _ => Vec::new(),
+            };
 
-        fn top_n(map: &HashMap<String, i64>, n: usize) -> Vec<Value> {
-            let mut entries: Vec<_> = map.iter().collect();
-            entries.sort_by(|a, b| b.1.cmp(a.1));
-            entries.into_iter().take(n).map(|(name, count)| json!({ "name": name, "count": count })).collect()
+            let mut widget = json!({
+                "title": title,
+                "kind": kind,
+                "type": chart_type,
+                "data": data,
+            });
+            if let Some(attribute) = cfg.get("attribute").and_then(|v| v.as_str()) {
+                widget["attribute"] = json!(attribute);
+            }
+            widgets.push(widget);
         }
 
         Ok(json!({
+            "stats": {
+                "total_companies": total_companies,
+                "companies_with_email": companies_with_email,
+                "reachability_pct": reachability_pct,
+            },
+            "widgets": widgets,
+            // ── Backward-compat top-level keys ──────────────────────────────
             "by_subcategory": by_subcategory,
             "by_country": by_country,
             "pipeline_funnel": pipeline_funnel,
-            "by_equipment": top_n(&equipment_counts, 20),
-            "by_material": top_n(&material_counts, 20),
-            "by_certification": top_n(&cert_counts, 20),
-            "by_industry": top_n(&industry_counts, 20),
+            "by_equipment": by_equipment,
+            "by_material": by_material,
+            "by_certification": by_certification,
+            "by_industry": by_industry,
         }))
     }
 
@@ -1584,9 +1822,15 @@ impl Database {
             .unwrap_or(0)
             > 0;
 
+        // FIX 2026-04-16: Removed `c.materials` from SELECT — column does not exist
+        // on companies table. The bad query was throwing "no such column: c.materials",
+        // returning Err from the function, which the calling code (mod.rs:322
+        // `let _ = embeddings::run(...)`) silently discarded — meaning the embeddings
+        // stage never produced a single result for any profile. The companies table has
+        // specialties, certifications, industries — but no materials column.
         let query = if table_exists {
             "SELECT c.id, c.name, c.description, c.category, c.subcategory, c.country, c.city, \
-                    c.specialties, c.certifications, c.industries, c.materials, c.synthesis_public_json \
+                    c.specialties, c.certifications, c.industries, c.synthesis_public_json \
              FROM companies c \
              LEFT JOIN supplier_embeddings se ON c.id = se.company_id \
              WHERE c.status IN ('enriched', 'approved', 'pushed') \
@@ -1595,7 +1839,7 @@ impl Database {
              LIMIT ?2"
         } else {
             "SELECT id, name, description, category, subcategory, country, city, \
-                    specialties, certifications, industries, materials, synthesis_public_json \
+                    specialties, certifications, industries, synthesis_public_json \
              FROM companies \
              WHERE status IN ('enriched', 'approved', 'pushed') \
              AND search_profile_id = ?1 \
@@ -1616,8 +1860,7 @@ impl Database {
                     "specialties": row.get::<_, Option<String>>(7)?,
                     "certifications": row.get::<_, Option<String>>(8)?,
                     "industries": row.get::<_, Option<String>>(9)?,
-                    "materials": row.get::<_, Option<String>>(10)?,
-                    "synthesis_public_json": row.get::<_, Option<String>>(11)?,
+                    "synthesis_public_json": row.get::<_, Option<String>>(10)?,
                 }))
             })?
             .filter_map(|r| r.ok())
@@ -1629,23 +1872,41 @@ impl Database {
     pub fn save_embedding(&self, company_id: &str, embedding_json: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
 
-        // Ensure table exists
+        // Ensure table exists (only used when running against a fresh DB).
+        // The production schema has source_text_hash and created_at as NOT NULL
+        // with no defaults — we MUST supply both in the INSERT below.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS supplier_embeddings (
                 company_id TEXT PRIMARY KEY,
                 embedding TEXT NOT NULL,
-                source_text_hash TEXT NOT NULL DEFAULT '',
-                model TEXT NOT NULL DEFAULT 'text-embedding-3-small',
-                dims INTEGER NOT NULL DEFAULT 1536,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                source_text_hash TEXT NOT NULL,
+                model TEXT NOT NULL,
+                dims INTEGER NOT NULL,
+                supabase_listing_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (company_id) REFERENCES companies(id)
             )"
         )?;
 
+        // FIX 2026-04-16: Previous INSERT omitted source_text_hash and created_at,
+        // both of which are NOT NULL with no default in the production schema.
+        // Result: every save_embedding call failed silently (logged via log::warn
+        // only — not to db.run_log), and zero embeddings were ever saved for
+        // newer pipelines. Compute a hash of the embedding payload as the
+        // source_text_hash sentinel and explicitly populate created_at.
+        // INSERT OR REPLACE preserves PRIMARY KEY (company_id) — re-runs overwrite.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        embedding_json.hash(&mut hasher);
+        let source_hash = format!("{:016x}", hasher.finish());
+
         conn.execute(
-            "INSERT OR REPLACE INTO supplier_embeddings (company_id, embedding, model, dims, updated_at) \
-             VALUES (?1, ?2, 'text-embedding-3-small', 1536, datetime('now'))",
-            rusqlite::params![company_id, embedding_json],
+            "INSERT OR REPLACE INTO supplier_embeddings \
+                (company_id, embedding, source_text_hash, model, dims, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, 'text-embedding-3-small', 1536, datetime('now'), datetime('now'))",
+            rusqlite::params![company_id, embedding_json, source_hash],
         )?;
         Ok(())
     }
@@ -3223,7 +3484,8 @@ impl Database {
                     description, category, subcategory, certifications, company_size, \
                     contact_email, contact_name, contact_title, address, year_founded, \
                     relevance_score, enrichment_quality, \
-                    verification_changes_json, fractional_signals_json \
+                    verification_changes_json, fractional_signals_json, \
+                    deep_website_text \
              FROM companies \
              WHERE verified_v2_at IS NOT NULL \
                AND (synthesis_public_json IS NULL OR synthesis_public_json = '') \
@@ -3256,6 +3518,7 @@ impl Database {
                     "enrichment_quality": row.get::<_, Option<i64>>(18)?,
                     "verification_changes_json": row.get::<_, Option<String>>(19)?,
                     "fractional_signals_json": row.get::<_, Option<String>>(20)?,
+                    "deep_website_text": row.get::<_, Option<String>>(21)?,
                 }))
             })?
             .filter_map(|r| r.ok())
@@ -3275,6 +3538,42 @@ impl Database {
              updated_at = datetime('now') \
              WHERE id = ?3",
             rusqlite::params![public_json, private_json, id],
+        )?;
+        Ok(())
+    }
+
+    /// Save the full two-pass synthesis output produced by the Haiku VERIFY → SYNTHESIS
+    /// chain. Writes all 5 JSON columns identified as NULL in the Phase 0 quality audit.
+    /// Uses COALESCE on `fractional_signals_json` so a prior verify-stage value is not
+    /// blanked out when the synthesis stage doesn't return a fresh one.
+    pub fn save_synthesis_v2(
+        &self,
+        id: &str,
+        public_json: &str,
+        private_json: &str,
+        structured_signals_json: &str,
+        fractional_signals_json: Option<&str>,
+        ff_suitability_reason: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET \
+             synthesis_public_json = ?1, \
+             synthesis_private_json = ?2, \
+             structured_signals_json = ?3, \
+             fractional_signals_json = COALESCE(?4, fractional_signals_json), \
+             ff_suitability_reason = COALESCE(?5, ff_suitability_reason), \
+             synthesized_v2_at = datetime('now'), \
+             updated_at = datetime('now') \
+             WHERE id = ?6",
+            rusqlite::params![
+                public_json,
+                private_json,
+                structured_signals_json,
+                fractional_signals_json,
+                ff_suitability_reason,
+                id,
+            ],
         )?;
         Ok(())
     }
@@ -4022,13 +4321,37 @@ impl Database {
     /// Get companies that need contact extraction (enriched/approved/pushed with 0 contacts and a website).
     pub fn get_companies_needing_contacts(&self, profile_id: &str, limit: i64) -> Result<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
+        // FIX 2026-04-16: previously the query excluded any company that had ANY contact
+        // (ON CONFLICT) — even a name-only contact. After Tristan flagged that the
+        // pipeline was finding 141 names but 0 emails, we now re-include companies
+        // where every existing contact has both a NULL/empty email AND NULL/empty phone.
+        // The new contacts.rs crawler visits /contact pages + does a regex pass and
+        // will fill in those missing fields via ON CONFLICT(company_id, name) UPDATE.
+        //
+        // FIX 2026-04-20: dropped the phone clause from the NOT IN subquery — what
+        // we ACTUALLY need for outreach is an email. A company we previously
+        // extracted only a phone for should be re-attempted with the new extraction
+        // (relaxed domain filter, mailto: pass, 25K-char truncation). If the new
+        // pass still finds only a phone, the ON CONFLICT(company_id, name) UPSERT
+        // is a no-op so this is safe to retry repeatedly.
+        // FIX 2026-04-22: shelve companies after 2 failed extraction attempts.
+        // Without this, companies that yield zero contacts cycle through the
+        // queue forever (no "we tried, found nothing" marker exists in the
+        // contacts table). Tristan flagged that 24h of overnight ticks added
+        // only +8 reachable companies despite 14 batches × 300 — the queue was
+        // re-serving the same unscrapable websites. mark_contact_attempt() is
+        // called per-company in pipeline/contacts.rs regardless of outcome.
         let mut stmt = conn.prepare(
             "SELECT c.id, c.name, c.website_url, c.description \
              FROM companies c \
              WHERE c.status IN ('enriched', 'approved', 'pushed') \
                AND c.website_url IS NOT NULL AND c.website_url != '' \
                AND c.search_profile_id = ?1 \
-               AND c.id NOT IN (SELECT DISTINCT company_id FROM contacts) \
+               AND COALESCE(c.contact_attempts, 0) < 2 \
+               AND c.id NOT IN ( \
+                   SELECT DISTINCT company_id FROM contacts \
+                   WHERE email IS NOT NULL AND email != '' \
+               ) \
              ORDER BY c.relevance_score DESC NULLS LAST \
              LIMIT ?2",
         )?;
@@ -4046,6 +4369,34 @@ impl Database {
         Ok(rows)
     }
 
+    /// Stamp the per-email provenance on a contact row. Values used by the
+    /// pipeline: 'page_html' (LLM extracted from page text), 'page_regex'
+    /// (regex pass on page emails matched to the name), 'apollo_match' (Apollo
+    /// /people/match), 'smtp_verified' (SMTP RCPT TO probe), 'page_general'
+    /// (general/sales mailbox from contact page). Called AFTER save_contact
+    /// so it overwrites any previous attribution when a better source fills in.
+    pub fn set_email_source(&self, company_id: &str, name: &str, source: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE contacts SET email_source = ?1 WHERE company_id = ?2 AND name = ?3",
+            rusqlite::params![source, company_id, name],
+        )?;
+        Ok(())
+    }
+
+    /// Increment companies.contact_attempts after each extraction attempt.
+    /// Combined with the `contact_attempts < 2` filter in
+    /// get_companies_needing_contacts, this gives each company at most 2
+    /// chances before being shelved.
+    pub fn mark_contact_attempt(&self, company_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companies SET contact_attempts = COALESCE(contact_attempts, 0) + 1 WHERE id = ?1",
+            rusqlite::params![company_id],
+        )?;
+        Ok(())
+    }
+
     /// Update outreach_status for a contact.
     pub fn update_contact_outreach_status(&self, id: i64, status: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -4061,6 +4412,138 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM contacts WHERE id = ?1", [id])?;
         Ok(())
+    }
+
+    // ── Raw pages (v0.58.0 scrape-once-mine-many) ────────────────────
+
+    /// Upsert a fetched page snapshot for a company.
+    ///
+    /// Captures everything we saw at this URL so future extraction passes
+    /// (new attribute schemas, semantic search, re-synthesis) can re-mine
+    /// without going back to the network. Even fetch failures are recorded
+    /// (with `error` populated) so we know not to retry the same URL on
+    /// every cycle.
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_raw_page(
+        &self,
+        company_id: &str,
+        url: &str,
+        status_code: Option<i64>,
+        content_type: Option<&str>,
+        content_text: Option<&str>,
+        content_html_gz: Option<&[u8]>,
+        image_metadata_json: Option<&str>,
+        pdf_links_json: Option<&str>,
+        internal_links_json: Option<&str>,
+        bytes_fetched: Option<i64>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO company_raw_pages (
+                company_id, url, fetched_at, status_code, content_type,
+                content_text, content_html_gz, image_metadata_json,
+                pdf_links_json, internal_links_json, bytes_fetched, error
+             ) VALUES (?1, ?2, datetime('now'), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(company_id, url) DO UPDATE SET
+                fetched_at = excluded.fetched_at,
+                status_code = excluded.status_code,
+                content_type = excluded.content_type,
+                content_text = excluded.content_text,
+                content_html_gz = excluded.content_html_gz,
+                image_metadata_json = excluded.image_metadata_json,
+                pdf_links_json = excluded.pdf_links_json,
+                internal_links_json = excluded.internal_links_json,
+                bytes_fetched = excluded.bytes_fetched,
+                error = excluded.error",
+            rusqlite::params![
+                company_id,
+                url,
+                status_code,
+                content_type,
+                content_text,
+                content_html_gz,
+                image_metadata_json,
+                pdf_links_json,
+                internal_links_json,
+                bytes_fetched,
+                error,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Fetch all raw pages for a company. Returns metadata + text but
+    /// excludes the gzipped HTML BLOB to keep payloads small — callers
+    /// that need the raw HTML should query directly.
+    pub fn get_raw_pages_for_company(&self, company_id: &str) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, company_id, url, fetched_at, status_code, content_type,
+                    content_text, image_metadata_json, pdf_links_json,
+                    internal_links_json, bytes_fetched, error
+             FROM company_raw_pages
+             WHERE company_id = ?1
+             ORDER BY fetched_at DESC",
+        )?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let rows = stmt
+            .query_map([company_id], |row| {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in columns.iter().enumerate() {
+                    let val: rusqlite::types::Value =
+                        row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    obj.insert(col.clone(), sqlite_to_json(val));
+                }
+                Ok(Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Cheap counter — used to gate whether a company still needs scraping.
+    pub fn count_raw_pages_for_company(&self, company_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM company_raw_pages WHERE company_id = ?1",
+                [company_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(count)
+    }
+
+    /// Companies in the active profile that have a website_url but ZERO
+    /// rows in company_raw_pages. Drives the raw_scrape pipeline batch.
+    pub fn get_companies_needing_raw_scrape(
+        &self,
+        profile_id: &str,
+        limit: i64,
+    ) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.name, c.website_url
+             FROM companies c
+             WHERE c.search_profile_id = ?1
+               AND c.website_url IS NOT NULL
+               AND c.website_url != ''
+               AND c.id NOT IN (SELECT DISTINCT company_id FROM company_raw_pages)
+             ORDER BY c.relevance_score DESC NULLS LAST
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![profile_id, limit], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, Option<String>>(1)?,
+                    "website_url": row.get::<_, Option<String>>(2)?,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
     }
 }
 

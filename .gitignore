@@ -26,3 +26,4 @@ src-tauri/target/
 # Rust
 *.lock
 !Cargo.lock
+.aider*

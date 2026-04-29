@@ -44,6 +44,18 @@ pub async fn test_connection(api_key: &str) -> Result<Value> {
     }))
 }
 
+/// Like `chat` but returns the raw response text without running it through
+/// `clean_json_response`. Use this when the expected output is a JSON ARRAY
+/// (e.g. `[{...}, {...}]`) rather than an object — the cleaner heuristically
+/// strips array wrappers to find an inner `{...}`, which corrupts list responses.
+pub async fn chat_raw(
+    api_key: &str,
+    system: Option<&str>,
+    prompt: &str,
+) -> Result<String> {
+    chat_inner(api_key, system, prompt, false).await
+}
+
 /// Send a chat message to Anthropic's Messages API.
 /// Matches the interface pattern used by ollama::generate — takes a prompt, returns a String.
 pub async fn chat(
@@ -51,6 +63,16 @@ pub async fn chat(
     system: Option<&str>,
     prompt: &str,
     json_mode: bool,
+) -> Result<String> {
+    let _ = json_mode;
+    chat_inner(api_key, system, prompt, true).await
+}
+
+async fn chat_inner(
+    api_key: &str,
+    system: Option<&str>,
+    prompt: &str,
+    clean_json: bool,
 ) -> Result<String> {
     if api_key.is_empty() {
         anyhow::bail!("Anthropic API key not configured");
@@ -69,11 +91,6 @@ pub async fn chat(
     if let Some(sys) = system {
         body["system"] = json!(sys);
     }
-
-    // Request JSON output hint — Anthropic doesn't have a formal json_mode,
-    // but we can guide via system prompt or let the caller's prompt handle it.
-    // The prompt already asks for JSON, so json_mode is informational only.
-    let _ = json_mode;
 
     let mut last_error: Option<anyhow::Error> = None;
 
@@ -143,8 +160,11 @@ pub async fn chat(
             text.len()
         );
 
-        // Clean the response — extract JSON object if present (same pattern as Ollama)
-        return Ok(clean_json_response(&text));
+        if clean_json {
+            return Ok(clean_json_response(&text));
+        } else {
+            return Ok(text);
+        }
     }
 
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Anthropic request failed after {} retries", MAX_RETRIES)))

@@ -357,14 +357,37 @@ pub async fn test_connection(api_key: &str) -> Result<bool> {
     Ok(resp.status().is_success())
 }
 
+/// Brave Search API supports only this list of country codes (per their 2026 docs).
+/// For unsupported countries, fall back to "ALL" — keyword density does the geographic targeting.
+fn brave_country_code(country: &str) -> &'static str {
+    match country {
+        "AR"|"AU"|"AT"|"BE"|"BR"|"CA"|"CL"|"DK"|"FI"|"FR"|"DE"|"GR"|"HK"|"IN"|"ID"|"IT"
+        |"JP"|"KR"|"MY"|"MX"|"NL"|"NZ"|"NO"|"CN"|"PL"|"PT"|"PH"|"RU"|"SA"|"ZA"|"ES"|"SE"
+        |"CH"|"TW"|"TR"|"GB"|"US" => match country {
+            "AR" => "AR", "AU" => "AU", "AT" => "AT", "BE" => "BE", "BR" => "BR",
+            "CA" => "CA", "CL" => "CL", "DK" => "DK", "FI" => "FI", "FR" => "FR",
+            "DE" => "DE", "GR" => "GR", "HK" => "HK", "IN" => "IN", "ID" => "ID",
+            "IT" => "IT", "JP" => "JP", "KR" => "KR", "MY" => "MY", "MX" => "MX",
+            "NL" => "NL", "NZ" => "NZ", "NO" => "NO", "CN" => "CN", "PL" => "PL",
+            "PT" => "PT", "PH" => "PH", "RU" => "RU", "SA" => "SA", "ZA" => "ZA",
+            "ES" => "ES", "SE" => "SE", "CH" => "CH", "TW" => "TW", "TR" => "TR",
+            "GB" => "GB", "US" => "US",
+            _ => "ALL",
+        },
+        // AE, QA, KW, BH, OM and others fall through to ALL — keyword density handles geo
+        _ => "ALL",
+    }
+}
+
 pub async fn search(api_key: &str, query: &str, country: &str, count: u32, offset: u32) -> Result<Vec<SearchResult>> {
     let search_lang = search_lang_for_country(country);
+    let brave_country = brave_country_code(country);
     let client = reqwest::Client::new();
 
     let mut params: Vec<(&str, String)> = vec![
         ("q", query.to_string()),
         ("count", count.to_string()),
-        ("country", country.to_string()),
+        ("country", brave_country.to_string()),
         ("search_lang", search_lang.to_string()),
     ];
     if offset > 0 {
@@ -411,6 +434,17 @@ pub fn country_names(country: &str) -> Vec<&'static str> {
         "BE" => vec!["Belgium"],
         "IT" => vec!["Italy", "Italia"],
         "GB" | "UK" => vec!["UK", "United Kingdom", "England", "Britain", "Great Britain"],
+        "SE" => vec!["Sweden", "Sverige"],
+        "NO" => vec!["Norway", "Norge"],
+        "DK" => vec!["Denmark", "Danmark"],
+        "FI" => vec!["Finland", "Suomi"],
+        "CA" => vec!["Canada", "Québec"],
+        "AE" => vec!["UAE", "United Arab Emirates", "Dubai", "Abu Dhabi", "الإمارات", "الإمارات العربية المتحدة"],
+        "SA" => vec!["Saudi Arabia", "KSA", "Kingdom of Saudi Arabia", "Riyadh", "Jeddah", "السعودية", "المملكة العربية السعودية"],
+        "QA" => vec!["Qatar", "Doha", "قطر"],
+        "KW" => vec!["Kuwait", "الكويت"],
+        "BH" => vec!["Bahrain", "البحرين"],
+        "OM" => vec!["Oman", "Sultanate of Oman", "Muscat", "عُمان", "سلطنة عمان"],
         _ => vec![],
     }
 }
@@ -424,6 +458,14 @@ fn search_lang_for_country(country: &str) -> &'static str {
         "IT" => "it",
         "BE" => "fr", // Belgium — French is the more common web language
         "GB" | "UK" => "en",
+        "SE" => "sv",
+        "NO" => "no",
+        "DK" => "da",
+        "FI" => "fi",
+        "CA" => "en", // Canada — en covers both English and (most) French-Canadian sites
+        // Middle East — English bias since most regional businesses have English presence,
+        // Arabic-language results still surface when Arabic keywords appear in queries.
+        "AE" | "SA" | "QA" | "KW" | "BH" | "OM" => "en",
         _ => "en",
     }
 }

@@ -9,6 +9,11 @@ use crate::services::brave::{CATEGORIES, DynamicSearchCategory, country_names};
 /// Run the research stage using category rotation and Supabase dedup.
 /// Returns discovered company IDs for immediate enrichment.
 pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result<Value> {
+    // Flag that research is active so that the parallel enrich stage will wait
+    // for new discoveries instead of exiting when its queue is briefly empty.
+    // Resets automatically on drop (including panic or early return).
+    let _research_guard = super::research_active_guard();
+
     let brave_key = config
         .get("brave_api_key")
         .and_then(|v| v.as_str())

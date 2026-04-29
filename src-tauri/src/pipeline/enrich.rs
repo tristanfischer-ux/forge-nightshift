@@ -160,7 +160,7 @@ pub async fn run(app: &tauri::AppHandle, job_id: &str, config: &Value) -> Result
         // Load next batch (smaller batches = faster pickup of new discoveries)
         let companies = {
             let db: tauri::State<'_, Database> = app.state();
-            db.get_enrichable_companies(50)?
+            db.get_enrichable_companies(None, 50)?
         };
 
         if companies.is_empty() {

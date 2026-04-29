@@ -5,6 +5,7 @@ mod pipeline;
 use db::Database;
 use tauri::{Emitter, Manager};
 use std::sync::Mutex;
+use std::path::Path;
 
 /// Cached embeddings loaded from supplier_embeddings table.
 /// Populated lazily on first semantic search to avoid re-reading 8,699 rows each time.
@@ -452,6 +453,82 @@ async fn refresh_email_statuses(
     Ok(updated)
 }
 
+/// Prune backups to keep at most 3: the most recent, the latest morning
+/// backup from today (before noon), and one from yesterday.
+/// "Morning" = any backup created before 12:00 local time.
+pub(crate) fn prune_backups(backup_dir: &Path) {
+    let entries: Vec<_> = match std::fs::read_dir(backup_dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("nightshift_backup_") && n.ends_with(".db"))
+                    .unwrap_or(false)
+            })
+            .collect(),
+        Err(_) => return,
+    };
+
+    // Parse timestamp from filename: nightshift_backup_YYYY-MM-DD_HHMMSS.db
+    let parse_ts = |name: &str| -> Option<chrono::NaiveDateTime> {
+        let stem = name.strip_prefix("nightshift_backup_")?.strip_suffix(".db")?;
+        chrono::NaiveDateTime::parse_from_str(stem, "%Y-%m-%d_%H%M%S").ok()
+    };
+
+    let mut backups: Vec<(std::path::PathBuf, chrono::NaiveDateTime)> = entries
+        .iter()
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_string();
+            let ts = parse_ts(&name)?;
+            Some((e.path(), ts))
+        })
+        .collect();
+
+    if backups.len() <= 3 {
+        return;
+    }
+
+    // Sort newest first
+    backups.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let today = chrono::Local::now().date_naive();
+    let yesterday = today - chrono::Duration::days(1);
+    let noon = chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+
+    let mut keep = std::collections::HashSet::new();
+
+    // 1. Most recent backup (always keep)
+    keep.insert(backups[0].0.clone());
+
+    // 2. Latest morning backup from today (before noon)
+    if let Some(b) = backups.iter().find(|(_, ts)| ts.date() == today && ts.time() < noon) {
+        keep.insert(b.0.clone());
+    }
+
+    // 3. Latest backup from yesterday
+    if let Some(b) = backups.iter().find(|(_, ts)| ts.date() == yesterday) {
+        keep.insert(b.0.clone());
+    }
+
+    // If we still have fewer than 3 keepers (e.g. no morning backup today, or no
+    // backup from yesterday), fill from most recent to ensure we always keep 3.
+    for (path, _) in &backups {
+        if keep.len() >= 3 {
+            break;
+        }
+        keep.insert(path.clone());
+    }
+
+    // Delete everything not in the keep set
+    for (path, _) in &backups {
+        if !keep.contains(path) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 #[tauri::command]
 fn backup_database(
     db: tauri::State<'_, Database>,
@@ -469,6 +546,8 @@ fn backup_database(
     let backup_path = backup_dir.join(format!("nightshift_backup_{}.db", timestamp));
 
     db.backup(&backup_path).map_err(|e| e.to_string())?;
+
+    prune_backups(&backup_dir);
 
     Ok(backup_path.to_string_lossy().to_string())
 }
@@ -1946,4 +2025,98 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn create_backup_file(dir: &Path, date: &str, time: &str) -> std::path::PathBuf {
+        let name = format!("nightshift_backup_{}_{}.db", date, time);
+        let path = dir.join(&name);
+        fs::write(&path, "test").unwrap();
+        path
+    }
+
+    #[test]
+    fn test_prune_keeps_three_backups() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        // Create 6 backups across two days
+        let today = chrono::Local::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+        let today_str = today.format("%Y-%m-%d").to_string();
+        let yesterday_str = yesterday.format("%Y-%m-%d").to_string();
+
+        create_backup_file(dir, &yesterday_str, "083000");
+        create_backup_file(dir, &yesterday_str, "150000");
+        create_backup_file(dir, &today_str, "073000"); // morning
+        create_backup_file(dir, &today_str, "091500"); // morning
+        create_backup_file(dir, &today_str, "140000");
+        create_backup_file(dir, &today_str, "160000"); // most recent
+
+        prune_backups(dir);
+
+        let remaining: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(remaining.len(), 3, "Should keep exactly 3 backups, got: {:?}", remaining);
+
+        // Must keep: most recent (today 160000)
+        assert!(remaining.iter().any(|n| n.contains(&format!("{}_160000", today_str))),
+            "Must keep most recent backup");
+
+        // Must keep: latest morning today (091500, before noon)
+        assert!(remaining.iter().any(|n| n.contains(&format!("{}_091500", today_str))),
+            "Must keep latest morning backup from today");
+
+        // Must keep: latest from yesterday (150000)
+        assert!(remaining.iter().any(|n| n.contains(&format!("{}_150000", yesterday_str))),
+            "Must keep latest backup from yesterday");
+    }
+
+    #[test]
+    fn test_prune_fills_to_three_when_slots_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        // All backups are afternoon today — no morning, no yesterday
+        let today = chrono::Local::now().date_naive();
+        let today_str = today.format("%Y-%m-%d").to_string();
+
+        create_backup_file(dir, &today_str, "130000");
+        create_backup_file(dir, &today_str, "140000");
+        create_backup_file(dir, &today_str, "150000");
+        create_backup_file(dir, &today_str, "160000");
+        create_backup_file(dir, &today_str, "170000");
+
+        prune_backups(dir);
+
+        let remaining: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(remaining.len(), 3, "Should keep exactly 3, got: {:?}", remaining);
+    }
+
+    #[test]
+    fn test_prune_noop_when_three_or_fewer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        create_backup_file(dir, "2026-04-12", "100000");
+        create_backup_file(dir, "2026-04-12", "110000");
+
+        prune_backups(dir);
+
+        let count = fs::read_dir(dir).unwrap().count();
+        assert_eq!(count, 2, "Should not delete when <= 3 backups");
+    }
 }

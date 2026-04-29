@@ -252,55 +252,28 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Charts row 1: Pipeline Funnel + Country Distribution */}
+      {/* Charts — rendered dynamically from the active profile's widget config */}
       <div className="grid grid-cols-2 gap-4">
-        <ChartCard
-          title="Pipeline Funnel"
-          data={analytics?.pipeline_funnel ?? []}
-        />
-        <ChartCard
-          title="Country Distribution"
-          data={analytics?.by_country ?? []}
-          type="pie"
-          onSegmentClick={(name) => drillDown("country", name)}
-        />
-      </div>
+        {analytics?.widgets?.map((w, i) => {
+          const handler =
+            w.kind === "pipeline_funnel" || w.kind === "reachability"
+              ? undefined
+              : w.kind === "country"
+                ? (name: string) => drillDown("country", name)
+                : w.kind === "subcategory"
+                  ? (name: string) => drillDown("subcategory", name)
+                  : (name: string) => drillDown("search", name);
 
-      {/* Charts row 2: Manufacturing Techniques + Certifications */}
-      <div className="grid grid-cols-2 gap-4">
-        <ChartCard
-          title="Categories"
-          data={analytics?.by_subcategory ?? []}
-          onSegmentClick={(name) => drillDown("subcategory", name)}
-        />
-        <ChartCard
-          title="Certifications"
-          data={analytics?.by_certification ?? []}
-          onSegmentClick={(name) => drillDown("search", name)}
-        />
-      </div>
-
-      {/* Charts row 3: Equipment + Materials */}
-      <div className="grid grid-cols-2 gap-4">
-        <ChartCard
-          title="Top Equipment"
-          data={analytics?.by_equipment ?? []}
-          onSegmentClick={(name) => drillDown("search", name)}
-        />
-        <ChartCard
-          title="Materials"
-          data={analytics?.by_material ?? []}
-          onSegmentClick={(name) => drillDown("search", name)}
-        />
-      </div>
-
-      {/* Charts row 4: Industry Sectors */}
-      <div className="grid grid-cols-2 gap-4">
-        <ChartCard
-          title="Industry Sectors"
-          data={analytics?.by_industry ?? []}
-          onSegmentClick={(name) => drillDown("search", name)}
-        />
+          return (
+            <ChartCard
+              key={`${w.kind}-${i}`}
+              title={w.title}
+              data={w.data ?? []}
+              type={w.type ?? "bar"}
+              onSegmentClick={handler}
+            />
+          );
+        })}
       </div>
 
       {/* Recent activity */}
